@@ -1,6 +1,9 @@
 # 敏感配置
 .env
 
+# 本地项目记忆(不入库)
+.workbuddy/
+
 # 数据(不入库)
 data/
 backend/data/*
