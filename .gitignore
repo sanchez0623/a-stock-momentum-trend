@@ -1,0 +1,32 @@
+# 敏感配置
+.env
+
+# 数据(不入库)
+data/
+backend/data/*
+!backend/data/.gitkeep
+*.db
+*.csv
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+frontend/dist/
+frontend/*.tsbuildinfo
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 构建产物
+*.log

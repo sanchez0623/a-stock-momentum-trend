@@ -1,0 +1,10 @@
+# 开发镜像: 仅后端运行时, 源码由 volume 挂载热重载
+FROM python:3.11-slim
+ENV TZ=Asia/Shanghai \
+    LANG=C.UTF-8 \
+    PYTHONUNBUFFERED=1 \
+    DATA_DIR=/app/data
+WORKDIR /app/backend
+COPY backend/requirements.txt ./requirements.txt
+RUN pip install -r requirements.txt
+EXPOSE 8000

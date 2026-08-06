@@ -1,0 +1,12 @@
+-r requirements.txt
+
+# === 可选数据源(重依赖, 按需安装; CI 不安装以保确定性) ===
+# mootdx>=0.11        # 通达信协议源
+# akshare>=1.14       # 聚合源
+# TA-Lib               # 可选指标加速(需编译, 默认纯 pandas)
+
+# === 开发/质量工具 ===
+ruff>=0.4
+pytest>=8.1
+pytest-asyncio>=0.23
+mypy>=1.9

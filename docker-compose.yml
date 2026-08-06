@@ -1,0 +1,12 @@
+# 生产模式: 单容器(端口 8000, 前端由 FastAPI 托管)
+services:
+  app:
+    build: .
+    container_name: momentum-trader
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data        # SQLite + CSV + K线缓存持久化
+    env_file:
+      - .env                    # LLM key / 数据源开关 / TZ
+    restart: unless-stopped
