@@ -19,7 +19,7 @@
 
 | 层 | 选型 |
 |----|------|
-| 后端 | FastAPI + Uvicorn(端口 **8000**) |
+| 后端 | FastAPI + Uvicorn(端口 **8002**) |
 | 前端 | Vite 5 + React 18 + TS(开发 **5173**,构建产物由后端托管) |
 | 数据 | SQLite(SQLModel)+ CSV 双写 |
 | 定时 | APScheduler |
@@ -32,7 +32,7 @@
 ```bash
 cp .env.example .env        # 按需填 LLM key / 数据源开关
 docker compose up -d --build
-# 打开 http://localhost:8000
+# 打开 http://localhost:8002
 ```
 
 ### ② 本地开发
@@ -42,7 +42,7 @@ docker compose up -d --build
 cd backend
 pip install -r requirements.txt -r requirements-dev.txt
 pip install -e ".[optional]"        # 可选: mootdx / akshare 数据源
-uvicorn app.main:app --reload --port 8000
+uvicorn app.main:app --reload --port 8002
 
 # 前端(需 Node 18+)
 cd frontend

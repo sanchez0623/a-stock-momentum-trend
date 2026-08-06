@@ -1,4 +1,4 @@
-# 开发模式: backend 热重载(8000) + frontend Vite HMR(5173)
+# 开发模式: backend 热重载(8002) + frontend Vite HMR(5173)
 services:
   backend:
     build:
@@ -6,7 +6,7 @@ services:
       dockerfile: Dockerfile.dev
     container_name: momentum-backend-dev
     ports:
-      - "8000:8000"
+      - "8002:8002"
     volumes:
       - ./backend:/app/backend        # 源码热重载
       - ./data:/app/data
@@ -15,7 +15,7 @@ services:
       - DATA_DIR=/app/data
     env_file:
       - .env
-    command: uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+    command: uvicorn app.main:app --reload --host 0.0.0.0 --port 8002
 
   frontend:
     image: node:22-alpine

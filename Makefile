@@ -16,8 +16,8 @@ install-dev: ## 安装后端开发依赖(含 ruff/pytest/mypy)
 install-optional: ## 安装可选数据源(mootdx/akshare)
 	$(PIP) install -e ".[optional]"
 
-dev-backend: ## 本地启动后端(热重载, 8000)
-	cd backend && uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+dev-backend: ## 本地启动后端(热重载, 8002)
+	cd backend && uvicorn app.main:app --reload --host 0.0.0.0 --port 8002
 
 dev-frontend: ## 本地启动前端(Vite HMR, 5173)
 	cd frontend && npm run dev
