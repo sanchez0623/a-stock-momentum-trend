@@ -1,4 +1,4 @@
-# 开发模式: backend 热重载(8002) + frontend Vite HMR(5173)
+# 开发模式: backend 热重载(8002) + frontend Vite HMR(5175)
 services:
   backend:
     build:
@@ -22,7 +22,7 @@ services:
     container_name: momentum-frontend-dev
     working_dir: /app/frontend
     ports:
-      - "5173:5173"
+      - "5175:5175"
     volumes:
       - ./frontend:/app/frontend
       - frontend_node_modules:/app/frontend/node_modules

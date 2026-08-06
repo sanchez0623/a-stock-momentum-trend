@@ -20,7 +20,7 @@
 | 层 | 选型 |
 |----|------|
 | 后端 | FastAPI + Uvicorn(端口 **8002**) |
-| 前端 | Vite 5 + React 18 + TS(开发 **5173**,构建产物由后端托管) |
+| 前端 | Vite 5 + React 18 + TS(开发 **5175**,构建产物由后端托管) |
 | 数据 | SQLite(SQLModel)+ CSV 双写 |
 | 定时 | APScheduler |
 | 容器 | Docker 多阶段构建 + docker-compose |
@@ -47,7 +47,7 @@ uvicorn app.main:app --reload --port 8002
 # 前端(需 Node 18+)
 cd frontend
 npm install
-npm run dev                         # http://localhost:5173
+npm run dev                         # http://localhost:5175
 ```
 
 ### ③ 终端面板(前端不可用时的兜底)

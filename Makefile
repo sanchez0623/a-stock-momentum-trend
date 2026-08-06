@@ -19,7 +19,7 @@ install-optional: ## 安装可选数据源(mootdx/akshare)
 dev-backend: ## 本地启动后端(热重载, 8002)
 	cd backend && uvicorn app.main:app --reload --host 0.0.0.0 --port 8002
 
-dev-frontend: ## 本地启动前端(Vite HMR, 5173)
+dev-frontend: ## 本地启动前端(Vite HMR, 5175)
 	cd frontend && npm run dev
 
 test: ## 后端测试
