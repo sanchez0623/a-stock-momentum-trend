@@ -39,6 +39,14 @@ class KlineCache(SQLModel, table=True):
     ohlcv_json: str = Field(default="[]")
 
 
+class Watchlist(SQLModel, table=True):
+    """自选股."""
+
+    symbol: str = Field(primary_key=True)
+    name: str = Field(default="")
+    added_at: str = Field(default_factory=_now)
+
+
 # ---------------------------------------------------------------- 交易
 class Position(SQLModel, table=True):
     """持仓快照."""

@@ -4,22 +4,8 @@ from __future__ import annotations
 
 import time
 
-import pytest
-from app import db
 from app.core.datasource.base import Quote
 from app.core.datasource.cache import KlineStore, QuoteCache
-from sqlmodel import SQLModel, create_engine
-
-
-@pytest.fixture
-def tmp_engine(monkeypatch, tmp_path):
-    """临时 SQLite 引擎(已建表), 替换全局 db.engine."""
-    engine = create_engine(f"sqlite:///{tmp_path / 'cache_test.db'}", connect_args={"check_same_thread": False})
-    from app.models import models  # noqa: F401  确保表注册到 metadata
-
-    SQLModel.metadata.create_all(engine)
-    monkeypatch.setattr(db, "engine", engine)
-    return engine
 
 
 def _sample_rows(n: int = 30) -> list[dict]:

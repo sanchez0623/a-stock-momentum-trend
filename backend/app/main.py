@@ -17,7 +17,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app import db
+from app.api import plans as plans_api
+from app.api import positions as positions_api
 from app.api import quote as quote_api
+from app.api import risk as risk_api
+from app.api import screener as screener_api
+from app.api import signals as signals_api
 from app.api import system as system_api
 from app.core.config import config_manager
 from app.core.datasource import build_sources, data_source_manager
@@ -79,6 +84,11 @@ app.add_middleware(
 # ---- 路由(先注册 API, 再挂静态, 保证 /api/* 优先) ----
 app.include_router(system_api.router)
 app.include_router(quote_api.router)
+app.include_router(signals_api.router)
+app.include_router(plans_api.router)
+app.include_router(positions_api.router)
+app.include_router(risk_api.router)
+app.include_router(screener_api.router)
 
 FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 if FRONTEND_DIST.exists():

@@ -26,6 +26,7 @@ ignore = [
     "UP007",     # X | None 语法放宽(兼容 3.10 写法的可读性)
     "UP035",     # typing 导入风格放宽
     "SIM108",    # 三元表达式不强制
+    "B008",      # FastAPI 依赖注入 Depends() 在参数默认值中是标准写法
 ]
 
 [tool.ruff.lint.per-file-ignores]

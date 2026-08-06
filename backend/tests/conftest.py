@@ -5,6 +5,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import pytest
+from app import db
+from sqlmodel import SQLModel, create_engine
 
 
 @pytest.fixture
@@ -24,3 +26,14 @@ def kline_df() -> pd.DataFrame:
         "open": open_, "high": high, "low": low, "close": close,
         "volume": volume, "amount": amount,
     })
+
+
+@pytest.fixture
+def tmp_engine(monkeypatch, tmp_path):
+    """临时 SQLite 引擎(已建表), 替换全局 db.engine."""
+    engine = create_engine(f"sqlite:///{tmp_path / 'test.db'}", connect_args={"check_same_thread": False})
+    from app.models import models  # noqa: F401  确保表注册到 metadata
+
+    SQLModel.metadata.create_all(engine)
+    monkeypatch.setattr(db, "engine", engine)
+    return engine
