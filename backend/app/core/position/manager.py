@@ -16,6 +16,7 @@ from sqlmodel import Session, select
 
 from app import db
 from app.core.config import config_manager
+from app.core.logger import trade_logger
 from app.models.models import Position, Trade
 
 
@@ -77,8 +78,8 @@ class PositionManager:
             pos.qty = new_qty
             pos.name = name or pos.name
             pos.updated_at = _now()
-            s.add(Trade(time=_now(), symbol=symbol, name=name, action="buy", price=price,
-                        qty=qty, amount=round(price * qty, 2), reason=reason, note="仓位管理"))
+            # 交易日志双写(SQLite + CSV)
+            trade_logger.record(symbol, name, "buy", price, qty, reason, note="仓位管理", session=s)
             s.commit()
             s.refresh(pos)
             return pos
@@ -98,9 +99,9 @@ class PositionManager:
             if pos.qty == 0:
                 pos.status = "closed"
             pos.updated_at = _now()
-            s.add(Trade(time=_now(), symbol=symbol, name=pos.name, action="sell", price=price,
-                        qty=qty, amount=round(price * qty, 2), pnl=realized_pnl,
-                        reason=reason, note="仓位管理"))
+            # 交易日志双写(SQLite + CSV)
+            trade_logger.record(symbol, pos.name, "sell", price, qty, reason,
+                                pnl=realized_pnl, note="仓位管理", session=s)
             s.commit()
             return realized_pnl
 

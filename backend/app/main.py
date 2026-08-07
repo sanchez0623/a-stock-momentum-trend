@@ -24,6 +24,7 @@ from app.api import risk as risk_api
 from app.api import screener as screener_api
 from app.api import signals as signals_api
 from app.api import system as system_api
+from app.api import trades_stats as trades_stats_api
 from app.core.config import config_manager
 from app.core.datasource import build_sources, data_source_manager
 
@@ -89,6 +90,7 @@ app.include_router(plans_api.router)
 app.include_router(positions_api.router)
 app.include_router(risk_api.router)
 app.include_router(screener_api.router)
+app.include_router(trades_stats_api.router)
 
 FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 if FRONTEND_DIST.exists():

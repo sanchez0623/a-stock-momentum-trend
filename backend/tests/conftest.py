@@ -30,10 +30,13 @@ def kline_df() -> pd.DataFrame:
 
 @pytest.fixture
 def tmp_engine(monkeypatch, tmp_path):
-    """临时 SQLite 引擎(已建表), 替换全局 db.engine."""
+    """临时 SQLite 引擎(已建表), 替换全局 db.engine; 交易日志 CSV 指向临时目录."""
     engine = create_engine(f"sqlite:///{tmp_path / 'test.db'}", connect_args={"check_same_thread": False})
     from app.models import models  # noqa: F401  确保表注册到 metadata
 
     SQLModel.metadata.create_all(engine)
     monkeypatch.setattr(db, "engine", engine)
+    from app.core.logger import trade_logger
+
+    monkeypatch.setattr(trade_logger, "csv_path", tmp_path / "trades.csv")
     return engine

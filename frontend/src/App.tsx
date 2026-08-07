@@ -1,7 +1,6 @@
 import { lazy, Suspense, useEffect, useState } from 'react'
 import { NavLink, Navigate, Route, Routes } from 'react-router-dom'
 import { api } from './api/client'
-import type { HealthData } from './api/client'
 
 // 页面按需加载(方案: React.lazy + Suspense)
 const Dashboard = lazy(() => import('./pages/Dashboard'))
@@ -39,11 +38,10 @@ function Placeholder({ title }: { title: string }) {
 export { Placeholder }
 
 export default function App() {
-  const [health, setHealth] = useState<HealthData | null>(null)
   const [error, setError] = useState('')
 
   useEffect(() => {
-    api.health().then(setHealth).catch((e) => setError(String(e.message || e)))
+    api.health().catch((e) => setError(String(e.message || e)))
   }, [])
 
   return (
@@ -76,7 +74,7 @@ export default function App() {
         <Suspense fallback={<div style={{ padding: 48, color: '#888' }}>加载中...</div>}>
           <Routes>
             <Route path="/" element={<Navigate to="/dashboard" replace />} />
-            <Route path="/dashboard" element={<Dashboard health={health} />} />
+            <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/screener" element={<Screener />} />
             <Route path="/watchlist" element={<Watchlist />} />
             <Route path="/signals" element={<Signals />} />
