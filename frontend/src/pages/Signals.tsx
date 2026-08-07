@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { api } from '../api/client'
 import type { PositionItem, Signal, SignalRecord } from '../api/client'
 import { Button, Card, ErrorBox, Field, Loading, Tag, inputStyle } from '../components/ui'
@@ -16,6 +17,7 @@ interface ResultItem {
 }
 
 export default function Signals() {
+  const navigate = useNavigate()
   const [records, setRecords] = useState<SignalRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -69,6 +71,19 @@ export default function Signals() {
     }
   }
 
+  // 有信号 -> 生成交易计划并跳转「交易计划」页(打通流程)
+  const generatePlan = async (symbol: string, nm: string) => {
+    setBusy(true)
+    setError('')
+    try {
+      await api.generatePlan(symbol, nm)
+      navigate('/plans')
+    } catch (e) {
+      setError(String((e as Error).message))
+      setBusy(false)
+    }
+  }
+
   if (loading) return <Loading />
 
   return (
@@ -77,7 +92,7 @@ export default function Signals() {
       {error && <ErrorBox message={error} />}
 
       {/* 操作区: 只负责输入与触发, 不展示结果 */}
-      <Card title="信号分析(输入代码或选持仓, 生成后可到「交易计划」)">
+      <Card title="信号分析(输入代码或选持仓, 有信号时点结果行「生成计划」直达交易计划)">
         {positions.length > 0 && (
           <div style={{ marginBottom: 12, display: 'flex', gap: 8, alignItems: 'flex-end' }}>
             <div style={{ flex: 1 }}>
@@ -115,11 +130,11 @@ export default function Signals() {
       {/* 结果区: 单个与批量统一列表 */}
       <Card title={`分析结果${results ? `(${results.length})` : ''}`} style={{ marginTop: 12 }}>
         {!results ? (
-          <div style={{ color: '#999', fontSize: 13 }}>输入一个或多个代码(逗号/空格分隔)点「评估」, 或从持仓选择/一键分析。无信号时显示"无信号"(超买不追、趋势破坏属正常)。</div>
+          <div style={{ color: '#999', fontSize: 13 }}>输入一个或多个代码(逗号/空格分隔)点「评估」, 或从持仓选择/一键分析。有信号时可点该行「生成计划」直达交易计划。</div>
         ) : results.length === 0 ? (
           <div style={{ color: '#999', fontSize: 13 }}>无结果。</div>
         ) : (
-          results.map((r) => <ResultRow key={r.symbol} r={r} />)
+          results.map((r) => <ResultRow key={r.symbol} r={r} onGeneratePlan={generatePlan} busy={busy} />)
         )}
       </Card>
 
@@ -151,7 +166,7 @@ export default function Signals() {
 }
 
 // 统一结果行: 单个评估和批量分析共用
-function ResultRow({ r }: { r: ResultItem }) {
+function ResultRow({ r, onGeneratePlan, busy }: { r: ResultItem; onGeneratePlan: (symbol: string, name: string) => void; busy: boolean }) {
   const sig = r.signal
   const meta = sig ? SIGNAL_META[sig.type] ?? { label: sig.type, color: '#64748b' } : null
   return (
@@ -167,7 +182,10 @@ function ResultRow({ r }: { r: ResultItem }) {
         <span style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <Tag color={meta!.color}>{meta!.label}</Tag>
           <b style={{ color: sig.strength >= 70 ? '#dc2626' : '#666' }}>{sig.strength.toFixed(0)}</b>
-          <span style={{ color: '#666', maxWidth: 340, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sig.reason}</span>
+          <span style={{ color: '#666', maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sig.reason}</span>
+          <Button kind="primary" onClick={() => onGeneratePlan(r.symbol, r.name)} disabled={busy} style={{ padding: '4px 12px', fontSize: 12 }}>
+            {busy ? '生成中...' : '生成计划'}
+          </Button>
         </span>
       ) : (
         <span style={{ color: '#999', fontSize: 12 }}>无信号(不满足当前条件)</span>

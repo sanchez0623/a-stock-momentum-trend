@@ -134,17 +134,28 @@ class PositionManager:
             "suggest_next_pct": remaining[0] * 100 if remaining else 0.0,
         }
 
-    def take_profit_levels(self, cost: float, session: Session | None = None) -> list[dict[str, float]]:
-        """分批止盈计划: 每档触发价与建议减仓比例."""
+    def take_profit_levels(self, cost: float, atr_pct: float | None = None,
+                           session: Session | None = None) -> list[dict[str, float]]:
+        """分批止盈计划: 每档触发价与建议减仓比例.
+
+        atr_pct 给定 -> ATR 动态档(成本 × (1+倍数×ATR), 带下限保护);
+        atr_pct 为空 -> 使用配置中的 fixed 档位(向后兼容).
+        """
         cfg = config_manager.get()
-        levels = cfg["仓位"]["take_profit_levels"]
-        ratios = cfg["仓位"]["pyramid_ratios"]
+        pc = cfg["仓位"]
+        ratios = pc.get("take_profit_ratios", [0.2, 0.3, 0.5])
+        mode = pc.get("take_profit_mode", "atr")
+        if mode == "atr" and atr_pct is not None:
+            min_pct = pc.get("min_tp_pct", 3.0) / 100.0
+            levels = [1 + max(m * atr_pct, min_pct) for m in pc.get("atr_multipliers", [1.5, 3.0, 5.0])]
+        else:
+            levels = list(pc["take_profit_levels"])
         out = []
-        for i, level in enumerate(levels):
+        for i, lv in enumerate(levels):
             out.append({
                 "level": i + 1,
-                "target_price": round(cost * level, 2),
-                "target_pct": round((level - 1) * 100, 1),
+                "target_price": round(cost * lv, 2),
+                "target_pct": round((lv - 1) * 100, 1),
                 "suggest_reduce_ratio": ratios[i] if i < len(ratios) else 0.3,
             })
         return out

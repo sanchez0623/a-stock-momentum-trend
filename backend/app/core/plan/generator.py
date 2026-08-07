@@ -5,6 +5,8 @@ from __future__ import annotations
 import datetime as dt
 from typing import Any
 
+import pandas as pd
+
 from app.core.config import config_manager
 from app.core.position import position_manager
 from app.core.risk import risk_manager
@@ -67,11 +69,18 @@ class PlanGenerator:
             action, advice = "hold", "保持观察"
             stop_line = "—"
 
-        # 止盈计划文本(如 成本*1.03 -> "止盈+3% (103.34) 减30%")
+        # 止盈计划文本(ATR 动态档或 fixed 档, 早期少减让利润奔跑)
         if pos:
+            from app.core.signals.engine import SignalEngine
+
+            snapshot = getattr(signal, "indicators_snapshot", {}) or {}
+            last_proxy = {"atr14": snapshot.get("atr14", 0) or 0, "close": snapshot.get("close", 0) or price}
+            targets = SignalEngine().take_profit_targets(pos.cost, pd.Series(last_proxy), position_cfg)
+            ratios = position_cfg.get("take_profit_ratios", [0.2, 0.3, 0.5])
             tp_parts = []
-            for lv in position_cfg["take_profit_levels"]:
-                tp_parts.append(f"止盈+{(lv - 1) * 100:.0f}% ({pos.cost * lv:.2f}) 减30%")
+            for i, tgt in enumerate(targets):
+                ratio = ratios[i] if i < len(ratios) else 0.3
+                tp_parts.append(f"止盈+{(tgt / pos.cost - 1) * 100:.1f}% ({tgt:.2f}) 减{ratio * 100:.0f}%")
             tp_text = " | ".join(tp_parts) + f" | 余仓移动止损{risk['trailing_stop_pct']:.0f}%"
         else:
             tp_text = "首仓后按金字塔止盈计划执行"

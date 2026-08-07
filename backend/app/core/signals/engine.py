@@ -226,12 +226,8 @@ class SignalEngine:
         if divergence:
             reasons.append("RSI顶背离")
 
-        # 2. 触及分批止盈档
-        levels = position_cfg["take_profit_levels"]
-        hit_level = None
-        for level in levels:
-            if price >= pos.cost * level:
-                hit_level = level
+        # 2. 触及分批止盈档(ATR 动态档或 fixed 档)
+        hit_level = self._hit_take_profit(price, pos.cost, last, position_cfg)
         if hit_level:
             reasons.append(f"触及止盈档{hit_level:.0%}")
 
@@ -312,6 +308,32 @@ class SignalEngine:
         return None
 
     # ------------------------------------------------------------ 工具
+    @staticmethod
+    def atr_pct(last: pd.Series, fallback: float = 0.03) -> float:
+        """ATR 占收盘价比例(波动率). 数据缺失时用默认 3%."""
+        atr14 = _f(last.get("atr14"))
+        close = _f(last.get("close"))
+        if close <= 0 or atr14 <= 0:
+            return fallback
+        return atr14 / close
+
+    def take_profit_targets(self, cost: float, last: pd.Series, position_cfg: dict | None = None) -> list[float]:
+        """止盈目标价列表: atr 动态档(带下限保护) 或 fixed 档."""
+        pc = position_cfg or config_manager.get()["仓位"]
+        if pc.get("take_profit_mode", "atr") == "fixed":
+            return [cost * lv for lv in pc["take_profit_levels"]]
+        ap = self.atr_pct(last)
+        min_pct = pc.get("min_tp_pct", 3.0) / 100.0
+        return [cost * (1 + max(m * ap, min_pct)) for m in pc.get("atr_multipliers", [1.5, 3.0, 5.0])]
+
+    def _hit_take_profit(self, price: float, cost: float, last: pd.Series, position_cfg: dict | None = None) -> float | None:
+        """返回命中的最高止盈档(倍数), 未命中返回 None."""
+        hit = None
+        for target in self.take_profit_targets(cost, last, position_cfg):
+            if price >= target:
+                hit = target / cost
+        return hit
+
     def _snapshot(self, last: pd.Series) -> dict[str, Any]:
         out: dict[str, Any] = {}
         for col in ("ma10", "ma20", "ma60", "dif", "dea", "macd_hist", "rsi14", "adx14", "roc12",

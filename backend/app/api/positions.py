@@ -54,9 +54,26 @@ async def position_detail(symbol: str, session: Session = Depends(get_session)) 
     if pos is None:
         raise HTTPException(status_code=404, detail="无持仓")
     history = position_manager.history(symbol, 50, session)
+    # ATR 波动率(供动态止盈档计算; 失败则回退 fixed 档)
+    atr_pct = None
+    try:
+        from app.core.datasource import data_source_manager
+        from app.core.indicators import compute_all
+
+        df = await data_source_manager.get_kline(symbol, "daily", 60)
+        if df is not None and not df.empty:
+            ind = compute_all(df)
+            last = ind.iloc[-1]
+            close = float(last["close"])
+            atr14 = float(last.get("atr14", 0) or 0)
+            if close > 0 and atr14 > 0:
+                atr_pct = atr14 / close
+    except Exception:  # noqa: BLE001
+        atr_pct = None
     return {"code": 0, "msg": "ok", "data": {
         "position": pos.model_dump(),
         "pyramid": position_manager.pyramid_plan(symbol, session),
-        "take_profit": position_manager.take_profit_levels(pos.cost, session),
+        "take_profit": position_manager.take_profit_levels(pos.cost, atr_pct, session),
+        "atr_pct": round(atr_pct, 4) if atr_pct else None,
         "history": [t.model_dump() for t in history],
     }}

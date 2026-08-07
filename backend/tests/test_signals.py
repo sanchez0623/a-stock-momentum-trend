@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 from app.core.signals import SignalEngine
 from app.core.signals.engine import PositionInfo
 
@@ -93,3 +94,33 @@ def test_t_trade_requires_position():
     # 无持仓时不做 T
     sig = engine.evaluate("600004", "测试股", kline_df=df, quote_price=float(df.iloc[-1]["close"]))
     assert sig is None or sig.type not in ("T_BUY", "T_SELL")
+
+
+def test_atr_dynamic_take_profit_targets():
+    """ATR 动态止盈档: 波动大档位远, 带下限保护."""
+    import pandas as pd
+    from app.core.signals.engine import SignalEngine
+
+    eng = SignalEngine()
+    # 高波动(ATR 5%)
+    last = pd.Series({"atr14": 5.0, "close": 100.0})
+    targets = eng.take_profit_targets(100.0, last)
+    assert targets[0] > 100.0
+    # 1.5×5% = 7.5% 首档
+    assert targets[0] == pytest.approx(107.5, abs=0.01)
+    # 低波动(ATR 1%) -> 下限保护 3%
+    last2 = pd.Series({"atr14": 1.0, "close": 100.0})
+    targets2 = eng.take_profit_targets(100.0, last2)
+    assert targets2[0] == pytest.approx(103.0, abs=0.01)
+
+
+def test_atr_hit_take_profit():
+    import pandas as pd
+    from app.core.signals.engine import SignalEngine
+
+    eng = SignalEngine()
+    last = pd.Series({"atr14": 3.0, "close": 100.0})  # ATR 3% -> 首档 1.5*3%=4.5%
+    # 现价 103(浮盈3%) 未达首档 104.5
+    assert eng._hit_take_profit(103.0, 100.0, last) is None
+    # 现价 105 达首档
+    assert eng._hit_take_profit(105.0, 100.0, last) == pytest.approx(1.045, abs=0.001)

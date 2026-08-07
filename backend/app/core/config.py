@@ -54,7 +54,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "仓位": {
         "strategy": "pyramid",  # pyramid | kelly | fixed
         "pyramid_ratios": [0.5, 0.3, 0.2],
-        "take_profit_levels": [1.03, 1.06, 1.10],
+        # 止盈模式: atr(波动率自适应, 默认) | fixed(固定百分比)
+        "take_profit_mode": "atr",
+        "atr_multipliers": [1.5, 3.0, 5.0],  # 动态档 = 成本 × (1 + 倍数 × ATR%)
+        "atr_period": 14,
+        "min_tp_pct": 3.0,                   # 动态档下限保护(第一档至少 +3%)
+        "take_profit_levels": [1.03, 1.06, 1.10],  # fixed 模式档位
+        "take_profit_ratios": [0.2, 0.3, 0.5],     # 各档减仓比例(早期少减, 让利润奔跑)
         "kelly_fraction": 0.5,
     },
     "做T": {
