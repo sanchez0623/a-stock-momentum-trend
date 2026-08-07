@@ -49,6 +49,11 @@ export const api = {
     return request<SignalRecord[]>(`/signals?${q.toString()}`)
   },
   evaluateSignal: (symbol: string) => request<{ symbol: string; signal: Signal | null }>(`/signals/evaluate/${symbol}`, { method: 'POST' }),
+  evaluateBatch: (symbols: string[]) =>
+    request<Array<{ symbol: string; name: string; price: number; signal: Signal | null; error?: string }>>(
+      '/signals/evaluate-batch',
+      { method: 'POST', body: JSON.stringify({ symbols }) },
+    ),
 
   // 交易计划
   generatePlan: (symbol: string, name = '') =>

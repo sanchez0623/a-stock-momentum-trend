@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
 from app.api.deps import get_session
@@ -16,6 +17,10 @@ from app.models.models import SignalRecord
 router = APIRouter(prefix="/api", tags=["signals"])
 
 engine = SignalEngine()
+
+
+class EvaluateBatchBody(BaseModel):
+    symbols: list[str] = Field(min_length=1, max_length=50)
 
 
 @router.get("/signals")
@@ -40,27 +45,60 @@ async def latest_signal(symbol: str, session: Session = Depends(get_session)) ->
     return {"code": 0, "msg": "ok", "data": row.model_dump()}
 
 
+async def _evaluate_one(symbol: str, session: Session) -> dict:
+    """评估单只票(不落库). 返回 {symbol, name, price, signal|None, error?}."""
+    try:
+        df = await data_source_manager.get_kline(symbol, "daily", 120)
+        if df is None or df.empty:
+            return {"symbol": symbol, "name": "", "price": 0.0, "signal": None, "error": "无行情数据"}
+        quote = None
+        quotes = await data_source_manager.get_realtime_quote([symbol])
+        if quotes:
+            quote = quotes[0]
+        pos = position_manager.get_position(symbol, session)
+        pos_info = PositionInfo(symbol=symbol, cost=pos.cost, qty=pos.qty) if pos else None
+        signal = engine.evaluate(
+            symbol,
+            name=quote.name if quote else "",
+            kline_df=df,
+            position=pos_info,
+            quote_price=quote.price if quote else None,
+            quote_high=quote.high if quote else None,
+            quote_low=quote.low if quote else None,
+        )
+        return {
+            "symbol": symbol,
+            "name": quote.name if quote else "",
+            "price": round(quote.price, 2) if quote else 0.0,
+            "signal": signal.to_dict() if signal else None,
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {"symbol": symbol, "name": "", "price": 0.0, "signal": None, "error": str(exc)[:80]}
+
+
 @router.post("/signals/evaluate/{symbol}")
 async def evaluate_symbol(symbol: str, session: Session = Depends(get_session)) -> dict:
     """手动评估一只票: 取K线+行情 -> 生成信号(不落库, 供计划生成用)."""
-    df = await data_source_manager.get_kline(symbol, "daily", 120)
-    if df is None or df.empty:
+    data = await _evaluate_one(symbol, session)
+    if data.get("error") == "无行情数据":
         return JSONResponse(status_code=404, content={"code": 1, "msg": "无行情数据", "data": None})
-    quote = None
-    quotes = await data_source_manager.get_realtime_quote([symbol])
-    if quotes:
-        quote = quotes[0]
-    pos = position_manager.get_position(symbol, session)
-    pos_info = PositionInfo(symbol=symbol, cost=pos.cost, qty=pos.qty) if pos else None
-    signal = engine.evaluate(
-        symbol,
-        name=quote.name if quote else "",
-        kline_df=df,
-        position=pos_info,
-        quote_price=quote.price if quote else None,
-        quote_high=quote.high if quote else None,
-        quote_low=quote.low if quote else None,
-    )
-    if signal is None:
-        return {"code": 0, "msg": "ok", "data": {"symbol": symbol, "signal": None}}
-    return {"code": 0, "msg": "ok", "data": {"symbol": symbol, "signal": signal.to_dict()}}
+    return {"code": 0, "msg": "ok", "data": data}
+
+
+@router.post("/signals/evaluate-batch")
+async def evaluate_batch(body: EvaluateBatchBody, session: Session = Depends(get_session)) -> dict:
+    """批量评估多只(持仓一键分析): 并发取数, 返回每只的结果列表."""
+    results = await _evaluate_many(body.symbols, session)
+    return {"code": 0, "msg": "ok", "data": results}
+
+
+async def _evaluate_many(symbols: list[str], session: Session) -> list[dict]:
+    import asyncio
+
+    sem = asyncio.Semaphore(5)  # 并发 5, 防止对数据源限流
+
+    async def guarded(sym: str) -> dict:
+        async with sem:
+            return await _evaluate_one(sym, session)
+
+    return list(await asyncio.gather(*(guarded(s) for s in symbols)))
