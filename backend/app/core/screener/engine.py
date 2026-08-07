@@ -25,6 +25,14 @@ logger = logging.getLogger(__name__)
 # 流动性过滤: 日均成交额下限(元)
 MIN_DAILY_AMOUNT = 50_000_000  # 5000 万
 
+# 板块 -> 代码前缀(扫描范围过滤)
+BOARD_PREFIXES: dict[str, tuple[str, ...]] = {
+    "main": ("600", "601", "603", "605", "000", "001", "002", "003"),  # 沪深主板
+    "chinext": ("300", "301", "302"),  # 创业板
+    "star": ("688", "689"),            # 科创板
+    "bj": ("43", "83", "87", "88", "92"),  # 北交所
+}
+
 
 def _f(x: Any, default: float = 0.0) -> float:
     try:
@@ -100,9 +108,10 @@ class StockScreener:
     def _cfg(self) -> dict:
         return config_manager.get()
 
-    async def _resolve_symbols(self, market: str) -> list[tuple[str, str]]:
+    async def _resolve_symbols(self, market: str) -> list[tuple[str, str, str]]:
         """确定扫描池: 本地 stocks 表缓存优先, 其次在线拉取(成功则回写缓存).
 
+        返回 [(symbol, name, industry)].
         东财 clist 全量列表接口存在连接级风控, 本地缓存保证列表获取不依赖每次在线调用.
         """
         from sqlmodel import select
@@ -112,22 +121,25 @@ class StockScreener:
 
         # 1. 本地缓存
         with db.session_scope() as s:
-            stmt = select(Stock.symbol, Stock.name).order_by(Stock.symbol)
+            stmt = select(Stock.symbol, Stock.name, Stock.industry).order_by(Stock.symbol)
             rows = list(s.exec(stmt).all())
         if rows:
             logger.info("扫描池来自本地 stocks 缓存: %d 只", len(rows))
-            return [(r[0], r[1]) for r in rows]
+            return [(r[0], r[1], r[2] or "") for r in rows]
 
         # 2. 在线拉取 + 回写缓存
         stocks = await data_source_manager.get_stock_list(market)
         if stocks:
             with db.session_scope() as s:
                 for st in stocks:
-                    if s.get(Stock, st.symbol) is None:
-                        s.add(Stock(symbol=st.symbol, name=st.name, market=st.market))
+                    row = s.get(Stock, st.symbol)
+                    if row is None:
+                        s.add(Stock(symbol=st.symbol, name=st.name, market=st.market, industry=st.industry))
+                    elif not row.industry and st.industry:
+                        row.industry = st.industry  # 补全行业
                 s.commit()
             logger.info("扫描池在线拉取: %d 只(已写入 stocks 缓存)", len(stocks))
-            return [(st.symbol, st.name) for st in stocks]
+            return [(st.symbol, st.name, st.industry or "") for st in stocks]
 
         # 3. 降级: 自选 + 持仓(东财列表接口风控时仍有池可扫)
         from app.models.models import Position, Watchlist
@@ -135,27 +147,50 @@ class StockScreener:
         with db.session_scope() as s:
             wl = [(r.symbol, r.name) for r in s.exec(select(Watchlist)).all()]
             pos = [(r.symbol, r.name) for r in s.exec(select(Position).where(Position.status == "holding")).all()]
-        combined = {sym: name for sym, name in wl + pos}
+        combined = {sym: (name, "") for sym, name in wl + pos}
         if combined:
             logger.warning("在线股票列表不可用(东财风控?), 降级为自选+持仓池: %d 只", len(combined))
-            return list(combined.items())
+            return [(sym, info[0], info[1]) for sym, info in combined.items()]
         return []
+
+    @staticmethod
+    def _match_board(symbol: str, board: str) -> bool:
+        prefixes = BOARD_PREFIXES.get(board)
+        return bool(prefixes) and symbol.startswith(prefixes)
 
     async def scan(
         self,
         symbols: list[str] | None = None,
         market: str = "all",
+        board: str | None = None,   # main/chinext/star/bj
+        industry: str | None = None,  # 申万行业名(包含匹配)
         top_n: int = 30,
         min_amount: float = MIN_DAILY_AMOUNT,
         progress_cb: Callable[[int, int], None] | None = None,
         count: int = 80,
     ) -> list[dict[str, Any]]:
-        """扫描并排名. symbols 为空时用本地缓存/在线列表(默认过滤 ST)."""
+        """扫描并排名. symbols 为空时用本地缓存/在线列表(默认过滤 ST), 支持板块/行业缩小范围."""
         cfg = self._cfg()
-        if symbols is None:
+        pool: list[tuple[str, str, str]] = []
+        if symbols is not None:
+            pool = [(sym, "", "") for sym in symbols]
+        else:
             pool = await self._resolve_symbols(market)
-            # 过滤 ST / *ST / 退市
-            symbols = [sym for sym, name in pool if "ST" not in name.upper() and "退" not in name]
+
+        # 过滤 ST / *ST / 退市
+        filtered = [(sym, name, ind) for sym, name, ind in pool
+                    if "ST" not in name.upper() and "退" not in name]
+        # 板块过滤(代码前缀)
+        if board and board in BOARD_PREFIXES:
+            filtered = [(sym, name, ind) for sym, name, ind in filtered if self._match_board(sym, board)]
+        # 行业过滤(申万行业, 包含匹配)
+        if industry:
+            kw = industry.strip().lower()
+            filtered = [(sym, name, ind) for sym, name, ind in filtered if kw in (ind or "").lower()]
+            if not filtered:
+                logger.warning("行业过滤后为空: %s(本地行业数据可能未就绪, 需东财列表成功拉取一次)", industry)
+
+        symbols = [sym for sym, _, _ in filtered]
         if not symbols:
             return []
 

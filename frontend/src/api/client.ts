@@ -67,8 +67,12 @@ export const api = {
   riskReset: () => request<RiskStatus>('/risk/reset', { method: 'POST' }),
 
   // 选股
-  screenerRun: (market = 'all', topN = 30) =>
-    request<{ task_id: string }>(`/screener/run?market=${market}&top_n=${topN}`, { method: 'POST' }),
+  screenerRun: (market = 'all', topN = 30, board?: string, industry?: string) => {
+    const q = new URLSearchParams({ market, top_n: String(topN) })
+    if (board) q.set('board', board)
+    if (industry) q.set('industry', industry)
+    return request<{ task_id: string }>(`/screener/run?${q.toString()}`, { method: 'POST' })
+  },
   screenerResult: (taskId: string) => request<ScreenerTask>(`/screener/result?task_id=${taskId}`),
   screenerLatest: () => request<ScreenerTask | null>('/screener/result/latest'),
 

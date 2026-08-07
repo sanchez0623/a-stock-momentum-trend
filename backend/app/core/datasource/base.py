@@ -48,6 +48,7 @@ class StockInfo:
     symbol: str
     name: str
     market: str = ""  # sh / sz / bj
+    industry: str = ""  # 申万行业(东财 f100, 部分源可能为空)
 
 
 def normalize_kline(df: pd.DataFrame) -> pd.DataFrame:

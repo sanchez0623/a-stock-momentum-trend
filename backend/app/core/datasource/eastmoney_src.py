@@ -201,7 +201,7 @@ class EastmoneySource(DataSourceInterface):
         while page <= 200:
             params = {
                 "pn": page, "pz": 100, "po": 1, "np": 1, "fltt": 2, "invt": 2,
-                "fid": "f12", "fs": fs, "fields": "f12,f13,f14",
+                "fid": "f12", "fs": fs, "fields": "f12,f13,f14,f100",  # f100=申万行业
             }
             data = await self._get("https://push2.eastmoney.com/api/qt/clist/get", params)
             body = data.get("data") or {}
@@ -213,7 +213,10 @@ class EastmoneySource(DataSourceInterface):
                 if not symbol:
                     continue
                 mkt = "sh" if it.get("f13") == 1 else ("bj" if symbol.startswith(("4", "8")) else "sz")
-                out.append(StockInfo(symbol=symbol, name=str(it.get("f14", "")), market=mkt))
+                out.append(StockInfo(
+                    symbol=symbol, name=str(it.get("f14", "")), market=mkt,
+                    industry=str(it.get("f100", "") or ""),
+                ))
             total = int(body.get("total", 0))
             if page * 100 >= total:
                 break

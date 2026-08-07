@@ -23,9 +23,11 @@ class WatchlistBody(BaseModel):
 @router.post("/screener/run")
 async def run_screener(
     market: str = Query("all", pattern="^(all|sh|sz|bj)$"),
+    board: str | None = Query(None, pattern="^(main|chinext|star|bj)$", description="板块: main主板/chinext创业板/star科创板/bj北交所"),
+    industry: str | None = Query(None, description="申万行业名(包含匹配, 需本地行业数据)"),
     top_n: int = Query(30, ge=5, le=200),
 ) -> dict:
-    """触发全市场扫描(异步, 返回 task_id)."""
+    """触发扫描(异步, 返回 task_id). 支持 market + board + industry 组合缩小范围."""
     task_id = scan_tasks.create(market, top_n)
     scan_tasks.update(task_id, status="running")
 
@@ -33,6 +35,8 @@ async def run_screener(
         try:
             result = await screener.scan(
                 market=market,
+                board=board,
+                industry=industry,
                 top_n=top_n,
                 progress_cb=lambda done, total: scan_tasks.progress(task_id, done, total),
             )

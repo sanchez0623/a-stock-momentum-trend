@@ -8,6 +8,8 @@ export default function Screener() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [market, setMarket] = useState('all')
+  const [board, setBoard] = useState('')
+  const [industry, setIndustry] = useState('')
   const [running, setRunning] = useState(false)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
@@ -28,7 +30,7 @@ export default function Screener() {
     setRunning(true)
     setError('')
     try {
-      const { task_id } = await api.screenerRun(market, 30)
+      const { task_id } = await api.screenerRun(market, 30, board || undefined, industry.trim() || undefined)
       stopPoll()
       pollRef.current = setInterval(async () => {
         try {
@@ -69,10 +71,32 @@ export default function Screener() {
               <option value="bj">北交所</option>
             </select>
           </label>
+          <label style={{ fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}>
+            板块
+            <select value={board} onChange={(e) => setBoard(e.target.value)} style={{ padding: '7px 10px', border: '1px solid #d0d3d9', borderRadius: 6, fontSize: 13 }}>
+              <option value="">不限</option>
+              <option value="main">主板</option>
+              <option value="chinext">创业板</option>
+              <option value="star">科创板</option>
+              <option value="bj">北交所</option>
+            </select>
+          </label>
+          <label style={{ fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}>
+            申万行业
+            <input
+              value={industry}
+              onChange={(e) => setIndustry(e.target.value)}
+              placeholder="如 半导体"
+              style={{ padding: '7px 10px', border: '1px solid #d0d3d9', borderRadius: 6, fontSize: 13, width: 110 }}
+            />
+          </label>
           <Button onClick={run} disabled={scanning}>
             {scanning ? '扫描中...' : '开始扫描'}
           </Button>
           {task && <span style={{ fontSize: 12, color: '#888' }}>最近任务: {task.status} · {task.done}/{task.total} · {task.progress}%</span>}
+        </div>
+        <div style={{ fontSize: 11, color: '#999', marginTop: 8 }}>
+          市场/板块/行业可组合缩小范围(如 科创板+半导体). 行业需本地股票列表含行业数据(东财列表成功拉取一次后自动填充).
         </div>
         {task?.error && <div style={{ color: '#ea580c', fontSize: 12, marginTop: 8 }}>任务异常: {task.error}</div>}
       </Card>
