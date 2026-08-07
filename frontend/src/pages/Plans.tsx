@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api/client'
 import type { PlanRecord } from '../api/client'
-import { Button, Card, ErrorBox, Field, Loading } from '../components/ui'
+import { Button, Card, ErrorBox, Field, Loading, toast } from '../components/ui'
 import SymbolInput from '../components/SymbolInput'
 
 export default function Plans() {
@@ -26,17 +26,24 @@ export default function Plans() {
       await api.generatePlan(symbol.trim(), name)
       setSymbol('')
       setName('')
+      toast.success(`已生成 ${symbol.trim()} 的交易计划`)
       refresh()
     } catch (e) {
       setError(String((e as Error).message))
+      toast.error(String((e as Error).message))
     } finally {
       setGenerating(false)
     }
   }
 
   const mark = async (id: number, status: 'done' | 'ignored') => {
-    await api.planStatus(id, status)
-    refresh()
+    try {
+      await api.planStatus(id, status)
+      toast.success(status === 'done' ? '已标记执行' : '已标记忽略')
+      refresh()
+    } catch (e) {
+      toast.error(String((e as Error).message))
+    }
   }
 
   if (loading) return <Loading />

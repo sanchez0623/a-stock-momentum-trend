@@ -1,12 +1,20 @@
-// 共享 UI 基础组件(轻量自建, 控制体积)
+// 共享 UI 基础组件(基于 Ant Design 6, API 与旧版自建组件兼容)
 import type { ReactNode } from 'react'
+import { Alert, Button as AntdButton, Card as AntdCard, message as antdMessage, Spin, Tag as AntdTag } from 'antd'
 
-export function Card({ title, children, style }: { title?: ReactNode; children: ReactNode; style?: React.CSSProperties }) {
+// 卡片: antd 圆角 + 浅边框 + 悬浮阴影, 现代化观感
+export function Card({ title, children, style, extra }: {
+  title?: ReactNode; children: ReactNode; style?: React.CSSProperties; extra?: ReactNode
+}) {
   return (
-    <div style={{ border: '1px solid #e5e6eb', borderRadius: 10, padding: '16px 18px', background: '#fff', ...style }}>
-      {title !== undefined && <div style={{ fontWeight: 600, marginBottom: 12, fontSize: 14 }}>{title}</div>}
+    <AntdCard
+      title={title !== undefined ? title : undefined}
+      extra={extra}
+      style={{ borderRadius: 10, ...style }}
+      styles={{ header: { fontWeight: 600, fontSize: 14 } }}
+    >
       {children}
-    </div>
+    </AntdCard>
   )
 }
 
@@ -20,43 +28,66 @@ export function Field({ label, children }: { label: string; children: ReactNode 
 }
 
 export const inputStyle: React.CSSProperties = {
-  padding: '7px 10px', border: '1px solid #d0d3d9', borderRadius: 6, fontSize: 13, width: '100%',
-  boxSizing: 'border-box',
+  padding: '6px 10px', border: '1px solid #d9d9d9', borderRadius: 6, fontSize: 13, width: '100%',
+  boxSizing: 'border-box', outline: 'none', transition: 'border-color 0.2s',
 }
 
-export function Button({ children, onClick, kind = 'primary', disabled, style }: {
-  children: ReactNode; onClick?: () => void; kind?: 'primary' | 'ghost' | 'danger'; disabled?: boolean; style?: React.CSSProperties
+// 按钮: antd 自带 hover/active 动效与焦点态
+const KIND_MAP: Record<string, 'primary' | 'default' | 'dashed'> = {
+  primary: 'primary',
+  ghost: 'default',
+  danger: 'primary',   // v6 无 danger type, 由 danger 属性表达
+  default: 'default',
+  dashed: 'dashed',
+}
+
+export function Button({ children, onClick, kind = 'primary', disabled, style, type, danger }: {
+  children: ReactNode
+  onClick?: () => void
+  kind?: 'primary' | 'ghost' | 'danger' | 'default' | 'dashed'
+  disabled?: boolean
+  style?: React.CSSProperties
+  type?: 'button' | 'submit'
+  danger?: boolean
 }) {
-  const colors = {
-    primary: { background: '#2563eb', color: '#fff', border: '1px solid #2563eb' },
-    ghost: { background: '#fff', color: '#333', border: '1px solid #d0d3d9' },
-    danger: { background: '#dc2626', color: '#fff', border: '1px solid #dc2626' },
-  }[kind]
   return (
-    <button
+    <AntdButton
+      type={KIND_MAP[kind] ?? 'primary'}
+      danger={danger || kind === 'danger'}
       onClick={onClick}
       disabled={disabled}
-      style={{ padding: '7px 14px', borderRadius: 6, fontSize: 13, cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.5 : 1, ...colors, ...style }}
+      style={{ fontSize: 13, ...style }}
+      htmlType={type}
     >
       {children}
-    </button>
+    </AntdButton>
   )
 }
 
+// 标签: antd 支持自定义色
 export function Tag({ children, color }: { children: ReactNode; color: string }) {
-  return (
-    <span style={{ display: 'inline-block', padding: '2px 8px', borderRadius: 10, fontSize: 12, background: color + '1a', color, fontWeight: 500 }}>
-      {children}
-    </span>
-  )
+  return <AntdTag color={color} style={{ borderRadius: 4, marginInlineEnd: 0 }}>{children}</AntdTag>
 }
 
 export function Loading({ text = '加载中...' }: { text?: string }) {
-  return <div style={{ color: '#888', padding: 24, textAlign: 'center', fontSize: 13 }}>{text}</div>
+  return (
+    <div style={{ padding: 48, textAlign: 'center', color: '#999' }}>
+      <Spin />
+      <div style={{ marginTop: 8, fontSize: 13 }}>{text}</div>
+    </div>
+  )
 }
 
 export function ErrorBox({ message }: { message: string }) {
-  return <div style={{ color: '#dc2626', padding: 12, fontSize: 13, border: '1px solid #fecaca', background: '#fef2f2', borderRadius: 8, margin: '8px 0' }}>{message}</div>
+  return <Alert type="error" message={message} showIcon style={{ marginBottom: 12, borderRadius: 8 }} />
+}
+
+// 全局弹窗提示(替代仅页面顶部的弱错误提示)
+export const toast = {
+  success: (m: string) => antdMessage.success(m),
+  error: (m: string) => antdMessage.error(m),
+  info: (m: string) => antdMessage.info(m),
+  warning: (m: string) => antdMessage.warning(m),
 }
 
 // 信号类型 -> 标签颜色/文案

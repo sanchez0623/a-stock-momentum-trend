@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../api/client'
 import type { ScreenerTask } from '../api/client'
-import { Button, Card, ErrorBox, Loading, Tag } from '../components/ui'
+import { Button, Card, ErrorBox, Loading, Tag, toast } from '../components/ui'
 
 export default function Screener() {
   const [task, setTask] = useState<ScreenerTask | null>(null)
@@ -31,6 +31,7 @@ export default function Screener() {
     setError('')
     try {
       const { task_id } = await api.screenerRun(market, 30, board || undefined, industry.trim() || undefined)
+      toast.info('扫描已启动, 完成后自动刷新结果')
       stopPoll()
       pollRef.current = setInterval(async () => {
         try {
@@ -39,6 +40,7 @@ export default function Screener() {
           if (t.status === 'done' || t.status === 'failed') {
             stopPoll()
             setRunning(false)
+            if (t.status === 'failed') toast.error(t.error || '扫描失败')
           }
         } catch {
           stopPoll()
@@ -47,6 +49,7 @@ export default function Screener() {
       }, 3000)
     } catch (e) {
       setError(String((e as Error).message))
+      toast.error(String((e as Error).message))
       setRunning(false)
     }
   }

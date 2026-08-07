@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { api } from '../api/client'
 import type { Portfolio, WatchlistItem } from '../api/client'
 import { colorByPct, fmtPct } from '../const/colors'
-import { Button, Card, ErrorBox, Field, Loading, Tag, inputStyle } from '../components/ui'
+import { Button, Card, ErrorBox, Field, Loading, Tag, inputStyle, toast } from '../components/ui'
 import SymbolInput from '../components/SymbolInput'
 
 export default function Watchlist() {
@@ -35,15 +35,22 @@ export default function Watchlist() {
     try {
       await api.addWatch(watchSymbol.trim())
       setWatchSymbol('')
+      toast.success('已加入自选')
       refresh()
     } catch (e) {
       setError(String((e as Error).message))
+      toast.error(String((e as Error).message))
     }
   }
 
   const removeWatch = async (symbol: string) => {
-    await api.removeWatch(symbol)
-    refresh()
+    try {
+      await api.removeWatch(symbol)
+      toast.info(`已移除 ${symbol}`)
+      refresh()
+    } catch (e) {
+      toast.error(String((e as Error).message))
+    }
   }
 
   const addPosition = async () => {
@@ -53,9 +60,11 @@ export default function Watchlist() {
         qty: Number(posQty), price: Number(posPrice), reason: '界面录入',
       })
       setPosSymbol(''); setPosName(''); setPosPrice('')
+      toast.success(`已录入持仓 ${posSymbol.trim()}`)
       refresh()
     } catch (e) {
       setError(String((e as Error).message))
+      toast.error(String((e as Error).message))
     }
   }
 

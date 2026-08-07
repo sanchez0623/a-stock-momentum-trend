@@ -1,5 +1,7 @@
 import { lazy, Suspense, useEffect, useState } from 'react'
 import { NavLink, Navigate, Route, Routes } from 'react-router-dom'
+import { App as AntdApp, ConfigProvider } from 'antd'
+import zhCN from 'antd/locale/zh_CN'
 import { api } from './api/client'
 
 // 页面按需加载(方案: React.lazy + Suspense)
@@ -45,7 +47,19 @@ export default function App() {
   }, [])
 
   return (
-    <div style={{ display: 'flex', minHeight: '100vh', fontFamily: 'system-ui, "Microsoft YaHei", sans-serif' }}>
+    <ConfigProvider
+      locale={zhCN}
+      theme={{
+        token: {
+          colorPrimary: '#d32029',        // A股红: 涨/主操作色
+          borderRadius: 6,
+          fontSize: 13,
+          colorLink: '#d32029',
+        },
+      }}
+    >
+      <AntdApp>
+        <div style={{ display: 'flex', minHeight: '100vh', fontFamily: 'system-ui, "Microsoft YaHei", sans-serif' }}>
       {/* 左侧导航 */}
       <nav style={{ width: 180, borderRight: '1px solid #e5e6eb', padding: '16px 8px', flexShrink: 0 }}>
         <div style={{ fontWeight: 700, padding: '0 8px 16px', fontSize: 15 }}>Momentum Trader</div>
@@ -88,6 +102,8 @@ export default function App() {
         </Suspense>
         {error && <div style={{ color: '#c00', marginTop: 16, fontSize: 13 }}>后端未连接: {error}</div>}
       </main>
-    </div>
+      </div>
+      </AntdApp>
+    </ConfigProvider>
   )
 }

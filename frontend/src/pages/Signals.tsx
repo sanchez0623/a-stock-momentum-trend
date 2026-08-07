@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../api/client'
 import type { PositionItem, Signal, SignalRecord } from '../api/client'
-import { Button, Card, ErrorBox, Field, Loading, Tag, inputStyle } from '../components/ui'
+import { Button, Card, ErrorBox, Field, Loading, Tag, inputStyle, toast } from '../components/ui'
 import { SIGNAL_META } from '../components/ui'
 import { fmtPct } from '../const/colors'
 import SymbolInput from '../components/SymbolInput'
@@ -44,6 +44,7 @@ export default function Signals() {
       setResults(await api.evaluateBatch(codes))
     } catch (e) {
       setError(String((e as Error).message))
+      toast.error(String((e as Error).message))
     } finally {
       setBusy(false)
     }
@@ -66,6 +67,7 @@ export default function Signals() {
       setResults(await api.evaluateBatch(positions.map((p) => p.symbol)))
     } catch (e) {
       setError(String((e as Error).message))
+      toast.error(String((e as Error).message))
     } finally {
       setBusy(false)
     }
@@ -77,9 +79,11 @@ export default function Signals() {
     setError('')
     try {
       await api.generatePlan(symbol, nm)
+      toast.success(`已生成 ${symbol} 的交易计划, 已跳转`)
       navigate('/plans')
     } catch (e) {
       setError(String((e as Error).message))
+      toast.error(String((e as Error).message))
       setBusy(false)
     }
   }

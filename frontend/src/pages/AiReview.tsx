@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../api/client'
 import type { AiReviewConfig, AiReviewRecord, AiReviewTask } from '../api/client'
-import { Button, Card, ErrorBox, Field, Loading, Tag, inputStyle } from '../components/ui'
+import { Button, Card, ErrorBox, Field, Loading, Tag, inputStyle, toast } from '../components/ui'
 
 const LEVEL_META: Record<string, { label: string; color: string }> = {
   high: { label: '严重', color: '#dc2626' },
@@ -57,14 +57,17 @@ export default function AiReview() {
             stopPoll(); setRunning(false)
             setCurrent(t.review ?? null)
             setHistory(await api.aiReviewHistory())
+            toast.success('复盘完成')
           } else if (t.status === 'failed') {
             stopPoll(); setRunning(false)
             setError(t.error || '复盘失败')
+            toast.error(t.error || '复盘失败')
           }
         } catch { stopPoll(); setRunning(false) }
       }, 2000)
     } catch (e) {
       setError(String((e as Error).message)); setRunning(false)
+      toast.error(String((e as Error).message))
     }
   }
 
@@ -79,9 +82,11 @@ export default function AiReview() {
       })
       setCfgSaved('已保存')
       setCfgForm((f) => ({ ...f, api_key: '' }))
+      toast.success('LLM 配置已保存')
       await loadConfig()
     } catch (e) {
       setError(String((e as Error).message))
+      toast.error(String((e as Error).message))
     }
   }
 

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { api } from '../api/client'
 import type { PositionItem, TradeRecord } from '../api/client'
 import { colorByPct, fmtPct } from '../const/colors'
-import { Button, Card, ErrorBox, Field, Loading, inputStyle } from '../components/ui'
+import { Button, Card, ErrorBox, Field, Loading, inputStyle, toast } from '../components/ui'
 
 export default function Trades() {
   const [trades, setTrades] = useState<TradeRecord[]>([])
@@ -39,13 +39,16 @@ export default function Trades() {
     try {
       if (opMode === 'close') {
         await api.closePosition(opSymbol.trim(), Number(opPrice))
+        toast.success(`已清仓 ${opSymbol.trim()}`)
       } else {
         await api.reducePosition(opSymbol.trim(), Number(opQty || 0), Number(opPrice))
+        toast.success(`已减仓 ${opSymbol.trim()} ${opQty || 0} 股`)
       }
       setOpSymbol(''); setOpPrice(''); setOpQty('')
       refresh()
     } catch (e) {
       setError(String((e as Error).message))
+      toast.error(String((e as Error).message))
     }
   }
 
