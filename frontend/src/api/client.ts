@@ -97,6 +97,19 @@ export const api = {
   statsMonthly: () => request<{ months: MonthStat[] }>('/stats/monthly-heatmap'),
   statsSignals: () => request<{ items: SignalDistItem[] }>('/stats/signal-distribution'),
   statsScores: () => request<{ items: TradeScore[]; health: number }>('/stats/scores'),
+
+  // ---------------------------------------------------------------- 四期: AI 复盘
+  aiReviewRun: (scope = 'week') =>
+    request<{ task_id: string }>('/ai-review/run', { method: 'POST', body: JSON.stringify({ scope }) }),
+  aiReviewResult: (taskId: string) => request<AiReviewTask>(`/ai-review/result?task_id=${taskId}`),
+  aiReviewHistory: () => request<AiReviewRecord[]>('/ai-review/history'),
+  aiReviewSuggestion: (reviewId: number, index: number, status: 'accepted' | 'rejected') =>
+    request<{ suggestions: AiReviewSuggestion[] }>('/ai-review/suggestion', {
+      method: 'POST', body: JSON.stringify({ review_id: reviewId, index, status }),
+    }),
+  aiReviewConfig: () => request<AiReviewConfig>('/ai-review/config'),
+  aiReviewSaveConfig: (cfg: { base_url?: string; api_key?: string; model?: string; enabled?: boolean }) =>
+    request<AiReviewConfig>('/ai-review/config', { method: 'PUT', body: JSON.stringify(cfg) }),
 }
 
 export interface Quote {
@@ -313,4 +326,43 @@ export interface TradeScore {
   pnl_pct: number
   score: number
   comment: string
+}
+
+// ---------------------------------------------------------------- 四期: AI 复盘类型
+export interface AiReviewIssue {
+  code: string
+  level: string
+  title: string
+  detail: string
+  evidence: string
+}
+export interface AiReviewSuggestion {
+  text: string
+  status: string
+}
+export interface AiReviewRecord {
+  id: number
+  time: string
+  range: string
+  content: string
+  suggestions: AiReviewSuggestion[]
+  model: string
+  rule_result: {
+    issues: AiReviewIssue[]
+    stats: Record<string, number>
+  }
+}
+export interface AiReviewTask {
+  status: string
+  progress: number
+  review?: AiReviewRecord
+  error?: string
+}
+export interface AiReviewConfig {
+  provider: string
+  base_url: string
+  api_key: string
+  has_key: boolean
+  model: string
+  enabled: boolean
 }
