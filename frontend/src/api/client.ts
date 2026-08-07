@@ -42,8 +42,12 @@ export const api = {
   positionDetail: (symbol: string) => request<PositionDetail>(`/positions/${symbol}`),
 
   // 信号
-  signals: (symbol?: string, limit = 50) =>
-    request<SignalRecord[]>(`/signals${symbol ? `?symbol=${symbol}` : ''}&limit=${limit}`),
+  signals: (symbol?: string, limit = 50) => {
+    const q = new URLSearchParams()
+    if (symbol) q.set('symbol', symbol)
+    q.set('limit', String(limit))
+    return request<SignalRecord[]>(`/signals?${q.toString()}`)
+  },
   evaluateSignal: (symbol: string) => request<{ symbol: string; signal: Signal | null }>(`/signals/evaluate/${symbol}`, { method: 'POST' }),
 
   // 交易计划
