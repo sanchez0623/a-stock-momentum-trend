@@ -1,8 +1,10 @@
 import { lazy, Suspense, useEffect, useState } from 'react'
-import { NavLink, Navigate, Route, Routes } from 'react-router-dom'
-import { App as AntdApp, ConfigProvider } from 'antd'
-import zhCN from 'antd/locale/zh_CN'
+import { NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { AnimatePresence } from 'framer-motion'
 import { api } from './api/client'
+import { PageSkeleton, ToastHost } from './components/ui'
+import { PageTransition } from './components/PageTransition'
 
 // 页面按需加载(方案: React.lazy + Suspense)
 const Dashboard = lazy(() => import('./pages/Dashboard'))
@@ -14,6 +16,11 @@ const Trades = lazy(() => import('./pages/Trades'))
 const Review = lazy(() => import('./pages/Review'))
 const AiReview = lazy(() => import('./pages/AiReview'))
 const Settings = lazy(() => import('./pages/Settings'))
+
+// react-query 全局客户端(默认 15s 轮询由各页面 query 配置)
+const queryClient = new QueryClient({
+  defaultOptions: { queries: { retry: 1, refetchOnWindowFocus: false, staleTime: 10_000 } },
+})
 
 const NAV = [
   { to: '/dashboard', label: '仪表盘' },
@@ -27,83 +34,76 @@ const NAV = [
   { to: '/settings', label: '设置' },
 ]
 
-function Placeholder({ title }: { title: string }) {
+function Sidebar() {
   return (
-    <div style={{ padding: 48, textAlign: 'center', color: '#666' }}>
-      <h2>{title}</h2>
-      <p>该模块将在后续阶段实现(二期/三期/四期)。</p>
-    </div>
+    <aside className="shrink-0 border-b border-line px-2 py-2 md:w-[180px] md:border-b-0 md:border-r md:px-2 md:py-4">
+      <div className="hidden px-2 pb-4 text-[15px] font-bold text-ink md:block">Momentum Trader</div>
+      <nav className="flex gap-0.5 overflow-x-auto md:flex-col">
+        {NAV.map((n) => (
+          <NavLink
+            key={n.to}
+            to={n.to}
+            className={({ isActive }) =>
+              twNav(isActive)
+            }
+          >
+            {n.label}
+          </NavLink>
+        ))}
+      </nav>
+    </aside>
   )
 }
 
-// 保留占位组件导出, 供后续阶段页面复用
-export { Placeholder }
+// 导航项样式: 激活态蓝底白字; 移动端横向滚动, 桌面纵向
+function twNav(isActive: boolean) {
+  return `block whitespace-nowrap rounded px-3 py-2 text-[14px] no-underline transition-colors ${
+    isActive ? 'bg-link text-white' : 'text-ink hover:bg-divider'
+  }`
+}
 
-export default function App() {
+function AppShell() {
   const [error, setError] = useState('')
+  const location = useLocation()
 
   useEffect(() => {
     api.health().catch((e) => setError(String(e.message || e)))
   }, [])
 
   return (
-    <ConfigProvider
-      locale={zhCN}
-      theme={{
-        token: {
-          colorPrimary: '#d32029',        // A股红: 涨/主操作色
-          borderRadius: 6,
-          fontSize: 13,
-          colorLink: '#d32029',
-        },
-      }}
-    >
-      <AntdApp>
-        <div style={{ display: 'flex', minHeight: '100vh', fontFamily: 'system-ui, "Microsoft YaHei", sans-serif' }}>
-      {/* 左侧导航 */}
-      <nav style={{ width: 180, borderRight: '1px solid #e5e6eb', padding: '16px 8px', flexShrink: 0 }}>
-        <div style={{ fontWeight: 700, padding: '0 8px 16px', fontSize: 15 }}>Momentum Trader</div>
-        {NAV.map((n) => (
-          <NavLink
-            key={n.to}
-            to={n.to}
-            style={({ isActive }) => ({
-              display: 'block',
-              padding: '8px 12px',
-              marginBottom: 2,
-              borderRadius: 6,
-              textDecoration: 'none',
-              fontSize: 14,
-              color: isActive ? '#fff' : '#333',
-              background: isActive ? '#2563eb' : 'transparent',
-            })}
-          >
-            {n.label}
-          </NavLink>
-        ))}
-      </nav>
-
-      {/* 主内容区 */}
-      <main style={{ flex: 1, padding: 24 }}>
-        <Suspense fallback={<div style={{ padding: 48, color: '#888' }}>加载中...</div>}>
-          <Routes>
-            <Route path="/" element={<Navigate to="/dashboard" replace />} />
-            <Route path="/dashboard" element={<Dashboard />} />
-            <Route path="/screener" element={<Screener />} />
-            <Route path="/watchlist" element={<Watchlist />} />
-            <Route path="/signals" element={<Signals />} />
-            <Route path="/plans" element={<Plans />} />
-            <Route path="/trades" element={<Trades />} />
-            <Route path="/review" element={<Review />} />
-            <Route path="/ai-review" element={<AiReview />} />
-            <Route path="/settings" element={<Settings />} />
-            <Route path="*" element={<Navigate to="/dashboard" replace />} />
-          </Routes>
+    <div className="flex min-h-screen flex-col font-sans text-ink md:flex-row">
+      <Sidebar />
+      <main className="min-w-0 flex-1 p-4 md:p-6">
+        <Suspense fallback={<PageSkeleton />}>
+          <AnimatePresence mode="wait">
+            <PageTransition key={location.pathname}>
+              <Routes location={location}>
+                <Route path="/" element={<Navigate to="/dashboard" replace />} />
+                <Route path="/dashboard" element={<Dashboard />} />
+                <Route path="/screener" element={<Screener />} />
+                <Route path="/watchlist" element={<Watchlist />} />
+                <Route path="/signals" element={<Signals />} />
+                <Route path="/plans" element={<Plans />} />
+                <Route path="/trades" element={<Trades />} />
+                <Route path="/review" element={<Review />} />
+                <Route path="/ai-review" element={<AiReview />} />
+                <Route path="/settings" element={<Settings />} />
+                <Route path="*" element={<Navigate to="/dashboard" replace />} />
+              </Routes>
+            </PageTransition>
+          </AnimatePresence>
         </Suspense>
-        {error && <div style={{ color: '#c00', marginTop: 16, fontSize: 13 }}>后端未连接: {error}</div>}
+        {error && <div className="mt-4 text-[13px] text-rise">后端未连接: {error}</div>}
       </main>
-      </div>
-      </AntdApp>
-    </ConfigProvider>
+    </div>
+  )
+}
+
+export default function App() {
+  return (
+    <QueryClientProvider client={queryClient}>
+      <AppShell />
+      <ToastHost />
+    </QueryClientProvider>
   )
 }

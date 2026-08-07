@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react'
 import { api } from '../api/client'
 import type { PositionItem, TradeRecord } from '../api/client'
 import { colorByPct, fmtPct } from '../const/colors'
-import { Button, Card, ErrorBox, Field, Loading, inputStyle, toast } from '../components/ui'
+import { Button, Card, ErrorBox, EmptyState, Field, Loading, inputStyle, toast } from '../components/ui'
+import { cn } from '../components/ui'
 
 export default function Trades() {
   const [trades, setTrades] = useState<TradeRecord[]>([])
@@ -56,54 +57,54 @@ export default function Trades() {
 
   return (
     <div>
-      <h1 style={{ fontSize: 20, marginBottom: 16 }}>交易日志</h1>
+      <h1 className="mb-4 text-[20px] font-semibold">交易日志</h1>
       {error && <ErrorBox message={error} />}
 
-      <div style={{ display: 'flex', gap: 12, marginBottom: 16, alignItems: 'center' }}>
+      <div className="mb-4 flex items-center gap-3">
         <input style={{ ...inputStyle, width: 120 }} value={filterSymbol} onChange={(e) => setFilterSymbol(e.target.value)} placeholder="代码筛选" />
-        <select style={inputStyle} value={filterAction} onChange={(e) => setFilterAction(e.target.value)}>
+        <select style={inputStyle} value={filterAction} onChange={(e) => setFilterAction(e.target.value)} className="w-28">
           <option value="">全部方向</option>
           <option value="buy">买入</option>
           <option value="sell">卖出</option>
         </select>
-        <span style={{ fontSize: 13, color: '#888' }}>共 {total} 条</span>
+        <span className="text-[13px] text-ink-muted">共 {total} 条</span>
         <Button kind="ghost" onClick={() => api.exportTrades()}>导出 CSV</Button>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 16 }}>
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[2fr_1fr]">
         {/* 左: 日志列表 */}
         <Card title="成交记录">
           {trades.length === 0 ? (
-            <div style={{ color: '#999', fontSize: 13 }}>暂无成交。到「自选与持仓」页录入持仓后,卖出会在此留痕。</div>
+            <EmptyState>暂无成交。到「自选与持仓」页录入持仓后,卖出会在此留痕。</EmptyState>
           ) : (
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            <table className="w-full border-collapse text-[13px]">
               <thead>
-                <tr style={{ color: '#888', textAlign: 'left' }}>
-                  <th style={thStyle}>时间</th>
-                  <th style={thStyle}>代码</th>
-                  <th style={thStyle}>方向</th>
-                  <th style={thStyle} align="right">价格</th>
-                  <th style={thStyle} align="right">数量</th>
-                  <th style={thStyle} align="right">盈亏</th>
-                  <th style={thStyle}>原因</th>
+                <tr className="text-left text-ink-muted">
+                  <th className="px-2 py-1.5 font-medium">时间</th>
+                  <th className="px-2 py-1.5 font-medium">代码</th>
+                  <th className="px-2 py-1.5 font-medium">方向</th>
+                  <th className="px-2 py-1.5 text-right font-medium">价格</th>
+                  <th className="px-2 py-1.5 text-right font-medium">数量</th>
+                  <th className="px-2 py-1.5 text-right font-medium">盈亏</th>
+                  <th className="px-2 py-1.5 font-medium">原因</th>
                 </tr>
               </thead>
               <tbody>
                 {trades.map((t) => (
-                  <tr key={t.id} style={{ borderTop: '1px solid #f0f1f3' }}>
-                    <td style={tdStyle}>{t.time.slice(5, 16)}</td>
-                    <td style={tdStyle}>{t.symbol} <span style={{ color: '#aaa' }}>{t.name}</span></td>
-                    <td style={tdStyle}>
-                      <span style={{ color: t.action === 'buy' ? '#dc2626' : '#16a34a', fontWeight: 600 }}>
+                  <tr key={t.id} className="border-t border-divider">
+                    <td className="px-2 py-[7px]">{t.time.slice(5, 16)}</td>
+                    <td className="px-2 py-[7px]">{t.symbol} <span className="text-ink-faint">{t.name}</span></td>
+                    <td className="px-2 py-[7px]">
+                      <span className={cn('font-semibold', t.action === 'buy' ? 'text-rise' : 'text-fall')}>
                         {t.action === 'buy' ? '买入' : '卖出'}
                       </span>
                     </td>
-                    <td style={{ ...tdStyle, textAlign: 'right' }}>{t.price.toFixed(2)}</td>
-                    <td style={{ ...tdStyle, textAlign: 'right' }}>{t.qty}</td>
-                    <td style={{ ...tdStyle, textAlign: 'right', color: colorByPct(t.pnl), fontWeight: 600 }}>
+                    <td className="px-2 py-[7px] text-right">{t.price.toFixed(2)}</td>
+                    <td className="px-2 py-[7px] text-right">{t.qty}</td>
+                    <td className={cn('px-2 py-[7px] text-right font-semibold', colorByPct(t.pnl))}>
                       {t.action === 'sell' ? (t.pnl >= 0 ? '+' : '') + t.pnl.toFixed(0) : '-'}
                     </td>
-                    <td style={{ ...tdStyle, color: '#888' }}>{t.reason || '-'}</td>
+                    <td className="px-2 py-[7px] text-ink-muted">{t.reason || '-'}</td>
                   </tr>
                 ))}
               </tbody>
@@ -112,7 +113,7 @@ export default function Trades() {
         </Card>
 
         {/* 右: 减仓/清仓 + 持仓提示 */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <div className="flex flex-col gap-4">
           <Card title="减仓 / 清仓">
             <Field label="持仓股票">
               <select style={inputStyle} value={opSymbol} onChange={(e) => { setOpSymbol(e.target.value); const p = positions.find((x) => x.symbol === e.target.value); if (p) setOpPrice(String(p.price)) }}>
@@ -132,23 +133,21 @@ export default function Trades() {
                 <input style={inputStyle} type="number" value={opQty} onChange={(e) => setOpQty(e.target.value)} placeholder="留 0 表示减到清仓" />
               </Field>
             )}
-            <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+            <div className="mt-1 flex gap-2">
               <Button kind="ghost" onClick={() => setOpMode('reduce')} style={{ flex: 1, ...(opMode === 'reduce' ? activeBtn : {}) }}>减仓</Button>
               <Button kind="danger" onClick={() => setOpMode('close')} style={{ flex: 1, ...(opMode === 'close' ? activeBtn : {}) }}>清仓</Button>
             </div>
-            <div style={{ marginTop: 10 }}>
+            <div className="mt-2.5">
               <Button onClick={doOperation} disabled={!opSymbol.trim() || !opPrice}>
                 {opMode === 'close' ? '确认清仓' : '确认减仓'}
               </Button>
             </div>
           </Card>
-          <div style={{ fontSize: 11, color: '#999' }}>卖出会在交易日志留痕并计算已实现盈亏;清仓后持仓消失。CSV 导出含全量记录(Excel 可直接打开)。</div>
+          <div className="text-[11px] text-ink-faint">卖出会在交易日志留痕并计算已实现盈亏;清仓后持仓消失。CSV 导出含全量记录(Excel 可直接打开)。</div>
         </div>
       </div>
     </div>
   )
 }
 
-const thStyle: React.CSSProperties = { padding: '6px 8px', fontWeight: 500 }
-const tdStyle: React.CSSProperties = { padding: '7px 8px' }
 const activeBtn: React.CSSProperties = { outline: '2px solid #2563eb', outlineOffset: 1 }

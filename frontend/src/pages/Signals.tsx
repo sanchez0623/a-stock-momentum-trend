@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../api/client'
 import type { PositionItem, Signal, SignalRecord } from '../api/client'
-import { Button, Card, ErrorBox, Field, Loading, Tag, inputStyle, toast } from '../components/ui'
+import { Button, Card, ErrorBox, EmptyState, Field, ListRow, Loading, Tag, inputStyle, toast } from '../components/ui'
 import { SIGNAL_META } from '../components/ui'
 import { fmtPct } from '../const/colors'
 import SymbolInput from '../components/SymbolInput'
@@ -92,14 +92,14 @@ export default function Signals() {
 
   return (
     <div>
-      <h1 style={{ fontSize: 20, marginBottom: 16 }}>信号中心</h1>
+      <h1 className="mb-4 text-[20px] font-semibold">信号中心</h1>
       {error && <ErrorBox message={error} />}
 
       {/* 操作区: 只负责输入与触发, 不展示结果 */}
       <Card title="信号分析(输入代码或选持仓, 有信号时点结果行「生成计划」直达交易计划)">
         {positions.length > 0 && (
-          <div style={{ marginBottom: 12, display: 'flex', gap: 8, alignItems: 'flex-end' }}>
-            <div style={{ flex: 1 }}>
+          <div className="mb-3 flex items-end gap-2">
+            <div className="flex-1">
               <Field label="从持仓选择">
                 <select
                   style={{ ...inputStyle, width: '100%' }}
@@ -120,47 +120,47 @@ export default function Signals() {
             </Button>
           </div>
         )}
-        <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
-          <div style={{ flex: 1 }}>
+        <div className="flex items-end gap-2">
+          <div className="flex-1">
             <Field label="股票代码(多个用逗号或空格分隔, 上限50)">
               <SymbolInput value={symbol} onChange={setSymbol} onNameFound={setName} onEnter={() => evaluate()} placeholder="如 300139,688079,688146" />
             </Field>
           </div>
-          {name && <div style={{ color: '#666', fontSize: 13, paddingBottom: 10 }}>{name}</div>}
+          {name && <div className="pb-2.5 text-[13px] text-ink-secondary">{name}</div>}
           <Button onClick={() => evaluate()} disabled={busy || !symbol.trim()}>{busy ? '分析中...' : '评估'}</Button>
         </div>
       </Card>
 
       {/* 结果区: 单个与批量统一列表 */}
-      <Card title={`分析结果${results ? `(${results.length})` : ''}`} style={{ marginTop: 12 }}>
+      <Card title={`分析结果${results ? `(${results.length})` : ''}`} className="mt-3">
         {!results ? (
-          <div style={{ color: '#999', fontSize: 13 }}>输入一个或多个代码(逗号/空格分隔)点「评估」, 或从持仓选择/一键分析。有信号时可点该行「生成计划」直达交易计划。</div>
+          <EmptyState>输入一个或多个代码(逗号/空格分隔)点「评估」, 或从持仓选择/一键分析。有信号时可点该行「生成计划」直达交易计划。</EmptyState>
         ) : results.length === 0 ? (
-          <div style={{ color: '#999', fontSize: 13 }}>无结果。</div>
+          <EmptyState>无结果。</EmptyState>
         ) : (
           results.map((r) => <ResultRow key={r.symbol} r={r} onGeneratePlan={generatePlan} busy={busy} />)
         )}
       </Card>
 
-      <Card title={`信号记录(${records.length})`} style={{ marginTop: 12 }}>
+      <Card title={`信号记录(${records.length})`} className="mt-3">
         {records.length === 0 ? (
-          <div style={{ color: '#999', fontSize: 13 }}>暂无历史信号记录。</div>
+          <EmptyState>暂无历史信号记录。</EmptyState>
         ) : (
           records.map((s) => {
             const meta = SIGNAL_META[s.type] ?? { label: s.type, color: '#64748b' }
             return (
-              <div key={s.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 0', borderBottom: '1px solid #f0f1f3', fontSize: 13 }}>
-                <span style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+              <ListRow key={s.id} className="py-2.5">
+                <span className="flex items-center gap-2.5">
                   <Tag color={meta.color}>{meta.label}</Tag>
-                  <span style={{ fontWeight: 600 }}>{s.symbol}</span>
-                  <span style={{ color: '#888' }}>{s.name}</span>
+                  <span className="font-semibold">{s.symbol}</span>
+                  <span className="text-ink-muted">{s.name}</span>
                 </span>
-                <span style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-                  <span style={{ color: '#666', maxWidth: 380, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.reason}</span>
-                  <b style={{ color: s.strength >= 70 ? '#dc2626' : '#666' }}>{s.strength.toFixed(0)}</b>
-                  <span style={{ color: '#bbb', fontSize: 12 }}>{s.time.slice(5, 16)}</span>
+                <span className="flex items-center gap-3">
+                  <span className="max-w-[380px] truncate text-ink-secondary">{s.reason}</span>
+                  <b className={s.strength >= 70 ? 'text-rise' : 'text-ink-secondary'}>{s.strength.toFixed(0)}</b>
+                  <span className="text-xs text-ink-faint">{s.time.slice(5, 16)}</span>
                 </span>
-              </div>
+              </ListRow>
             )
           })
         )}
@@ -174,26 +174,26 @@ function ResultRow({ r, onGeneratePlan, busy }: { r: ResultItem; onGeneratePlan:
   const sig = r.signal
   const meta = sig ? SIGNAL_META[sig.type] ?? { label: sig.type, color: '#64748b' } : null
   return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 0', borderBottom: '1px solid #f0f1f3', fontSize: 13 }}>
-      <span style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-        <span style={{ fontWeight: 600 }}>{r.symbol}</span>
-        <span style={{ color: '#888' }}>{r.name || ''}</span>
-        {r.price > 0 && <span style={{ color: '#bbb' }}>@{r.price.toFixed(2)}</span>}
+    <ListRow className="py-2.5">
+      <span className="flex items-center gap-2.5">
+        <span className="font-semibold">{r.symbol}</span>
+        <span className="text-ink-muted">{r.name || ''}</span>
+        {r.price > 0 && <span className="text-ink-faint">@{r.price.toFixed(2)}</span>}
       </span>
       {r.error ? (
-        <span style={{ color: '#dc2626', fontSize: 12 }}>分析失败: {r.error}</span>
+        <span className="text-xs text-rise">分析失败: {r.error}</span>
       ) : sig ? (
-        <span style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <span className="flex items-center gap-2">
           <Tag color={meta!.color}>{meta!.label}</Tag>
-          <b style={{ color: sig.strength >= 70 ? '#dc2626' : '#666' }}>{sig.strength.toFixed(0)}</b>
-          <span style={{ color: '#666', maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sig.reason}</span>
+          <b className={sig.strength >= 70 ? 'text-rise' : 'text-ink-secondary'}>{sig.strength.toFixed(0)}</b>
+          <span className="max-w-[300px] truncate text-ink-secondary">{sig.reason}</span>
           <Button kind="primary" onClick={() => onGeneratePlan(r.symbol, r.name)} disabled={busy} style={{ padding: '4px 12px', fontSize: 12 }}>
             {busy ? '生成中...' : '生成计划'}
           </Button>
         </span>
       ) : (
-        <span style={{ color: '#999', fontSize: 12 }}>无信号(不满足当前条件)</span>
+        <span className="text-xs text-ink-faint">无信号(不满足当前条件)</span>
       )}
-    </div>
+    </ListRow>
   )
 }

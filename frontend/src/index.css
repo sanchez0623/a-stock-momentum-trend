@@ -1,0 +1,16 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ---------- 全局基础样式(替代原 App.tsx 中的 inline body 样式) ---------- */
+body {
+  font-family: system-ui, 'Microsoft YaHei', -apple-system, 'Segoe UI', sans-serif;
+  color: theme('colors.ink.DEFAULT');
+  background-color: #fafafa;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 数字/金额等使用等宽数字, 避免刷新时跳动 */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}

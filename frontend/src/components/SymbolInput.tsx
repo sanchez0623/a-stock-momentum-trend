@@ -68,7 +68,7 @@ export default function SymbolInput({ value, onChange, onNameFound, onEnter, pla
   }, [])
 
   return (
-    <div style={{ position: 'relative' }}>
+    <div className="relative">
       <input
         style={style || inputStyle}
         value={value}
@@ -89,11 +89,8 @@ export default function SymbolInput({ value, onChange, onNameFound, onEnter, pla
       />
       {hint && (
         <span
-          style={{
-            position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)',
-            fontSize: 11, whiteSpace: 'nowrap',
-            color: hint.error ? '#dc2626' : '#888',
-          }}
+          className="absolute right-2 top-1/2 -translate-y-1/2 text-[11px] whitespace-nowrap"
+          style={{ color: hint.error ? '#dc2626' : '#888' }}
         >
           {hint.text}
         </span>

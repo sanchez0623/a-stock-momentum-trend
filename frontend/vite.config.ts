@@ -1,9 +1,15 @@
+import { fileURLToPath, URL } from 'node:url'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
 // 端口约定: 前端开发 5175(2026-08-07 调整, 避免与短线波段系统 5173 冲突); /api 与 /ws 代理到后端 8002
 export default defineConfig({
   plugins: [react()],
+  resolve: {
+    alias: {
+      '@': fileURLToPath(new URL('./src', import.meta.url)),
+    },
+  },
   server: {
     port: 5175,
     strictPort: true,
