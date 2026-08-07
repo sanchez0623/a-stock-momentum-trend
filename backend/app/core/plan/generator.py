@@ -67,11 +67,11 @@ class PlanGenerator:
             action, advice = "hold", "保持观察"
             stop_line = "—"
 
-        # 止盈计划文本
+        # 止盈计划文本(如 成本*1.03 -> "止盈+3% (103.34) 减30%")
         if pos:
             tp_parts = []
             for lv in position_cfg["take_profit_levels"]:
-                tp_parts.append(f"{pos.cost * lv:.2f} 减30%")
+                tp_parts.append(f"止盈+{(lv - 1) * 100:.0f}% ({pos.cost * lv:.2f}) 减30%")
             tp_text = " | ".join(tp_parts) + f" | 余仓移动止损{risk['trailing_stop_pct']:.0f}%"
         else:
             tp_text = "首仓后按金字塔止盈计划执行"

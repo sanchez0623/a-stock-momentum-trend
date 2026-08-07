@@ -88,8 +88,13 @@ export default function Watchlist() {
                   <div key={p.symbol} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 0', borderBottom: '1px solid #f0f1f3', fontSize: 13 }}>
                     <span style={{ fontWeight: 600 }}>{p.symbol} <span style={{ fontWeight: 400, color: '#888' }}>{p.name}</span></span>
                     <span style={{ color: '#666' }}>{p.qty} 股 · 成本 {p.cost.toFixed(2)}</span>
-                    <span style={{ color: colorByPct(p.unrealized_pct), fontWeight: 600 }}>
-                      {p.price.toFixed(2)} ({fmtPct(p.unrealized_pct)})
+                    <span style={{ textAlign: 'right' }}>
+                      <span style={{ color: colorByPct(p.unrealized_pct), fontWeight: 600 }}>
+                        {p.price.toFixed(2)} ({fmtPct(p.unrealized_pct)})
+                      </span>
+                      <span style={{ display: 'block', fontSize: 12, color: colorByPct(p.unrealized_pnl) }}>
+                        {p.unrealized_pnl >= 0 ? '+' : ''}{p.unrealized_pnl.toLocaleString('zh-CN', { maximumFractionDigits: 0 })} 元
+                      </span>
                     </span>
                   </div>
                 ))}
