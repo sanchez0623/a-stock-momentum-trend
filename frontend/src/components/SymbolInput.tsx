@@ -1,4 +1,7 @@
 // 代码输入框: 输入股票代码后自动查询并带出名称(失焦/回车/300ms 防抖)
+// - 全角数字自动转半角(输入法常见)
+// - 查询失败自动重试一次
+// - 区分"未找到"(无效代码)与"查询失败"(网络/源不可用), 均提示可手动填写名称
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../api/client'
 import { inputStyle } from './ui'
@@ -11,30 +14,47 @@ interface Props {
   style?: React.CSSProperties
 }
 
+function normalize(s: string): string {
+  // 全角数字/字母转半角, 去空格
+  return s
+    .trim()
+    .replace(/[\uff10-\uff19]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
+    .replace(/[\uff21-\uff3a\uff41-\uff5a]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
+    .toUpperCase()
+}
+
 export default function SymbolInput({ value, onChange, onNameFound, placeholder, style }: Props) {
-  const [hint, setHint] = useState('')
+  const [hint, setHint] = useState<{ text: string; error: boolean } | null>(null)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const lookup = (symbol: string) => {
-    const sym = symbol.trim()
+  const lookup = (raw: string, retried = false) => {
+    const sym = normalize(raw)
     if (!sym) return
-    setHint('查询中...')
+    setHint({ text: '查询中...', error: false })
     api
       .quote(sym)
       .then((q) => {
         if (q.name) {
           onNameFound(q.name)
-          setHint('')
+          setHint(null)
         } else {
-          setHint('未找到')
+          setHint({ text: '未找到,可手动填写名称', error: true })
         }
       })
-      .catch(() => setHint('未找到'))
+      .catch(() => {
+        if (!retried) {
+          // 800ms 后重试一次(瞬时网络/源切换)
+          timerRef.current = setTimeout(() => lookup(raw, true), 800)
+          setHint({ text: '查询中...', error: false })
+        } else {
+          setHint({ text: '查询失败,可手动填写名称', error: true })
+        }
+      })
   }
 
-  const handleChange = (v: string) => {
+  const handleChange = (raw: string) => {
+    const v = normalize(raw)
     onChange(v)
-    // 防抖: 停止输入 300ms 后自动查询
     if (timerRef.current) clearTimeout(timerRef.current)
     timerRef.current = setTimeout(() => lookup(v), 300)
   }
@@ -55,7 +75,17 @@ export default function SymbolInput({ value, onChange, onNameFound, placeholder,
         }}
         placeholder={placeholder || '如 300750'}
       />
-      {hint && <span style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', fontSize: 11, color: hint === '未找到' ? '#dc2626' : '#888' }}>{hint}</span>}
+      {hint && (
+        <span
+          style={{
+            position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)',
+            fontSize: 11, whiteSpace: 'nowrap',
+            color: hint.error ? '#dc2626' : '#888',
+          }}
+        >
+          {hint.text}
+        </span>
+      )}
     </div>
   )
 }
