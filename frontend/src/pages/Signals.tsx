@@ -103,8 +103,8 @@ export default function Signals() {
         )}
         <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
           <div style={{ flex: 1 }}>
-            <Field label="股票代码(多个用逗号或空格分隔)">
-              <SymbolInput value={symbol} onChange={setSymbol} onNameFound={setName} placeholder="如 300139,688079,688146" />
+            <Field label="股票代码(多个用逗号或空格分隔, 上限50)">
+              <SymbolInput value={symbol} onChange={setSymbol} onNameFound={setName} onEnter={() => evaluate()} placeholder="如 300139,688079,688146" />
             </Field>
           </div>
           {name && <div style={{ color: '#666', fontSize: 13, paddingBottom: 10 }}>{name}</div>}

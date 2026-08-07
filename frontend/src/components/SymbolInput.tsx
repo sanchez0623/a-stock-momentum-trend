@@ -10,6 +10,7 @@ interface Props {
   value: string
   onChange: (v: string) => void
   onNameFound: (name: string) => void
+  onEnter?: () => void
   placeholder?: string
   style?: React.CSSProperties
 }
@@ -23,7 +24,7 @@ function normalize(s: string): string {
     .toUpperCase()
 }
 
-export default function SymbolInput({ value, onChange, onNameFound, placeholder, style }: Props) {
+export default function SymbolInput({ value, onChange, onNameFound, onEnter, placeholder, style }: Props) {
   const [hint, setHint] = useState<{ text: string; error: boolean } | null>(null)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -74,7 +75,15 @@ export default function SymbolInput({ value, onChange, onNameFound, placeholder,
         onChange={(e) => handleChange(e.target.value)}
         onBlur={(e) => lookup(e.target.value)}
         onKeyDown={(e) => {
-          if (e.key === 'Enter') lookup((e.target as HTMLInputElement).value)
+          if (e.key === 'Enter') {
+            const raw = (e.target as HTMLInputElement).value
+            if (isMulti(raw)) {
+              // 多代码回车: 不查名称, 直接交给父组件评估
+              onEnter?.()
+            } else {
+              lookup(raw)
+            }
+          }
         }}
         placeholder={placeholder || '如 300750'}
       />
