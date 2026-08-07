@@ -114,6 +114,8 @@ def test_review_history_and_suggestion(tmp_engine):
     service = ReviewService()
     rows = service.history()
     assert len(rows) == 1
-    updated = service.update_suggestion(rows[0].id, 0, "accepted")
+    updated, info = service.update_suggestion(rows[0].id, 0, "accepted")
     items = json.loads(updated.suggestions_json)
     assert items[0]["status"] == "accepted"
+    # 纯文字建议(无 patch): 只打标记, 不应改动任何配置
+    assert info["applied"] is False

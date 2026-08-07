@@ -49,10 +49,14 @@ export default function Dashboard() {
           sub={`数据源 ${health ? `${sourcesOk}/${sourcesTotal} 个可用` : '-'}`}
         />
         <StatCard
-          title="持仓盈亏"
+          title="持仓盈亏(含费)"
           value={portfolio ? `¥${portfolio.unrealized_pnl.toLocaleString('zh-CN', { maximumFractionDigits: 0 })}` : '-'}
           valueClassName={colorCls(portfolio?.unrealized_pnl)}
-          sub={`市值 ${portfolio ? '¥' + portfolio.market_value.toLocaleString('zh-CN', { maximumFractionDigits: 0 }) : '-'}`}
+          sub={
+            portfolio
+              ? `市值 ¥${portfolio.market_value.toLocaleString('zh-CN', { maximumFractionDigits: 0 })} · 已摊入费用 ¥${portfolio.fee_cost.toFixed(2)}`
+              : '市值 -'
+          }
         />
         <StatCard
           title="风控状态"

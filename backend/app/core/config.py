@@ -97,6 +97,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "timeout_sec": 60,
         "enabled": False,
     },
+    "手续费": {
+        "commission_rate": 0.00005,      # 佣金: 万 0.5
+        "commission_min": 5.0,           # 单笔最低佣金(元), 不足按 5 元收
+        "stamp_tax_rate": 0.0005,        # 印花税: 万 5, 仅卖方
+        "exchange_fee_rate": 0.0000341,  # 经手费: 万 0.341, 双边
+        "regulatory_fee_rate": 0.00002,  # 证管费: 万 0.2, 双边
+        "transfer_fee_rate": 0.00001,    # 过户费: 万 0.1, 双边
+    },
 }
 
 # env -> 配置路径 的覆盖映射

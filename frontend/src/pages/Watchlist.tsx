@@ -96,7 +96,13 @@ export default function Watchlist() {
                 {portfolio.positions.map((p) => (
                   <ListRow key={p.symbol} className="py-2.5">
                     <span className="font-semibold">{p.symbol} <span className="font-normal text-ink-muted">{p.name}</span></span>
-                    <span className="text-ink-secondary">{p.qty} 股 · 成本 {p.cost.toFixed(2)}</span>
+                    <span
+                      className="text-ink-secondary"
+                      title={`含费成本 ${p.cost.toFixed(4)} = 成交均价 ${p.cost_raw.toFixed(4)} + 摊入手续费 ¥${p.fee_cost.toFixed(2)}`}
+                    >
+                      {p.qty} 股 · 成本 {p.cost.toFixed(2)}
+                      <span className="ml-1 text-[10px] text-ink-faint">含费</span>
+                    </span>
                     <span className="text-right">
                       <span className={`font-semibold ${colorByPct(p.unrealized_pct)}`}>
                         {p.price.toFixed(2)} ({fmtPct(p.unrealized_pct)})
@@ -112,6 +118,11 @@ export default function Watchlist() {
                   <span className={colorByPct(portfolio?.unrealized_pnl)}>
                     ¥{portfolio.unrealized_pnl.toLocaleString('zh-CN', { maximumFractionDigits: 0 })}
                   </span>
+                </div>
+                <div className="text-[11px] text-ink-faint">
+                  成本为含费摊薄成本(券商口径), 浮盈已扣买入手续费 ¥
+                  {portfolio.fee_cost.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  ; 卖出时另计印花税等费用。
                 </div>
               </div>
             )}
@@ -141,7 +152,9 @@ export default function Watchlist() {
               <input style={inputStyle} type="number" value={posPrice} onChange={(e) => setPosPrice(e.target.value)} placeholder="如 1300" />
             </Field>
             <Button onClick={addPosition} disabled={!posSymbol.trim() || !posPrice}>录入</Button>
-            <div className="mt-2 text-[11px] text-ink-faint">加仓价须高于当前成本(顺向); 减仓到「交易日志」页(三期)。</div>
+            <div className="mt-2 text-[11px] text-ink-faint">
+              加仓价须高于当前成交均价(顺向); 手续费按设置的费率自动摊入成本。减仓到「交易日志」页(三期)。
+            </div>
           </Card>
         </div>
       </div>

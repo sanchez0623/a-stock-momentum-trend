@@ -24,6 +24,8 @@ __pycache__/
 node_modules/
 frontend/dist/
 frontend/*.tsbuildinfo
+# vite 配置热重载产生的临时文件
+frontend/vite.config.ts.timestamp-*.mjs
 
 # IDE / OS
 .vscode/

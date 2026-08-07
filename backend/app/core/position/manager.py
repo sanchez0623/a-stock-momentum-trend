@@ -60,32 +60,48 @@ class PositionManager:
 
     # ------------------------------------------------------------ 交易操作
     def open_or_add(self, symbol: str, name: str, qty: int, price: float, reason: str = "", session: Session | None = None) -> Position:
-        """首仓或加仓. 加仓必须顺向(price > 当前成本), 否则抛错."""
+        """首仓或加仓. 加仓必须顺向(price >= 当前成交均价), 否则抛错.
+
+        成本口径(对齐券商 APP): pos.cost 为**含费摊薄成本**, 买入手续费直接摊进成本;
+        pos.cost_raw 为纯成交均价, 仅用于顺向加仓判断(避免手续费把判断线抬高).
+        """
         if qty <= 0 or price <= 0:
             raise PositionManagerError("数量与价格必须为正")
         with _session(session) as s:
             pos = self.get_position(symbol, s)
             if pos is None:
-                pos = Position(symbol=symbol, name=name, qty=0, cost=0.0, status="holding")
+                pos = Position(symbol=symbol, name=name, qty=0, cost=0.0, cost_raw=0.0, status="holding")
                 s.add(pos)
             else:
-                if price < pos.cost:
-                    raise PositionManagerError(f"加仓价 {price:.2f} 低于当前成本 {pos.cost:.2f}, 拒绝顺向加仓")
-            old_cost = pos.cost or price
-            total_cost = old_cost * pos.qty + price * qty
+                # 顺向判断用纯均价: 含费成本天然高于成交价, 用它会误杀平价加仓
+                ref = pos.cost_raw or pos.cost
+                if price < ref:
+                    raise PositionManagerError(f"加仓价 {price:.2f} 低于当前成本 {ref:.2f}, 拒绝顺向加仓")
+            # 先落成交, 以 trade.fee 为手续费唯一真相源(避免与日志层重复计算而口径漂移)
+            trade = trade_logger.record(symbol, name, "buy", price, qty, reason, note="仓位管理", session=s)
+            amount = trade.amount
+            fee = trade.fee or 0.0
+
             new_qty = pos.qty + qty
-            pos.cost = round(total_cost / new_qty, 4)
+            old_raw = pos.cost_raw or pos.cost or 0.0
+            old_incl = pos.cost or old_raw
+            # 含费成本: 历史含费市值 + 本次成交额 + 本次买入手续费
+            pos.cost = round((old_incl * pos.qty + amount + fee) / new_qty, 4)
+            pos.cost_raw = round((old_raw * pos.qty + amount) / new_qty, 4)
             pos.qty = new_qty
             pos.name = name or pos.name
             pos.updated_at = _now()
-            # 交易日志双写(SQLite + CSV)
-            trade_logger.record(symbol, name, "buy", price, qty, reason, note="仓位管理", session=s)
             s.commit()
             s.refresh(pos)
             return pos
 
     def reduce(self, symbol: str, qty: int, price: float, reason: str = "", session: Session | None = None) -> float:
-        """减仓. 返回已实现盈亏; 减到 0 自动清仓."""
+        """减仓. 返回已实现盈亏(已扣**双边**手续费净额); 减到 0 自动清仓.
+
+        pos.cost 已含买入手续费 -> (price - cost) * qty 天然扣掉了买入侧费用;
+        record() 再扣卖出侧费用(含印花税), 最终 trade.pnl 即完整含费净额.
+        减仓不改变每股成本(加权平均法), 剩余仓位继续沿用原含费成本.
+        """
         if qty <= 0 or price <= 0:
             raise PositionManagerError("数量与价格必须为正")
         with _session(session) as s:
@@ -99,11 +115,11 @@ class PositionManager:
             if pos.qty == 0:
                 pos.status = "closed"
             pos.updated_at = _now()
-            # 交易日志双写(SQLite + CSV)
-            trade_logger.record(symbol, pos.name, "sell", price, qty, reason,
-                                pnl=realized_pnl, note="仓位管理", session=s)
+            # 交易日志双写(SQLite + CSV); record 内部扣卖出手续费, trade.pnl 为净额
+            trade = trade_logger.record(symbol, pos.name, "sell", price, qty, reason,
+                                        pnl=realized_pnl, note="仓位管理", session=s)
             s.commit()
-            return realized_pnl
+            return trade.pnl if trade.pnl is not None else realized_pnl
 
     def close(self, symbol: str, price: float, reason: str = "清仓", session: Session | None = None) -> float:
         """清仓, 返回已实现盈亏."""
@@ -173,22 +189,34 @@ class PositionManager:
 
     # ------------------------------------------------------------ 持仓汇总
     def portfolio(self, prices: dict[str, float], session: Session | None = None) -> dict[str, Any]:
-        """组合汇总: 市值/浮盈/浮盈率(用于风控与计划)."""
+        """组合汇总: 市值/浮盈/浮盈率(用于风控与计划).
+
+        cost 为含费摊薄成本, 因此 unrealized_pnl 已扣掉买入手续费(与券商 APP 一致);
+        另返回 fee_cost = 摊在当前持仓上的买入费用, 便于前端说明口径.
+        """
         positions = self.list_positions(session)
         market_value = 0.0
         cost_value = 0.0
+        cost_raw_value = 0.0
+        fee_cost_total = 0.0
         unrealized = 0.0
         items = []
         for p in positions:
             price = prices.get(p.symbol, p.cost)
+            cost_raw = p.cost_raw or p.cost
             mv = price * p.qty
             cv = p.cost * p.qty
+            crv = cost_raw * p.qty
+            fee_cost = cv - crv  # 已摊入当前持仓的买入手续费
             pnl = mv - cv
             market_value += mv
             cost_value += cv
+            cost_raw_value += crv
+            fee_cost_total += fee_cost
             unrealized += pnl
             items.append({
                 "symbol": p.symbol, "name": p.name, "qty": p.qty, "cost": p.cost,
+                "cost_raw": round(cost_raw, 4), "fee_cost": round(fee_cost, 2),
                 "price": round(price, 3), "market_value": round(mv, 2),
                 "unrealized_pnl": round(pnl, 2),
                 "unrealized_pct": round(pnl / cv * 100, 2) if cv else 0.0,
@@ -197,6 +225,8 @@ class PositionManager:
             "positions": items,
             "market_value": round(market_value, 2),
             "cost_value": round(cost_value, 2),
+            "cost_raw_value": round(cost_raw_value, 2),
+            "fee_cost": round(fee_cost_total, 2),
             "unrealized_pnl": round(unrealized, 2),
             "unrealized_pct": round(unrealized / cost_value * 100, 2) if cost_value else 0.0,
         }

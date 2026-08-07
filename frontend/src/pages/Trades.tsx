@@ -85,7 +85,8 @@ export default function Trades() {
                   <th className="px-2 py-1.5 font-medium">方向</th>
                   <th className="px-2 py-1.5 text-right font-medium">价格</th>
                   <th className="px-2 py-1.5 text-right font-medium">数量</th>
-                  <th className="px-2 py-1.5 text-right font-medium">盈亏</th>
+                  <th className="px-2 py-1.5 text-right font-medium">手续费</th>
+                  <th className="px-2 py-1.5 text-right font-medium">盈亏(净)</th>
                   <th className="px-2 py-1.5 font-medium">原因</th>
                 </tr>
               </thead>
@@ -101,6 +102,7 @@ export default function Trades() {
                     </td>
                     <td className="px-2 py-[7px] text-right">{t.price.toFixed(2)}</td>
                     <td className="px-2 py-[7px] text-right">{t.qty}</td>
+                    <td className="px-2 py-[7px] text-right text-ink-muted">{t.fee.toFixed(2)}</td>
                     <td className={cn('px-2 py-[7px] text-right font-semibold', colorByPct(t.pnl))}>
                       {t.action === 'sell' ? (t.pnl >= 0 ? '+' : '') + t.pnl.toFixed(0) : '-'}
                     </td>

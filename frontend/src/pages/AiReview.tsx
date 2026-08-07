@@ -1,12 +1,40 @@
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../api/client'
-import type { AiReviewConfig, AiReviewRecord, AiReviewTask } from '../api/client'
+import type {
+  AiReviewConfig, AiReviewRecord, AiReviewTask, AiReviewSuggestion,
+  ConfigChange, TuningPolicy,
+} from '../api/client'
 import { Button, Card, EmptyState, ErrorBox, Field, ListRow, Loading, Tag, inputStyle, toast } from '../components/ui'
 
 const LEVEL_META: Record<string, { label: string; color: string }> = {
   high: { label: '严重', color: '#dc2626' },
   medium: { label: '中等', color: '#ea580c' },
   low: { label: '轻微', color: '#64748b' },
+}
+
+// 闸门状态 -> 文案/颜色/是否可点「采纳」
+const GUARD_META: Record<string, { label: string; color: string; executable: boolean }> = {
+  ok: { label: '可执行', color: '#16a34a', executable: true },
+  clamped: { label: '已收敛', color: '#ea580c', executable: true },
+  not_whitelisted: { label: '不可执行', color: '#9ca3af', executable: false },
+  invalid: { label: '非法', color: '#9ca3af', executable: false },
+  cooldown: { label: '冷却中', color: '#2563eb', executable: false },
+  drift_limit: { label: '已达上限', color: '#9333ea', executable: false },
+  no_change: { label: '无变化', color: '#9ca3af', executable: false },
+  duplicate: { label: '重复建议', color: '#9ca3af', executable: false },
+  text_only: { label: '', color: '', executable: false },
+}
+
+function fmtNum(v: number | null | undefined): string {
+  if (v === null || v === undefined) return '-'
+  return Number.isInteger(v) ? v.toString() : v.toFixed(4).replace(/\.?0+$/, '')
+}
+
+function diffPct(from: number | null | undefined, to: number): string | null {
+  if (from === null || from === undefined || from === 0) return null
+  const p = ((to - from) / Math.abs(from)) * 100
+  const sign = p > 0 ? '+' : ''
+  return `${sign}${p.toFixed(0)}%`
 }
 
 export default function AiReview() {
@@ -28,14 +56,26 @@ export default function AiReview() {
   const [history, setHistory] = useState<AiReviewRecord[]>([])
   const [current, setCurrent] = useState<AiReviewRecord | null>(null)
 
+  // 闭环: 变更记录 + 护栏策略
+  const [changes, setChanges] = useState<ConfigChange[]>([])
+  const [policy, setPolicy] = useState<TuningPolicy | null>(null)
+  const [reverting, setReverting] = useState<number | null>(null)
+
   const loadConfig = () => api.aiReviewConfig().then((c) => {
     setCfg(c)
     setCfgForm({ base_url: c.base_url || '', api_key: '', model: c.model || '', enabled: c.enabled })
   }).catch((e) => setError(String(e.message || e)))
 
+  const loadChanges = () => api.aiReviewChanges().then(setChanges).catch(() => {})
+  const loadPolicy = () => api.aiReviewTuningPolicy().then(setPolicy).catch(() => {})
+
   useEffect(() => {
-    Promise.all([api.aiReviewHistory().then(setHistory).catch(() => {}), loadConfig()])
-      .finally(() => setLoading(false))
+    Promise.all([
+      api.aiReviewHistory().then(setHistory).catch(() => {}),
+      loadConfig(),
+      loadChanges(),
+      loadPolicy(),
+    ]).finally(() => setLoading(false))
     return () => { if (pollRef.current) clearInterval(pollRef.current) }
   }, [])
 
@@ -57,6 +97,7 @@ export default function AiReview() {
             stopPoll(); setRunning(false)
             setCurrent(t.review ?? null)
             setHistory(await api.aiReviewHistory())
+            await loadChanges()
             toast.success('复盘完成')
           } else if (t.status === 'failed') {
             stopPoll(); setRunning(false)
@@ -94,10 +135,30 @@ export default function AiReview() {
     if (!current) return
     try {
       const r = await api.aiReviewSuggestion(current.id, index, status)
-      setCurrent({ ...current, suggestions: r.suggestions })
+      setCurrent({ ...current, suggestions: r.suggestions } as AiReviewRecord)
       setHistory(await api.aiReviewHistory())
+      if (r.applied?.applied) {
+        toast.success(r.applied.message || '已应用参数调整')
+        await loadChanges()
+      } else if (status === 'accepted') {
+        toast.info(r.applied?.message || '已标记采纳')
+      }
     } catch (e) {
       setError(String((e as Error).message))
+      toast.error(String((e as Error).message))
+    }
+  }
+
+  const revertChange = async (changeId: number) => {
+    setReverting(changeId)
+    try {
+      await api.aiReviewRevert(changeId)
+      toast.success('已撤销该参数调整')
+      await loadChanges()
+    } catch (e) {
+      toast.error(String((e as Error).message))
+    } finally {
+      setReverting(null)
     }
   }
 
@@ -105,6 +166,8 @@ export default function AiReview() {
 
   const issues = current?.rule_result?.issues ?? []
   const stats = current?.rule_result?.stats ?? {}
+  // 本次复盘已生效(带补丁)的建议数, 用于 3 条上限的前端预禁用
+  const appliedPatchCount = current?.suggestions.filter((s) => s.change_id != null).length ?? 0
 
   return (
     <div>
@@ -166,22 +229,74 @@ export default function AiReview() {
 
           {current.suggestions.length > 0 && (
             <>
-              <div className="mb-2 mt-3 text-[13px] font-medium">改进建议(点击标记是否采纳)</div>
+              <div className="mb-2 mt-3 text-[13px] font-medium">改进建议(可一键采纳并热写回配置)</div>
               {current.suggestions.map((sg, i) => (
-                <div key={i} className="flex items-center gap-2.5 border-b border-divider py-2 text-[13px] last:border-b-0">
-                  <span className="flex-1">{sg.text}</span>
-                  {sg.status === 'pending' && (
-                    <span className="flex gap-1.5">
-                      <Button kind="primary" onClick={() => markSuggestion(i, 'accepted')} style={{ padding: '4px 10px', fontSize: 12 }}>采纳</Button>
-                      <Button kind="ghost" onClick={() => markSuggestion(i, 'rejected')} style={{ padding: '4px 10px', fontSize: 12 }}>忽略</Button>
-                    </span>
-                  )}
-                  {sg.status === 'accepted' && <Tag color="#16a34a">已采纳</Tag>}
-                  {sg.status === 'rejected' && <Tag color="#888">已忽略</Tag>}
-                </div>
+                <SuggestionRow
+                  key={i}
+                  sg={sg}
+                  index={i}
+                  reviewAppliedPatches={appliedPatchCount}
+                  onAccept={markSuggestion}
+                  onReject={markSuggestion}
+                />
               ))}
             </>
           )}
+        </Card>
+      )}
+
+      {/* 参数变更记录(闭环: 采纳 -> 热生效 -> 可撤销) */}
+      <Card title={`参数变更记录(${changes.length})`} className="mt-3">
+        {changes.length === 0 ? (
+          <EmptyState>暂无参数调整。采纳带「可执行」标识的建议后, 改动会在此列出并可一键撤销。</EmptyState>
+        ) : (
+          changes.map((c) => {
+            const up = (c.to - c.from) > 0
+            const pct = diffPct(c.from, c.to)
+            return (
+              <div key={c.id} className="flex items-center gap-3 border-b border-divider py-2.5 text-[13px] last:border-b-0">
+                <div className="flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium">{c.label}</span>
+                    <span className="text-ink-faint">{c.group}.{c.key}</span>
+                    <Tag color={up ? '#dc2626' : '#16a34a'}>
+                      {fmtNum(c.from)} → {fmtNum(c.to)}{pct ? ` (${pct})` : ''}
+                    </Tag>
+                  </div>
+                  <div className="mt-0.5 text-xs text-ink-muted">
+                    {c.source} · {c.time}
+                    {c.status === 'active' && c.days_active != null
+                      ? ` · 已生效 ${c.days_active} 天` : ''}
+                    {c.status === 'reverted' ? ` · 已于 ${c.reverted_at || '-'} 撤销` : ''}
+                  </div>
+                </div>
+                {c.status === 'active' ? (
+                  <Button kind="ghost" onClick={() => revertChange(c.id)} disabled={reverting === c.id}
+                    style={{ padding: '4px 10px', fontSize: 12 }}>
+                    {reverting === c.id ? '撤销中...' : '撤销'}
+                  </Button>
+                ) : (
+                  <Tag color="#888">已撤销</Tag>
+                )}
+              </div>
+            )
+          })
+        )}
+      </Card>
+
+      {/* 调参护栏说明 */}
+      {policy && (
+        <Card title="调参护栏(采纳建议的边界)" className="mt-3">
+          <div className="flex flex-wrap gap-x-6 gap-y-1.5 text-[12px] text-ink-secondary">
+            <span>单次变动 ≤ <b className="text-ink">±{policy.max_step_pct}%</b></span>
+            <span>累积偏离 ≤ <b className="text-ink">±{policy.max_drift_pct}%</b>(超出需去设置页改)</span>
+            <span>同字段 <b className="text-ink">{policy.cooldown_days} 天</b>冷却</span>
+            <span>单次复盘最多采纳 <b className="text-ink">{policy.max_accept_per_review} 条</b></span>
+            <span>共 <b className="text-ink">{policy.field_count}</b> 个可调数值字段</span>
+          </div>
+          <div className="mt-2 text-[12px] text-ink-faint">
+            保护分组(不可由 AI 修改): {policy.forbidden_groups.join(' / ')}
+          </div>
         </Card>
       )}
 
@@ -225,12 +340,76 @@ export default function AiReview() {
                 <span className="text-ink-muted">{r.time}</span>
                 <Tag color="#64748b">范围: {r.range}</Tag>
                 {r.rule_result?.issues?.length ? <Tag color="#ea580c">规则问题 {r.rule_result.issues.length}</Tag> : null}
+                {r.suggestions?.some((s) => s.change_id != null) ? <Tag color="#16a34a">已调参</Tag> : null}
               </span>
               <Button kind="ghost" onClick={() => setCurrent(r)} style={{ padding: '4px 10px', fontSize: 12 }}>查看</Button>
             </ListRow>
           ))
         )}
       </Card>
+    </div>
+  )
+}
+
+function SuggestionRow({
+  sg, index, reviewAppliedPatches, onAccept, onReject,
+}: {
+  sg: AiReviewSuggestion
+  index: number
+  reviewAppliedPatches: number
+  onAccept: (i: number, s: 'accepted' | 'rejected') => void
+  onReject: (i: number, s: 'accepted' | 'rejected') => void
+}) {
+  const g = GUARD_META[sg.guard ?? ''] ?? GUARD_META.text_only
+  const hasPatch = typeof sg.patch === 'object' && sg.patch != null
+  const alreadyApplied = sg.change_id != null
+  // 可执行 = 闸门 ok/clamped 且本次复盘未达 3 条上限; 文字类建议恒可采纳
+  const canAccept = sg.status === 'pending' && !alreadyApplied &&
+    (hasPatch ? (g.executable && reviewAppliedPatches < 3) : true)
+
+  const up = hasPatch ? (sg.patch!.to - (sg.patch!.from ?? 0)) > 0 : false
+  const pct = hasPatch ? diffPct(sg.patch!.from, sg.patch!.to) : null
+
+  return (
+    <div className="border-b border-divider py-2.5 text-[13px] last:border-b-0">
+      <div className="flex items-start gap-2.5">
+        <span className="flex-1 leading-[1.6]">{sg.text}</span>
+        {sg.status === 'pending' && (
+          <span className="flex shrink-0 gap-1.5">
+            <Button kind="primary" onClick={() => onAccept(index, 'accepted')}
+              disabled={!canAccept} style={{ padding: '4px 10px', fontSize: 12 }}>
+              采纳
+            </Button>
+            <Button kind="ghost" onClick={() => onReject(index, 'rejected')} style={{ padding: '4px 10px', fontSize: 12 }}>忽略</Button>
+          </span>
+        )}
+        {sg.status === 'accepted' && <Tag color="#16a34a">已采纳{alreadyApplied ? ' · 已生效' : ''}</Tag>}
+        {sg.status === 'rejected' && <Tag color="#888">已忽略</Tag>}
+      </div>
+
+      {/* 参数补丁差异 + 闸门状态 */}
+      {hasPatch && (
+        <div className="mt-1.5 flex flex-wrap items-center gap-2">
+          <Tag color="#475569">{sg.patch!.label}</Tag>
+          {sg.patch!.from !== null && (
+            <span className="font-medium" style={{ color: up ? '#dc2626' : '#16a34a' }}>
+              {fmtNum(sg.patch!.from)} → {fmtNum(sg.patch!.to)}{pct ? ` (${pct})` : ''}
+            </span>
+          )}
+          {sg.guard && g.label && <Tag color={g.color}>{g.label}</Tag>}
+        </div>
+      )}
+
+      {/* 不可执行原因 / 收敛说明 */}
+      {hasPatch && sg.guard_msg && sg.guard !== 'ok' && (
+        <div className="mt-1 text-[12px] text-ink-muted">{sg.guard_msg}</div>
+      )}
+      {!canAccept && sg.status === 'pending' && !alreadyApplied && hasPatch && !g.executable && (
+        <div className="mt-1 text-[12px] text-ink-muted">该建议不可执行, 仅作参考。</div>
+      )}
+      {!canAccept && sg.status === 'pending' && !alreadyApplied && hasPatch && g.executable && reviewAppliedPatches >= 3 && (
+        <div className="mt-1 text-[12px] text-ink-muted">本次复盘已采纳 3 条参数调整, 达到上限, 其余带补丁建议暂不可点。</div>
+      )}
     </div>
   )
 }

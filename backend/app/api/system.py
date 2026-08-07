@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import copy
 import datetime as dt
 from typing import Any
 
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-from app.core.config import config_manager
+from app.core.config import DEFAULT_CONFIG, config_manager
 from app.core.datasource import data_source_manager
 
 router = APIRouter(prefix="/api", tags=["system"])
@@ -45,10 +46,24 @@ async def get_config() -> dict:
     return {"code": 0, "msg": "ok", "data": config_manager.masked()}
 
 
+@router.get("/config/defaults")
+async def get_config_defaults() -> dict:
+    """读取出厂默认配置, 供前端「恢复默认」对照(不改动当前配置)."""
+    return {"code": 0, "msg": "ok", "data": copy.deepcopy(DEFAULT_CONFIG)}
+
+
 @router.put("/config")
 async def update_config(body: UpdateConfigBody) -> dict:
-    """更新配置(热生效)."""
-    config_manager.update(body.config)
+    """更新配置(热生效).
+
+    保护: GET 返回的 api_key 是脱敏占位符 ``******``, 若前端原样回传会覆盖真实 Key,
+    故对占位符与空串一律剔除(即"留空不修改"), 与 /ai-review/config 行为保持一致。
+    """
+    partial = copy.deepcopy(body.config)
+    llm = partial.get("llm")
+    if isinstance(llm, dict) and llm.get("api_key") in ("", "******"):
+        llm.pop("api_key", None)
+    config_manager.update(partial)
     return {"code": 0, "msg": "配置已更新", "data": config_manager.masked()}
 
 

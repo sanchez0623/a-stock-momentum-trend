@@ -12,6 +12,15 @@ from sqlmodel import Session, select
 from app import db
 from app.core.ai_review.llm import LLMError, build_client_from_config
 from app.core.ai_review.rules import diagnose
+from app.core.ai_review.tuning import (
+    MAX_ACCEPT_PER_REVIEW,
+    apply_patch,
+    count_applied_for_review,
+    evaluate_patch,
+    sanitize_llm_patch,
+    suggest_from_issues,
+    tunable_brief,
+)
 from app.core.config import config_manager
 from app.models.models import AiReview, SignalRecord, Trade
 
@@ -64,17 +73,23 @@ class ReviewService:
         issues = diagnose(trades, signals, klines)
         stats = self._summary(trades)
 
+        # 规则通道: 确定性推导可执行参数建议(无需 LLM Key)
+        rule_suggestions = suggest_from_issues(issues, stats)
+
         # LLM 深度复盘(可关)
         llm_cfg = config_manager.get().get("llm", {})
-        content, suggestions, model = "", [], ""
+        content, llm_suggestions, model = "", [], ""
         if llm_cfg.get("enabled") and llm_cfg.get("api_key"):
             try:
-                content, suggestions, model = await self._llm_review(trades, signals, issues, stats, llm_cfg)
+                content, llm_suggestions, model = await self._llm_review(
+                    trades, signals, issues, stats, llm_cfg)
             except LLMError as exc:
                 logger.warning("LLM 复盘失败, 降级为纯规则诊断: %s", exc)
                 content = f"⚠️ LLM 调用失败(已降级为纯规则诊断): {exc}"
         else:
             content = "未启用 LLM(可在「AI 复盘」页配置 DeepSeek Key), 本次仅规则诊断。"
+
+        suggestions = self._merge_suggestions(rule_suggestions, llm_suggestions)
 
         review = AiReview(
             range=scope or "all",
@@ -116,6 +131,50 @@ class ReviewService:
             "win_rate": round(len(wins) / len(sells) * 100, 1) if sells else 0.0,
         }
 
+    # ------------------------------------------------------------ 建议合并
+    @staticmethod
+    def _merge_suggestions(rule_items: list[dict], llm_items: list[dict]) -> list[dict]:
+        """规则建议优先(确定性), LLM 建议补充; 同一字段只留一条补丁, 并预跑闸门用于前端展示."""
+        merged: list[dict] = []
+        taken: set[str] = set()
+        for src in (rule_items, llm_items):
+            for item in src:
+                item = dict(item)
+                patch = item.get("patch")
+                if isinstance(patch, dict):
+                    path = f"{patch.get('group')}.{patch.get('key')}"
+                    if path in taken:
+                        # 同字段已有更可信的规则建议 -> 降级为纯文字建议
+                        item.pop("patch", None)
+                        item["guard"] = "duplicate"
+                        item["guard_msg"] = f"{path} 已有一条更可信的规则建议, 本条不重复执行"
+                    else:
+                        taken.add(path)
+                item.setdefault("status", "pending")
+                item.setdefault("source", "llm")
+                merged.append(item)
+
+        # 预跑闸门: 让前端在生成时就知道哪条能点、哪条为什么不能点
+        for item in merged:
+            patch = item.get("patch")
+            if not isinstance(patch, dict):
+                item.setdefault("guard", "text_only")
+                item.setdefault("guard_msg", "")
+                continue
+            try:
+                ev = evaluate_patch(patch)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("补丁预校验失败: %s", exc)
+                item["guard"], item["guard_msg"] = "invalid", str(exc)
+                continue
+            item["guard"] = ev["guard"]
+            item["guard_msg"] = ev["message"]
+            if ev.get("to") is not None:
+                patch["to"] = ev["to"]
+                patch["from"] = ev["from"]
+                patch["label"] = ev.get("label", patch.get("key"))
+        return merged
+
     # ------------------------------------------------------------ LLM
     @staticmethod
     async def _llm_review(trades: list[Any], signals: list[Any], issues: list[dict],
@@ -129,12 +188,26 @@ class ReviewService:
         issue_lines = "\n".join(
             f"- [{i['level']}] {i['title']}: {i['detail']}" for i in issues
         ) or "- 无"
+        tunable = tunable_brief()
         prompt = f"""你是 A 股动量/趋势交易系统的复盘教练。基于以下交易记录与规则诊断, 输出严格的 JSON(不要输出 JSON 外的任何内容):
 {{
   "analysis": "整体问题归因与亮点, 150字内",
-  "suggestions": [{{"text": "一条可执行改进建议"}}],  // 2-5 条
+  "suggestions": [
+    {{"text": "一条可执行改进建议",
+      "patch": {{"group": "分组名", "key": "字段名", "to": 数值}}}}
+  ],
   "discipline_score": 0-100
 }}
+suggestions 输出 2-5 条。
+
+关于 patch(可选字段, 只在建议确实对应某个参数调整时才给):
+- 只允许出现在下方「可调参数清单」中的 group/key, 其它一律不要给 patch, 否则整条建议会被判为不可执行。
+- to 必须落在该参数标注的「本次允许区间」内(系统对单次变动有 ±20% 硬上限, 超出会被截断)。
+- 风控、仓位、数据源、手续费、LLM 相关参数**禁止**给出 patch —— 它们直接决定亏损与下单量, 只能由人工修改。
+- 属于心态、纪律、执行习惯类的建议(例如"严格执行止损"), 不要硬凑 patch, 只给 text 即可。
+
+可调参数清单(group / key / 当前值 / 本次允许区间):
+{tunable}
 
 近 {stats['closed']} 笔已平仓, 胜率 {stats['win_rate']}%, 总盈亏 {stats['total_pnl']} 元。
 规则诊断结果:
@@ -169,9 +242,18 @@ class ReviewService:
             content = str(data.get("analysis", cleaned[:500]))
             for item in data.get("suggestions", []):
                 if isinstance(item, dict) and item.get("text"):
-                    suggestions.append({"text": str(item["text"]), "status": "pending"})
+                    sg: dict[str, Any] = {"text": str(item["text"]), "status": "pending",
+                                          "source": "llm"}
+                    patch = sanitize_llm_patch(item.get("patch"))
+                    if patch is not None:
+                        sg["patch"] = patch
+                    elif item.get("patch"):
+                        # LLM 给了 patch 但字段越权/格式非法 -> 降级为纯文字, 并告知原因
+                        sg["guard"] = "not_whitelisted"
+                        sg["guard_msg"] = "AI 建议修改的参数不在可调白名单内, 已降级为纯文字建议"
+                    suggestions.append(sg)
                 elif isinstance(item, str):
-                    suggestions.append({"text": item, "status": "pending"})
+                    suggestions.append({"text": item, "status": "pending", "source": "llm"})
         except (ValueError, json.JSONDecodeError):
             content = cleaned[:1000]
         if not suggestions:
@@ -179,7 +261,7 @@ class ReviewService:
             for line in text.splitlines():
                 line = line.strip("•- \t")
                 if len(line) > 4:
-                    suggestions.append({"text": line[:100], "status": "pending"})
+                    suggestions.append({"text": line[:100], "status": "pending", "source": "llm"})
         return content or "LLM 未返回分析", suggestions
 
     # ------------------------------------------------------------ 查询与追踪
@@ -192,21 +274,62 @@ class ReviewService:
             return s.get(AiReview, review_id)
 
     def update_suggestion(self, review_id: int, index: int, status: str,
-                          session: Session | None = None) -> AiReview | None:
-        """改进建议追踪: 标记 已采纳/未采纳."""
+                          session: Session | None = None) -> tuple[AiReview | None, dict]:
+        """改进建议追踪 + 参数补丁执行.
+
+        采纳带 patch 的建议时: 重跑三道闸门(冷却/漂移随时间变化, 必须以采纳时刻为准)
+        -> 热写回配置 -> 落变更记录。纯文字建议仍只打标记。
+        返回 (review, info); info 描述本次是否真的改了参数。
+        """
         if status not in ("accepted", "rejected"):
             raise ValueError("status 需为 accepted/rejected")
+        info: dict[str, Any] = {"applied": False, "message": ""}
+
         with session or db.session_scope() as s:
             review = s.get(AiReview, review_id)
             if review is None:
-                return None
+                return None, info
             items = json.loads(review.suggestions_json or "[]")
-            if 0 <= index < len(items):
-                items[index]["status"] = status
-                review.suggestions_json = json.dumps(items, ensure_ascii=False)
-                s.commit()
-                s.refresh(review)
-            return review
+            if not (0 <= index < len(items)):
+                raise ValueError("建议序号越界")
+            item = items[index]
+
+            if status == "accepted" and isinstance(item.get("patch"), dict):
+                if item.get("change_id"):
+                    raise ValueError("该建议已采纳并生效, 如需回退请到「参数变更记录」撤销")
+                applied_cnt = count_applied_for_review(review_id, s)
+                if applied_cnt >= MAX_ACCEPT_PER_REVIEW:
+                    raise ValueError(
+                        f"本次复盘已采纳 {applied_cnt} 条参数调整, 达到单次上限 "
+                        f"{MAX_ACCEPT_PER_REVIEW} 条 —— 一次改太多会分不清是哪条起了作用")
+
+                ev = evaluate_patch(item["patch"], s)
+                item["guard"], item["guard_msg"] = ev["guard"], ev["message"]
+                if not ev["ok"]:
+                    review.suggestions_json = json.dumps(items, ensure_ascii=False)
+                    s.commit()
+                    raise ValueError(ev["message"] or "该建议未通过参数校验, 无法执行")
+
+                change = apply_patch(ev, source=str(item.get("source") or "llm"),
+                                     review_id=review_id, suggestion_index=index, session=s)
+                item["patch"]["from"], item["patch"]["to"] = ev["from"], ev["to"]
+                item["change_id"] = change.id
+                item["applied_at"] = change.time
+                info = {
+                    "applied": True, "change_id": change.id,
+                    "group": change.group, "key": change.key, "label": change.label,
+                    "from": change.from_value, "to": change.to_value,
+                    "message": (f"{change.group}.{change.key} 已由 {change.from_value:g} "
+                                f"调整为 {change.to_value:g} 并热生效"
+                                + (f"({ev['message']})" if ev["message"] else "")),
+                }
+
+            item["status"] = status
+            items[index] = item
+            review.suggestions_json = json.dumps(items, ensure_ascii=False)
+            s.commit()
+            s.refresh(review)
+            return review, info
 
 
 review_service = ReviewService()

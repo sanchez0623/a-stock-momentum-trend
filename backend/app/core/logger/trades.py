@@ -18,11 +18,13 @@ from typing import Any
 from sqlmodel import Session, select
 
 from app import db
+from app.core.config import config_manager
+from app.core.fees import compute_trade_fee
 from app.models.models import Trade
 
 logger = logging.getLogger(__name__)
 
-CSV_HEADER = ["time", "symbol", "name", "action", "price", "qty", "amount",
+CSV_HEADER = ["time", "symbol", "name", "action", "price", "qty", "amount", "fee",
               "reason", "signal_strength", "plan_id", "pnl", "score", "note"]
 
 
@@ -55,9 +57,37 @@ class TradeLogger:
 
     def append_csv(self, row: dict[str, Any]) -> None:
         self._ensure_csv()
+        # 旧文件表头可能缺列(如升级前无 fee) -> 整文件按新表头重建, 避免错位
+        if self.csv_path.exists():
+            with open(self.csv_path, "r", encoding="utf-8-sig", newline="") as f:
+                first = f.readline().strip()
+            if first and first != ",".join(CSV_HEADER):
+                self._rebuild_csv_from_db()
         with open(self.csv_path, "a", newline="", encoding="utf-8-sig") as f:
             writer = csv.DictWriter(f, fieldnames=CSV_HEADER, extrasaction="ignore")
             writer.writerow(row)
+
+    def _rebuild_csv_from_db(self) -> None:
+        """表头变更时, 用 trades 表全量记录按新表头重写 CSV."""
+        try:
+            with db.session_scope() as s:
+                rows = list(s.exec(select(Trade).order_by(Trade.time.asc(), Trade.id.asc())).all())
+            with open(self.csv_path, "w", newline="", encoding="utf-8-sig") as f:
+                writer = csv.DictWriter(f, fieldnames=CSV_HEADER, extrasaction="ignore")
+                writer.writeheader()
+                for t in rows:
+                    writer.writerow({
+                        "time": t.time, "symbol": t.symbol, "name": t.name,
+                        "action": t.action, "price": t.price, "qty": t.qty,
+                        "amount": t.amount, "fee": t.fee, "reason": t.reason,
+                        "signal_strength": t.signal_strength, "plan_id": t.plan_id,
+                        "pnl": t.pnl if t.pnl is not None else "",
+                        "score": t.score if t.score is not None else "",
+                        "note": t.note,
+                    })
+            logger.info("trades.csv 表头升级, 已按新表头重建(%d 行)", len(rows))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("trades.csv 重建失败, 继续追加: %s", exc)
 
     def export_csv(self) -> str:
         """返回完整 CSV 文本(含表头), 供下载/复制."""
@@ -80,14 +110,27 @@ class TradeLogger:
         score: float | None = None,
         note: str = "",
         time: str | None = None,
+        fee: float | None = None,
         session: Session | None = None,
     ) -> Trade:
-        """写入 SQLite trades 表 + 追加 CSV."""
+        """写入 SQLite trades 表 + 追加 CSV.
+
+        fee: 若传入则直接使用, 否则按当前手续费配置(含印花税, 仅卖方)自动计算.
+        卖出且 pnl 为已实现盈亏时, 自动扣减手续费得到净额后存储.
+        """
         row_time = time or _now()
+        amount = round(price * qty, 2)
+        if fee is None:
+            fee = compute_trade_fee(action, amount, config_manager.get().get("手续费"))
+        # 卖出: 已实现盈亏扣手续费为净额(买入 pnl 通常为空)
+        stored_pnl = pnl
+        if stored_pnl is not None and action == "sell":
+            stored_pnl = round(stored_pnl - fee, 2)
         trade = Trade(time=row_time, symbol=symbol, name=name, action=action,
-                      price=round(price, 4), qty=qty, amount=round(price * qty, 2),
+                      price=round(price, 4), qty=qty, amount=amount, fee=round(fee, 2),
                       reason=reason, signal_strength=signal_strength, plan_id=plan_id,
-                      pnl=round(pnl, 2) if pnl is not None else None, score=score, note=note)
+                      pnl=round(stored_pnl, 2) if stored_pnl is not None else None,
+                      score=score, note=note)
         if session is not None:
             session.add(trade)
             session.commit()
@@ -100,7 +143,7 @@ class TradeLogger:
         self.append_csv({
             "time": trade.time, "symbol": trade.symbol, "name": trade.name,
             "action": trade.action, "price": trade.price, "qty": trade.qty,
-            "amount": trade.amount, "reason": trade.reason,
+            "amount": trade.amount, "fee": trade.fee, "reason": trade.reason,
             "signal_strength": trade.signal_strength, "plan_id": trade.plan_id,
             "pnl": trade.pnl if trade.pnl is not None else "",
             "score": trade.score if trade.score is not None else "",

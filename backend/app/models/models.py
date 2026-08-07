@@ -55,7 +55,8 @@ class Position(SQLModel, table=True):
     symbol: str = Field(index=True)
     name: str = Field(default="")
     qty: int = Field(default=0)  # 股
-    cost: float = Field(default=0.0)  # 持仓成本(加权)
+    cost: float = Field(default=0.0)  # 含费摊薄成本(加权, 已摊入买入手续费), 券商 APP 口径
+    cost_raw: float = Field(default=0.0)  # 纯成交均价(不含费), 仅用于顺向加仓判断
     status: str = Field(default="holding", index=True)  # holding / closed
     updated_at: str = Field(default_factory=_now)
 
@@ -97,6 +98,7 @@ class Trade(SQLModel, table=True):
     price: float = Field(default=0.0)
     qty: int = Field(default=0)
     amount: float = Field(default=0.0)
+    fee: float = Field(default=0.0)  # 本笔手续费(净额的 pnl 已扣减)
     reason: str = Field(default="")
     signal_strength: float = Field(default=0.0)
     plan_id: int | None = Field(default=None)
@@ -128,6 +130,26 @@ class AiReview(SQLModel, table=True):
     suggestions_json: str = Field(default="[]")  # [{text, status}]
     model: str = Field(default="")
     rule_result_json: str = Field(default="{}")
+
+
+class ConfigChange(SQLModel, table=True):
+    """参数变更记录(复盘建议采纳 -> 写回配置), 支持一键回滚与效果追踪骨架."""
+
+    id: int | None = Field(default=None, primary_key=True)
+    time: str = Field(default_factory=_now, index=True)
+    group: str = Field(default="", index=True)   # 配置分组, 如 趋势
+    key: str = Field(default="", index=True)     # 字段名, 如 adx_threshold
+    label: str = Field(default="")               # 中文标签, 展示用
+    from_value: float = Field(default=0.0)       # 改前值(标量, 展示用)
+    to_value: float = Field(default=0.0)         # 改后值(标量, 展示用)
+    patch_json: str = Field(default="{}")        # 实际应用的 partial config
+    revert_json: str = Field(default="{}")       # 撤销用 partial config
+    source: str = Field(default="")              # rule:<code> / llm
+    review_id: int | None = Field(default=None, index=True)
+    suggestion_index: int | None = Field(default=None)
+    status: str = Field(default="active", index=True)  # active / reverted
+    reverted_at: str = Field(default="")
+    note: str = Field(default="")                # 闸门说明, 如"已按±20%上限收敛"
 
 
 class Score(SQLModel, table=True):

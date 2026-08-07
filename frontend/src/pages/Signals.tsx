@@ -109,7 +109,7 @@ export default function Signals() {
                   <option value="">-- 选择持仓 --</option>
                   {positions.map((p) => (
                     <option key={p.symbol} value={p.symbol}>
-                      {p.symbol} {p.name || ''} · {p.qty} 股 · 成本 {p.cost.toFixed(2)} · {fmtPct(p.unrealized_pct)}
+                      {p.symbol} {p.name || ''} · {p.qty} 股 · 含费成本 {p.cost.toFixed(2)} · {fmtPct(p.unrealized_pct)}
                     </option>
                   ))}
                 </select>

@@ -12,6 +12,16 @@ from sqlmodel import Session
 
 from app.api.deps import get_session
 from app.core.ai_review import review_service
+from app.core.ai_review.tuning import (
+    COOLDOWN_DAYS,
+    MAX_ACCEPT_PER_REVIEW,
+    MAX_DRIFT_PCT,
+    MAX_STEP_PCT,
+    WHITELIST,
+    days_since,
+    list_changes,
+    revert_change,
+)
 from app.core.config import config_manager
 
 router = APIRouter(prefix="/api/ai-review", tags=["ai-review"])
@@ -84,13 +94,69 @@ async def review_history(limit: int = Query(20, ge=1, le=100), session: Session 
 
 @router.post("/suggestion")
 async def mark_suggestion(body: SuggestionBody, session: Session = Depends(get_session)) -> dict:
+    """标记建议采纳/忽略; 带参数补丁的建议在采纳时经三道闸门后热写回配置."""
     try:
-        review = review_service.update_suggestion(body.review_id, body.index, body.status, session)
+        review, info = review_service.update_suggestion(
+            body.review_id, body.index, body.status, session)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if review is None:
         raise HTTPException(status_code=404, detail="复盘记录不存在")
-    return {"code": 0, "msg": "ok", "data": {"id": review.id, "suggestions": json.loads(review.suggestions_json or "[]")}}
+    return {"code": 0, "msg": info.get("message") or "ok", "data": {
+        "id": review.id,
+        "suggestions": json.loads(review.suggestions_json or "[]"),
+        "applied": info,
+    }}
+
+
+def _change_dump(c) -> dict:
+    return {
+        "id": c.id, "time": c.time, "group": c.group, "key": c.key,
+        "label": c.label or c.key,
+        "from": c.from_value, "to": c.to_value,
+        "source": c.source, "review_id": c.review_id,
+        "status": c.status, "reverted_at": c.reverted_at, "note": c.note,
+        "days_active": round(days_since(c.time), 1) if c.status == "active" else None,
+    }
+
+
+@router.get("/changes")
+async def config_changes(limit: int = Query(50, ge=1, le=200),
+                         session: Session = Depends(get_session)) -> dict:
+    """参数变更记录(采纳建议导致的配置改动, 可回滚)."""
+    rows = list_changes(limit, session)
+    return {"code": 0, "msg": "ok", "data": [_change_dump(c) for c in rows]}
+
+
+@router.post("/changes/{change_id}/revert")
+async def revert_config_change(change_id: int, session: Session = Depends(get_session)) -> dict:
+    """一键撤销某次参数调整, 恢复到改前值."""
+    try:
+        change = revert_change(change_id, session)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"code": 0, "msg": f"{change.group}.{change.key} 已恢复为 {change.from_value:g}",
+            "data": _change_dump(change)}
+
+
+@router.get("/tuning-policy")
+async def tuning_policy() -> dict:
+    """调参护栏策略(供前端展示边界说明)."""
+    groups: dict[str, list[str]] = {}
+    for path, rule in WHITELIST.items():
+        g, k = path.split(".", 1)
+        groups.setdefault(g, []).append(f"{k}({rule.label})")
+    return {"code": 0, "msg": "ok", "data": {
+        "max_step_pct": MAX_STEP_PCT * 100,
+        "max_drift_pct": MAX_DRIFT_PCT * 100,
+        "cooldown_days": COOLDOWN_DAYS,
+        "max_accept_per_review": MAX_ACCEPT_PER_REVIEW,
+        "field_count": len(WHITELIST),
+        "allowed_groups": groups,
+        "forbidden_groups": ["风控", "仓位", "数据源", "llm", "手续费"],
+    }}
 
 
 @router.get("/config")

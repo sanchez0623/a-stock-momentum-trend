@@ -21,7 +21,7 @@ from app.models.models import Trade
 # CSV 导出目录(方案 §4.8: data/exports)
 EXPORT_DIR = Path("data") / "exports"
 
-CSV_HEADERS = ["时间", "代码", "名称", "方向", "价格", "数量", "金额", "盈亏", "原因"]
+CSV_HEADERS = ["时间", "代码", "名称", "方向", "价格", "数量", "金额", "手续费", "盈亏(净)", "原因"]
 
 
 class TradeLogService:
@@ -64,7 +64,7 @@ class TradeLogService:
         for t in trades:
             writer.writerow([
                 t.time, t.symbol, t.name, "买入" if t.action == "buy" else "卖出",
-                t.price, t.qty, t.amount, t.pnl if t.pnl is not None else "", t.reason,
+                t.price, t.qty, t.amount, t.fee, t.pnl if t.pnl is not None else "", t.reason,
             ])
         filename = f"trades_{dt.date.today().strftime('%Y%m%d_%H%M%S')}.csv"
         return buf.getvalue(), filename

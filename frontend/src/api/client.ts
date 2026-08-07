@@ -19,6 +19,7 @@ export async function request<T = unknown>(path: string, init?: RequestInit): Pr
 export const api = {
   health: () => request<HealthData>('/health'),
   config: () => request<Record<string, unknown>>('/config'),
+  configDefaults: () => request<Record<string, unknown>>('/config/defaults'),
   updateConfig: (config: Record<string, unknown>) =>
     request<Record<string, unknown>>('/config', { method: 'PUT', body: JSON.stringify({ config }) }),
   dataSourceStatus: () => request<SourceStatus[]>('/data-sources/status'),
@@ -104,12 +105,18 @@ export const api = {
   aiReviewResult: (taskId: string) => request<AiReviewTask>(`/ai-review/result?task_id=${taskId}`),
   aiReviewHistory: () => request<AiReviewRecord[]>('/ai-review/history'),
   aiReviewSuggestion: (reviewId: number, index: number, status: 'accepted' | 'rejected') =>
-    request<{ suggestions: AiReviewSuggestion[] }>('/ai-review/suggestion', {
+    request<AiReviewMarkResponse>('/ai-review/suggestion', {
       method: 'POST', body: JSON.stringify({ review_id: reviewId, index, status }),
     }),
   aiReviewConfig: () => request<AiReviewConfig>('/ai-review/config'),
   aiReviewSaveConfig: (cfg: { base_url?: string; api_key?: string; model?: string; enabled?: boolean }) =>
     request<AiReviewConfig>('/ai-review/config', { method: 'PUT', body: JSON.stringify(cfg) }),
+  // 参数变更记录(采纳建议 -> 热写回配置 -> 可回滚)
+  aiReviewChanges: () => request<ConfigChange[]>('/ai-review/changes'),
+  aiReviewRevert: (changeId: number) =>
+    request<ConfigChange>('/ai-review/changes/' + changeId + '/revert', { method: 'POST' }),
+  // 调参护栏策略(供前端展示边界)
+  aiReviewTuningPolicy: () => request<TuningPolicy>('/ai-review/tuning-policy'),
 }
 
 export interface Quote {
@@ -171,9 +178,15 @@ export interface PositionItem {
   symbol: string
   name: string
   qty: number
+  /** 含费摊薄成本(已摊入买入手续费), 券商 APP 口径 */
   cost: number
+  /** 纯成交均价(不含费), 仅用于顺向加仓判断 */
+  cost_raw: number
+  /** 摊在当前持仓上的买入手续费 = (cost - cost_raw) * qty */
+  fee_cost: number
   price: number
   market_value: number
+  /** 浮盈已扣买入手续费(因 cost 含费) */
   unrealized_pnl: number
   unrealized_pct: number
 }
@@ -181,7 +194,12 @@ export interface PositionItem {
 export interface Portfolio {
   positions: PositionItem[]
   market_value: number
+  /** 含费总成本 */
   cost_value: number
+  /** 纯成交额总成本(不含费) */
+  cost_raw_value: number
+  /** 已摊入持仓的买入手续费合计 */
+  fee_cost: number
   unrealized_pnl: number
   unrealized_pct: number
 }
@@ -236,6 +254,12 @@ export interface RiskStatus {
   config: Record<string, number>
 }
 
+/** 选股理由标签. kind: good 利多 / warn 需注意 / bad 偏空 / info 中性 */
+export interface ScreenerTag {
+  text: string
+  kind: 'good' | 'warn' | 'bad' | 'info' | string
+}
+
 export interface ScreenerTask {
   id: string
   status: string
@@ -258,6 +282,12 @@ export interface ScreenerTask {
     rsi: number
     volume_ratio: number
     amount_avg: number
+    // 以下为人话理由字段(后端 _build_reason 产出; 旧任务结果可能缺失, 前端需容错)
+    bias?: number
+    reason?: string
+    risk?: string
+    tags?: ScreenerTag[]
+    detail?: Record<string, string>
   }>
   error: string
 }
@@ -272,6 +302,7 @@ export interface TradeRecord {
   price: number
   qty: number
   amount: number
+  fee: number
   reason: string
   pnl: number
   note: string
@@ -339,6 +370,66 @@ export interface AiReviewIssue {
 export interface AiReviewSuggestion {
   text: string
   status: string
+  source?: string
+  /** 可执行参数补丁(采纳时经三道闸门热写回配置); 纯文字建议无此字段 */
+  patch?: {
+    group: string
+    key: string
+    from: number | null
+    to: number
+    label: string
+  }
+  /** 闸门状态: ok / clamped / not_whitelisted / cooldown / drift_limit / invalid / no_change / duplicate / text_only */
+  guard?: string
+  guard_msg?: string
+  /** 已采纳并生效后回填的变更记录 id; 回退请到「参数变更记录」 */
+  change_id?: number
+  applied_at?: string
+}
+
+/** mark_suggestion 返回: 含本次是否真的改了参数的 info */
+export interface AiReviewApplyInfo {
+  applied: boolean
+  message: string
+  change_id?: number
+  group?: string
+  key?: string
+  label?: string
+  from?: number
+  to?: number
+}
+export interface AiReviewMarkResponse {
+  id: number
+  suggestions: AiReviewSuggestion[]
+  applied: AiReviewApplyInfo
+}
+
+/** 参数变更记录(采纳建议导致, 可一键回滚) */
+export interface ConfigChange {
+  id: number
+  time: string
+  group: string
+  key: string
+  label: string
+  from: number
+  to: number
+  source: string
+  review_id: number | null
+  status: string // active | reverted
+  reverted_at: string
+  note: string
+  days_active: number | null
+}
+
+/** 调参护栏策略(后端 tuning.py 常量) */
+export interface TuningPolicy {
+  max_step_pct: number
+  max_drift_pct: number
+  cooldown_days: number
+  max_accept_per_review: number
+  field_count: number
+  allowed_groups: Record<string, string[]>
+  forbidden_groups: string[]
 }
 export interface AiReviewRecord {
   id: number
