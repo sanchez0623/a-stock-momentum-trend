@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../api/client'
 import type { PositionItem, Signal, SignalRecord } from '../api/client'
-import { Button, Card, ErrorBox, EmptyState, Field, ListRow, Loading, Tag, inputStyle, toast } from '../components/ui'
+import { Button, Card, ErrorBox, EmptyState, FormRow, ListRow, Loading, Tag, inputStyle, toast } from '../components/ui'
 import { SIGNAL_META } from '../components/ui'
 import { fmtPct } from '../const/colors'
 import SymbolInput from '../components/SymbolInput'
@@ -95,40 +95,59 @@ export default function Signals() {
       <h1 className="mb-4 text-[20px] font-semibold">信号中心</h1>
       {error && <ErrorBox message={error} />}
 
-      {/* 操作区: 只负责输入与触发, 不展示结果 */}
-      <Card title="信号分析(输入代码或选持仓, 有信号时点结果行「生成计划」直达交易计划)">
+      {/* 操作区: 两条输入通道(持仓快捷入口 / 代码手动输入), 共用 FormRow 对齐 */}
+      <Card title="信号分析">
         {positions.length > 0 && (
-          <div className="mb-3 flex items-end gap-2">
-            <div className="flex-1">
-              <Field label="从持仓选择">
-                <select
-                  style={{ ...inputStyle, width: '100%' }}
-                  value=""
-                  onChange={(e) => { if (e.target.value) analyzePosition(e.target.value) }}
-                >
-                  <option value="">-- 选择持仓 --</option>
-                  {positions.map((p) => (
-                    <option key={p.symbol} value={p.symbol}>
-                      {p.symbol} {p.name || ''} · {p.qty} 股 · 含费成本 {p.cost.toFixed(2)} · {fmtPct(p.unrealized_pct)}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-            </div>
-            <Button kind="ghost" onClick={analyzeAll} disabled={busy}>
-              {busy ? '分析中...' : `一键分析全部持仓(${positions.length})`}
-            </Button>
-          </div>
+          <>
+            <FormRow
+              label="从持仓选择"
+              hint="选中后自动填入代码并分析"
+              action={
+                <Button kind="ghost" className="h-9 shrink-0" onClick={analyzeAll} disabled={busy}>
+                  {busy ? '分析中...' : `一键分析全部持仓(${positions.length})`}
+                </Button>
+              }
+            >
+              <select
+                value=""
+                onChange={(e) => { if (e.target.value) analyzePosition(e.target.value) }}
+                className="h-9 w-full rounded border border-[#d9d9d9] bg-white px-2.5 text-[13px] outline-none transition-colors"
+              >
+                <option value="">-- 选择持仓 --</option>
+                {positions.map((p) => (
+                  <option key={p.symbol} value={p.symbol}>
+                    {p.symbol} {p.name || ''} · {p.qty} 股 · {fmtPct(p.unrealized_pct)}
+                  </option>
+                ))}
+              </select>
+            </FormRow>
+            <div className="my-3 border-t border-divider" />
+          </>
         )}
-        <div className="flex items-end gap-2">
-          <div className="flex-1">
-            <Field label="股票代码(多个用逗号或空格分隔, 上限50)">
-              <SymbolInput value={symbol} onChange={setSymbol} onNameFound={setName} onEnter={() => evaluate()} placeholder="如 300139,688079,688146" />
-            </Field>
-          </div>
-          {name && <div className="pb-2.5 text-[13px] text-ink-secondary">{name}</div>}
-          <Button onClick={() => evaluate()} disabled={busy || !symbol.trim()}>{busy ? '分析中...' : '评估'}</Button>
-        </div>
+
+        <FormRow
+          label="股票代码"
+          hint={
+            <>
+              多个用逗号或空格分隔, 上限 50
+              {name && <span className="ml-2 font-medium text-fall">{name}</span>}
+            </>
+          }
+          action={
+            <Button className="h-9 w-20 shrink-0" onClick={() => evaluate()} disabled={busy || !symbol.trim()}>
+              {busy ? '分析中...' : '评估'}
+            </Button>
+          }
+        >
+          <SymbolInput
+            value={symbol}
+            onChange={setSymbol}
+            onNameFound={setName}
+            onEnter={() => evaluate()}
+            placeholder="如 300139,688079,688146"
+            style={{ ...inputStyle, height: 36 }}
+          />
+        </FormRow>
       </Card>
 
       {/* 结果区: 单个与批量统一列表 */}
@@ -170,30 +189,39 @@ export default function Signals() {
 }
 
 // 统一结果行: 单个评估和批量分析共用
+// 布局: 主行(股票/信号/强度/操作) + 副行(完整理由, 引用块样式, 不截断)
 function ResultRow({ r, onGeneratePlan, busy }: { r: ResultItem; onGeneratePlan: (symbol: string, name: string) => void; busy: boolean }) {
   const sig = r.signal
   const meta = sig ? SIGNAL_META[sig.type] ?? { label: sig.type, color: '#64748b' } : null
   return (
-    <ListRow className="py-2.5">
-      <span className="flex items-center gap-2.5">
-        <span className="font-semibold">{r.symbol}</span>
-        <span className="text-ink-muted">{r.name || ''}</span>
-        {r.price > 0 && <span className="text-ink-faint">@{r.price.toFixed(2)}</span>}
-      </span>
-      {r.error ? (
-        <span className="text-xs text-rise">分析失败: {r.error}</span>
-      ) : sig ? (
-        <span className="flex items-center gap-2">
-          <Tag color={meta!.color}>{meta!.label}</Tag>
-          <b className={sig.strength >= 70 ? 'text-rise' : 'text-ink-secondary'}>{sig.strength.toFixed(0)}</b>
-          <span className="max-w-[300px] truncate text-ink-secondary">{sig.reason}</span>
-          <Button kind="primary" onClick={() => onGeneratePlan(r.symbol, r.name)} disabled={busy} style={{ padding: '4px 12px', fontSize: 12 }}>
-            {busy ? '生成中...' : '生成计划'}
-          </Button>
+    <div className="border-b border-divider py-2.5 last:border-b-0">
+      {/* 主行: 一眼可扫的决策信息 */}
+      <div className="flex items-center justify-between gap-2 text-[13px]">
+        <span className="flex min-w-0 items-center gap-2">
+          <span className="shrink-0 font-semibold">{r.symbol}</span>
+          <span className="truncate text-ink-muted">{r.name || ''}</span>
+          {r.price > 0 && <span className="shrink-0 text-ink-faint">@{r.price.toFixed(2)}</span>}
         </span>
-      ) : (
-        <span className="text-xs text-ink-faint">无信号(不满足当前条件)</span>
-      )}
-    </ListRow>
+        {r.error ? (
+          <span className="shrink-0 text-xs text-rise">分析失败</span>
+        ) : sig ? (
+          <span className="flex shrink-0 items-center gap-2">
+            <Tag color={meta!.color}>{meta!.label}</Tag>
+            <b className={sig.strength >= 70 ? 'text-rise' : 'text-ink-secondary'}>{sig.strength.toFixed(0)}</b>
+            <Button kind="primary" onClick={() => onGeneratePlan(r.symbol, r.name)} disabled={busy} className="h-7 px-3 text-xs">
+              {busy ? '生成中...' : '生成计划'}
+            </Button>
+          </span>
+        ) : (
+          <span className="shrink-0 text-xs text-ink-faint">无信号(不满足当前条件)</span>
+        )}
+      </div>
+      {/* 副行: 完整理由/错误详情, 引用块样式, 永不截断 */}
+      {r.error ? (
+        <p className="mt-1.5 border-l-2 border-rise/40 pl-2.5 text-xs leading-relaxed text-rise">{r.error}</p>
+      ) : sig?.reason ? (
+        <p className="mt-1.5 border-l-2 border-divider pl-2.5 text-xs leading-relaxed text-ink-secondary">{sig.reason}</p>
+      ) : null}
+    </div>
   )
 }

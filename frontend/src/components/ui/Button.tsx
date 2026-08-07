@@ -9,7 +9,7 @@ const KIND_CLASS: Record<string, string> = {
   dashed: 'border border-dashed border-line bg-white text-ink hover:border-link hover:text-link',
 }
 
-export function Button({ children, onClick, kind = 'primary', disabled, style, type, danger }: {
+export function Button({ children, onClick, kind = 'primary', disabled, style, type, danger, className }: {
   children: ReactNode
   onClick?: () => void
   kind?: 'primary' | 'ghost' | 'danger' | 'default' | 'dashed'
@@ -17,6 +17,7 @@ export function Button({ children, onClick, kind = 'primary', disabled, style, t
   style?: CSSProperties
   type?: 'button' | 'submit'
   danger?: boolean
+  className?: string
 }) {
   const kindKey = danger || kind === 'danger' ? 'danger' : KIND_CLASS[kind] ? kind : 'primary'
   return (
@@ -28,6 +29,7 @@ export function Button({ children, onClick, kind = 'primary', disabled, style, t
         'inline-flex items-center justify-center rounded px-4 py-1.5 text-[13px] transition-colors duration-150 select-none',
         'disabled:cursor-not-allowed disabled:opacity-50',
         KIND_CLASS[kindKey],
+        className,
       )}
       style={{ fontSize: 13, ...style }}
     >
