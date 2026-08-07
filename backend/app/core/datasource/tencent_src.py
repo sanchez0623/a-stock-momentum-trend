@@ -128,8 +128,13 @@ class TencentSource(DataSourceInterface):
         raise NotImplementedError("tencent 不提供股票列表, 由 manager 切换到其他源")
 
     async def health_check(self) -> bool:
+        """直连探测(不经过 _throttle 限速锁, 避免业务并发时排队超时被误熔断)."""
         try:
-            quotes = await self.get_realtime_quote(["000001", "600519"])
-            return any(q.is_valid for q in quotes)
+            client = await self._get_client()
+            resp = await client.get(
+                f"https://qt.gtimg.cn/q={self._code('000001')}",
+                timeout=5.0,
+            )
+            return resp.status_code == 200 and len(resp.text) > 10
         except Exception:  # noqa: BLE001
             return False

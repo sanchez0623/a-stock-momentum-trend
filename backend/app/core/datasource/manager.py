@@ -23,7 +23,7 @@ from app.core.datasource.cache import kline_store, quote_cache
 logger = logging.getLogger(__name__)
 
 FETCH_TIMEOUT = 15.0
-CIRCUIT_AFTER = 3
+CIRCUIT_AFTER = 5  # 连续失败 5 次才熔断(原 3, 腾讯偶发抖动 3 次易误熔断)
 CIRCUIT_SECS = 600
 HEALTH_INTERVAL = 60.0
 
