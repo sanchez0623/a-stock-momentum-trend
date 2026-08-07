@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api/client'
-import type { Signal, SignalRecord } from '../api/client'
-import { Button, Card, ErrorBox, Field, Loading, Tag } from '../components/ui'
+import type { PositionItem, Signal, SignalRecord } from '../api/client'
+import { Button, Card, ErrorBox, Field, Loading, Tag, inputStyle } from '../components/ui'
 import { SIGNAL_META } from '../components/ui'
+import { fmtPct } from '../const/colors'
 import SymbolInput from '../components/SymbolInput'
 
 export default function Signals() {
@@ -13,25 +14,36 @@ export default function Signals() {
   const [name, setName] = useState('')
   const [evaluating, setEvaluating] = useState(false)
   const [evalResult, setEvalResult] = useState<Signal | null>(null)
+  const [positions, setPositions] = useState<PositionItem[]>([])
 
   const refresh = () => api.signals(undefined, 30).then(setRecords).catch((e) => setError(String(e.message || e)))
 
   useEffect(() => {
     refresh().finally(() => setLoading(false))
+    api.positions().then((p) => setPositions(p.positions)).catch(() => {})
   }, [])
 
-  const evaluate = async () => {
-    if (!symbol.trim()) return
+  const evaluate = async (target?: string) => {
+    const sym = (target ?? symbol).trim()
+    if (!sym) return
     setEvaluating(true)
     setError('')
     try {
-      const r = await api.evaluateSignal(symbol.trim())
+      const r = await api.evaluateSignal(sym)
       setEvalResult(r.signal)
     } catch (e) {
       setError(String((e as Error).message))
     } finally {
       setEvaluating(false)
     }
+  }
+
+  // 从持仓选择: 填充代码并自动评估(信号引擎结合持仓成本判断加仓/减仓/止损)
+  const analyzePosition = async (sym: string) => {
+    setSymbol(sym)
+    const p = positions.find((x) => x.symbol === sym)
+    if (p?.name) setName(p.name)
+    await evaluate(sym)
   }
 
   if (loading) return <Loading />
@@ -42,6 +54,24 @@ export default function Signals() {
       {error && <ErrorBox message={error} />}
 
       <Card title="手动评估(生成信号后可到「交易计划」生成计划)">
+        {positions.length > 0 && (
+          <div style={{ marginBottom: 12 }}>
+            <Field label="从持仓选择(自动评估, 结合持仓成本判断加仓/减仓/止损)">
+              <select
+                style={{ ...inputStyle, width: '100%' }}
+                value=""
+                onChange={(e) => { if (e.target.value) analyzePosition(e.target.value) }}
+              >
+                <option value="">-- 选择持仓分析 --</option>
+                {positions.map((p) => (
+                  <option key={p.symbol} value={p.symbol}>
+                    {p.symbol} {p.name || ''} · {p.qty} 股 · 成本 {p.cost.toFixed(2)} · {fmtPct(p.unrealized_pct)}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          </div>
+        )}
         <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
           <div style={{ flex: 1 }}>
             <Field label="股票代码">
@@ -49,7 +79,7 @@ export default function Signals() {
             </Field>
           </div>
           {name && <div style={{ color: '#666', fontSize: 13, paddingBottom: 10 }}>{name}</div>}
-          <Button onClick={evaluate} disabled={evaluating || !symbol.trim()}>{evaluating ? '评估中...' : '评估'}</Button>
+          <Button onClick={() => evaluate()} disabled={evaluating || !symbol.trim()}>{evaluating ? '评估中...' : '评估'}</Button>
         </div>
         {evalResult && (
           <div style={{ marginTop: 12, padding: 12, background: '#f8fafc', borderRadius: 8, fontSize: 13 }}>
