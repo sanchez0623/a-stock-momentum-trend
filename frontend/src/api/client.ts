@@ -233,6 +233,7 @@ export interface ScreenerTask {
   progress: number
   result: Array<{
     symbol: string
+    name: string
     total: number
     trend_score: number
     momentum_score: number

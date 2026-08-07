@@ -193,6 +193,8 @@ class StockScreener:
         symbols = [sym for sym, _, _ in filtered]
         if not symbols:
             return []
+        # symbol -> name 映射(结果带名称, 零额外接口调用)
+        name_map = {sym: name for sym, name, _ in filtered}
 
         results: list[dict[str, Any]] = []
         total = len(symbols)
@@ -216,6 +218,7 @@ class StockScreener:
                 )
                 score = score_indicators(ind, cfg)
                 score["symbol"] = symbol
+                score["name"] = name_map.get(symbol, "")
                 score["amount_avg"] = round(avg_amount / 100_000_000, 2)  # 亿
                 results.append(score)
             except Exception as exc:  # noqa: BLE001

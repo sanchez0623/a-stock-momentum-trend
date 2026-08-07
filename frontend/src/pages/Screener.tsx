@@ -113,6 +113,7 @@ export default function Screener() {
                 <tr style={{ color: '#888', textAlign: 'left' }}>
                   <th style={{ padding: '8px 6px' }}>#</th>
                   <th style={{ padding: '8px 6px' }}>代码</th>
+                  <th style={{ padding: '8px 6px' }}>名称</th>
                   <th style={{ padding: '8px 6px', textAlign: 'right' }}>总分</th>
                   <th style={{ padding: '8px 6px', textAlign: 'right' }}>趋势</th>
                   <th style={{ padding: '8px 6px', textAlign: 'right' }}>动量</th>
@@ -128,6 +129,7 @@ export default function Screener() {
                   <tr key={r.symbol} style={{ borderTop: '1px solid #f0f1f3' }}>
                     <td style={{ padding: '8px 6px', color: '#bbb' }}>{i + 1}</td>
                     <td style={{ padding: '8px 6px', fontWeight: 600 }}>{r.symbol}</td>
+                    <td style={{ padding: '8px 6px' }}>{r.name || '-'}</td>
                     <td style={{ padding: '8px 6px', textAlign: 'right', fontWeight: 700, color: r.total >= 60 ? '#dc2626' : '#333' }}>{r.total.toFixed(1)}</td>
                     <td style={{ padding: '8px 6px', textAlign: 'right' }}>{r.trend_score.toFixed(1)}</td>
                     <td style={{ padding: '8px 6px', textAlign: 'right' }}>{r.momentum_score.toFixed(1)}</td>
