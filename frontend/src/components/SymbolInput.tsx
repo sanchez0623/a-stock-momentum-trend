@@ -27,9 +27,12 @@ export default function SymbolInput({ value, onChange, onNameFound, placeholder,
   const [hint, setHint] = useState<{ text: string; error: boolean } | null>(null)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  // 多代码(含逗号/空格分隔)时不做名称查询, 名称由批量分析结果返回
+  const isMulti = (raw: string) => /[,，\s]/.test(raw)
+
   const lookup = (raw: string, retried = false) => {
     const sym = normalize(raw)
-    if (!sym) return
+    if (!sym || isMulti(raw)) return
     setHint({ text: '查询中...', error: false })
     api
       .quote(sym)
@@ -56,7 +59,7 @@ export default function SymbolInput({ value, onChange, onNameFound, placeholder,
     const v = normalize(raw)
     onChange(v)
     if (timerRef.current) clearTimeout(timerRef.current)
-    timerRef.current = setTimeout(() => lookup(v), 300)
+    if (!isMulti(v)) timerRef.current = setTimeout(() => lookup(v), 300)
   }
 
   useEffect(() => () => {

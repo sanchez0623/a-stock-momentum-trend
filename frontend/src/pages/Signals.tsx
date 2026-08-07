@@ -32,20 +32,14 @@ export default function Signals() {
     api.positions().then((p) => setPositions(p.positions)).catch(() => {})
   }, [])
 
-  // 单个评估(输入代码 / 持仓下拉选中都走这里)
-  const evaluate = async (sym?: string) => {
-    const target = (sym ?? symbol).trim()
-    if (!target || busy) return
+  // 单个/多个代码评估(逗号或空格分隔), 统一走批量接口
+  const evaluate = async (codesArg?: string[]) => {
+    const codes = codesArg ?? symbol.split(/[,，\s]+/).filter(Boolean)
+    if (codes.length === 0 || busy) return
     setBusy(true)
     setError('')
     try {
-      const r = await api.evaluateSignal(target)
-      setResults([{
-        symbol: target,
-        name: r.signal?.name || name,
-        price: r.signal?.price || 0,
-        signal: r.signal,
-      }])
+      setResults(await api.evaluateBatch(codes))
     } catch (e) {
       setError(String((e as Error).message))
     } finally {
@@ -58,7 +52,7 @@ export default function Signals() {
     setSymbol(sym)
     const p = positions.find((x) => x.symbol === sym)
     if (p?.name) setName(p.name)
-    await evaluate(sym)
+    await evaluate([sym])
   }
 
   // 批量分析全部持仓
@@ -109,8 +103,8 @@ export default function Signals() {
         )}
         <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
           <div style={{ flex: 1 }}>
-            <Field label="股票代码">
-              <SymbolInput value={symbol} onChange={setSymbol} onNameFound={setName} placeholder="如 300750" />
+            <Field label="股票代码(多个用逗号或空格分隔)">
+              <SymbolInput value={symbol} onChange={setSymbol} onNameFound={setName} placeholder="如 300139,688079,688146" />
             </Field>
           </div>
           {name && <div style={{ color: '#666', fontSize: 13, paddingBottom: 10 }}>{name}</div>}
@@ -121,7 +115,7 @@ export default function Signals() {
       {/* 结果区: 单个与批量统一列表 */}
       <Card title={`分析结果${results ? `(${results.length})` : ''}`} style={{ marginTop: 12 }}>
         {!results ? (
-          <div style={{ color: '#999', fontSize: 13 }}>输入代码点「评估」, 或从持仓选择/一键分析。无信号时显示"无信号"(超买不追、趋势破坏属正常)。</div>
+          <div style={{ color: '#999', fontSize: 13 }}>输入一个或多个代码(逗号/空格分隔)点「评估」, 或从持仓选择/一键分析。无信号时显示"无信号"(超买不追、趋势破坏属正常)。</div>
         ) : results.length === 0 ? (
           <div style={{ color: '#999', fontSize: 13 }}>无结果。</div>
         ) : (
