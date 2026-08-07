@@ -140,9 +140,9 @@ class StatsService:
 
     @staticmethod
     def _health_score(closed: list[Trade]) -> int:
-        """健康度 0-100: 胜率30 + 盈亏比30 + 连亏控制20 + 纪律20."""
+        """健康度 0-100: 胜率30 + 盈亏比30 + 连亏控制20 + 纪律20. 无平仓交易返回 0(暂无数据)."""
         if not closed:
-            return 50
+            return 0
         wins = [t for t in closed if t.pnl > 0]
         losses = [t for t in closed if t.pnl < 0]
         wr = len(wins) / len(closed)

@@ -30,10 +30,12 @@ export default function Review() {
       {/* 健康度 */}
       <div style={{ display: 'flex', gap: 16, marginBottom: 16, alignItems: 'center' }}>
         <Card title="交易健康度" style={{ width: 220 }}>
-          <div style={{ fontSize: 30, fontWeight: 700, color: healthColor(scores?.health ?? 50) }}>
-            {scores ? scores.health : '-'}
+          <div style={{ fontSize: 30, fontWeight: 700, color: healthColor(scores?.health ?? 0) }}>
+            {scores && scores.health > 0 ? scores.health : '-'}
           </div>
-          <div style={{ fontSize: 12, color: '#888', marginTop: 4 }}>{healthComment(scores?.health ?? 50)}</div>
+          <div style={{ fontSize: 12, color: '#888', marginTop: 4 }}>
+            {scores && scores.health > 0 ? healthComment(scores.health) : '暂无平仓交易, 完成一笔卖出后自动评估'}
+          </div>
         </Card>
         <Card title="关键指标">
           {summary ? (
