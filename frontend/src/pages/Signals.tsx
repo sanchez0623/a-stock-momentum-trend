@@ -1,14 +1,16 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api/client'
 import type { Signal, SignalRecord } from '../api/client'
-import { Button, Card, ErrorBox, Field, Loading, Tag, inputStyle } from '../components/ui'
+import { Button, Card, ErrorBox, Field, Loading, Tag } from '../components/ui'
 import { SIGNAL_META } from '../components/ui'
+import SymbolInput from '../components/SymbolInput'
 
 export default function Signals() {
   const [records, setRecords] = useState<SignalRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [symbol, setSymbol] = useState('')
+  const [name, setName] = useState('')
   const [evaluating, setEvaluating] = useState(false)
   const [evalResult, setEvalResult] = useState<Signal | null>(null)
 
@@ -43,9 +45,10 @@ export default function Signals() {
         <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
           <div style={{ flex: 1 }}>
             <Field label="股票代码">
-              <input style={inputStyle} value={symbol} onChange={(e) => setSymbol(e.target.value)} placeholder="如 300750" />
+              <SymbolInput value={symbol} onChange={setSymbol} onNameFound={setName} placeholder="如 300750" />
             </Field>
           </div>
+          {name && <div style={{ color: '#666', fontSize: 13, paddingBottom: 10 }}>{name}</div>}
           <Button onClick={evaluate} disabled={evaluating || !symbol.trim()}>{evaluating ? '评估中...' : '评估'}</Button>
         </div>
         {evalResult && (

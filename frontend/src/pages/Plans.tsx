@@ -1,13 +1,15 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api/client'
 import type { PlanRecord } from '../api/client'
-import { Button, Card, ErrorBox, Field, Loading, inputStyle } from '../components/ui'
+import { Button, Card, ErrorBox, Field, Loading } from '../components/ui'
+import SymbolInput from '../components/SymbolInput'
 
 export default function Plans() {
   const [plans, setPlans] = useState<PlanRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [symbol, setSymbol] = useState('')
+  const [name, setName] = useState('')
   const [generating, setGenerating] = useState(false)
 
   const refresh = () => api.currentPlans().then(setPlans).catch((e) => setError(String(e.message || e)))
@@ -21,8 +23,9 @@ export default function Plans() {
     setGenerating(true)
     setError('')
     try {
-      await api.generatePlan(symbol.trim())
+      await api.generatePlan(symbol.trim(), name)
       setSymbol('')
+      setName('')
       refresh()
     } catch (e) {
       setError(String((e as Error).message))
@@ -47,9 +50,10 @@ export default function Plans() {
         <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
           <div style={{ flex: 1 }}>
             <Field label="股票代码">
-              <input style={inputStyle} value={symbol} onChange={(e) => setSymbol(e.target.value)} placeholder="如 600519(已持仓)" />
+              <SymbolInput value={symbol} onChange={setSymbol} onNameFound={setName} placeholder="如 600519(已持仓)" />
             </Field>
           </div>
+          {name && <div style={{ color: '#666', fontSize: 13, paddingBottom: 10 }}>{name}</div>}
           <Button onClick={generate} disabled={generating || !symbol.trim()}>{generating ? '生成中...' : '生成计划'}</Button>
         </div>
       </Card>

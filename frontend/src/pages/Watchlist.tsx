@@ -3,6 +3,7 @@ import { api } from '../api/client'
 import type { Portfolio, WatchlistItem } from '../api/client'
 import { colorByPct, fmtPct } from '../const/colors'
 import { Button, Card, ErrorBox, Field, Loading, Tag, inputStyle } from '../components/ui'
+import SymbolInput from '../components/SymbolInput'
 
 export default function Watchlist() {
   const [watch, setWatch] = useState<WatchlistItem[]>([])
@@ -107,16 +108,16 @@ export default function Watchlist() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           <Card title="添加自选">
             <Field label="股票代码">
-              <input style={inputStyle} value={watchSymbol} onChange={(e) => setWatchSymbol(e.target.value)} placeholder="如 300750 / 600519" />
+              <SymbolInput value={watchSymbol} onChange={setWatchSymbol} onNameFound={() => {}} placeholder="如 300750 / 600519" />
             </Field>
             <Button onClick={addWatch} disabled={!watchSymbol.trim()}>添加</Button>
           </Card>
 
           <Card title="录入持仓(虚拟)">
             <Field label="股票代码">
-              <input style={inputStyle} value={posSymbol} onChange={(e) => setPosSymbol(e.target.value)} placeholder="如 600519" />
+              <SymbolInput value={posSymbol} onChange={setPosSymbol} onNameFound={setPosName} placeholder="如 600519" />
             </Field>
-            <Field label="名称(可选)">
+            <Field label="名称(自动带出,可改)">
               <input style={inputStyle} value={posName} onChange={(e) => setPosName(e.target.value)} placeholder="如 贵州茅台" />
             </Field>
             <Field label="数量(股)">
