@@ -65,6 +65,19 @@ def test_buy_add_with_profit_position():
     assert sig is not None and sig.type == "BUY_ADD"
 
 
+def test_no_buy_first_when_position_held():
+    """已持仓时绝不再报首仓: 即使三共振得分达标, 加仓/减仓不满足即保持观望(None)."""
+    df = _uptrend_df()
+    price = float(df.iloc[-1]["close"])
+    # 浮盈仅 0.5%: 低于加仓门槛, 也够不到止盈档; 上行走势不构成顶背离/量价背离
+    pos = PositionInfo(symbol="600001", cost=price * 0.995, qty=1000)
+    sig = engine.evaluate("600001", "测试股", kline_df=df, position=pos, quote_price=price)
+    assert sig is None
+    # 对照: 同一行情、空仓时本应触发 BUY_FIRST, 证明是持仓保护起的作用
+    sig_empty = engine.evaluate("600001", "测试股", kline_df=df, quote_price=price)
+    assert sig_empty is not None and sig_empty.type == "BUY_FIRST"
+
+
 def test_stop_on_breakdown():
     df = _downtrend_df()
     price = float(df.iloc[-1]["close"])
@@ -124,3 +137,92 @@ def test_atr_hit_take_profit():
     assert eng._hit_take_profit(103.0, 100.0, last) is None
     # 现价 105 达首档
     assert eng._hit_take_profit(105.0, 100.0, last) == pytest.approx(1.045, abs=0.001)
+
+
+def test_store_signal_persists_and_dedups(tmp_engine):
+    """评估产生信号时落库; 同代码同类型当日重复评估不重复写; 不同类型/无信号正确区分."""
+    from app import db
+    from app.api import signals as signals_api
+    from app.core.signals.engine import Signal
+    from app.models.models import SignalRecord
+    from sqlmodel import Session, select
+
+    sig = Signal(type="BUY_FIRST", symbol="600001", name="测试股", direction="buy",
+                 strength=72.0, reason="放量启动", indicators_snapshot={"ma20": 51.0})
+
+    with Session(db.engine) as s:
+        signals_api._store_signal(s, "600001", "测试股", sig)
+        s.commit()
+        rows = s.exec(select(SignalRecord)).all()
+        assert len(rows) == 1
+        assert rows[0].type == "BUY_FIRST" and rows[0].strength == 72.0
+        assert rows[0].indicators_json  # 指标快照已序列化
+
+        # 同日同类型重复 -> 跳过
+        signals_api._store_signal(s, "600001", "测试股", sig)
+        s.commit()
+        assert len(s.exec(select(SignalRecord)).all()) == 1
+
+        # 不同类型 -> 写入第二条
+        sig2 = Signal(type="BUY_ADD", symbol="600001", name="测试股", direction="buy",
+                      strength=65.0, reason="回踩加仓", indicators_snapshot={})
+        signals_api._store_signal(s, "600001", "测试股", sig2)
+        s.commit()
+        assert len(s.exec(select(SignalRecord)).all()) == 2
+
+    # 无信号 -> 不写
+    with Session(db.engine) as s:
+        signals_api._store_signal(s, "600001", "测试股", None)
+        s.commit()
+        assert len(s.exec(select(SignalRecord)).all()) == 2
+
+
+def test_evaluate_symbol_stores_signal(tmp_engine, monkeypatch):
+    """evaluate_symbol 评估出信号后落库(端到端验证接线与提交, 供仪表盘「最近信号」读取)."""
+    import asyncio
+
+    import numpy as np
+    import pandas as pd
+    from app import db
+    from app.api import signals as signals_api
+    from app.core.datasource import data_source_manager
+    from app.models.models import SignalRecord
+    from sqlmodel import Session, select
+
+    # 上行 + 尾段放量, 触发 BUY_FIRST(与 test_buy_first_on_uptrend 同形态)
+    n = 120
+    rng = np.random.default_rng(3)
+    dates = pd.bdate_range("2025-01-02", periods=n)
+    base = np.full(n, 50.0)
+    base[90:] += np.linspace(0, 12, 30)
+    close = base + rng.normal(0, 0.3, n)
+    volume = np.full(n, 1_000_000.0)
+    volume[115:] = [2e6, 2.5e6, 3e6, 3.5e6, 4e6]
+    df = pd.DataFrame({
+        "date": dates.strftime("%Y-%m-%d"),
+        "open": close - 0.2, "high": close + 0.4, "low": close - 0.4,
+        "close": close, "volume": volume, "amount": volume * close,
+    })
+
+    class FakeQuote:
+        symbol = "600001"
+        name = "测试股"
+        price = float(close[-1])
+        high = close[-1] + 1.0
+        low = close[-1] - 1.0
+
+    async def fake_kline(symbol, period, count):
+        return df
+
+    async def fake_quote(symbols):
+        return [FakeQuote()]
+
+    monkeypatch.setattr(data_source_manager, "get_kline", fake_kline)
+    monkeypatch.setattr(data_source_manager, "get_realtime_quote", fake_quote)
+
+    with Session(db.engine) as s:
+        asyncio.run(signals_api.evaluate_symbol("600001", s))
+        rows = s.exec(select(SignalRecord)).all()
+    assert len(rows) == 1
+    assert rows[0].type == "BUY_FIRST"
+    assert rows[0].symbol == "600001"

@@ -16,6 +16,7 @@ import pandas as pd
 
 from app.core.config import config_manager
 from app.core.indicators import compute_all
+from app.core.modes import mode_for_ind
 
 # 五类信号类型
 signal_types = ("BUY_FIRST", "BUY_ADD", "SELL_REDUCE", "SELL_STOP", "T_BUY", "T_SELL")
@@ -44,6 +45,7 @@ class Signal:
     reason: str = ""
     price: float = 0.0
     indicators_snapshot: dict[str, Any] = field(default_factory=dict)
+    mode: str = ""  # 触发时所处的交易模式(mode_key), 供计划/复盘解释选型
 
     def to_dict(self) -> dict:
         out = dataclasses.asdict(self)
@@ -88,31 +90,42 @@ class SignalEngine:
             return None
         cfg = self._reload_cfg()
         ind = self._indicators(kline_df, cfg)
+        mode_decision = mode_for_ind(ind, cfg)  # Q2: 规则化市况分类, 选出当前交易模式
         last = ind.iloc[-1]
         prev = ind.iloc[-2] if len(ind) > 1 else last
         price = quote_price or _f(last["close"])
         pos = position or PositionInfo(symbol=symbol)
 
+        def _tag(s: Signal | None) -> Signal | None:
+            """把当前模式信息写回信号(选型始终走显式规则, 不依赖 LLM)."""
+            if s is None:
+                return None
+            s.mode = mode_decision.mode_key
+            snap = dict(s.indicators_snapshot or {})
+            snap["mode"] = mode_decision.mode_key
+            s.indicators_snapshot = snap
+            return s
+
         # 1. 止损(优先级最高)
-        sig = self._check_stop(cfg, ind, last, pos, price, name)
+        sig = self._check_stop(cfg, ind, last, pos, price, name, mode_decision)
         if sig:
-            return sig
+            return _tag(sig)
         # 2. 减仓
         sig = self._check_reduce(cfg, ind, last, prev, pos, price, name)
         if sig:
-            return sig
+            return _tag(sig)
         # 3. 加仓
-        sig = self._check_add(cfg, ind, last, pos, price, name)
+        sig = self._check_add(cfg, ind, last, prev, pos, price, name, mode_decision)
         if sig:
-            return sig
+            return _tag(sig)
         # 4. 首仓
         sig = self._check_buy_first(cfg, ind, last, prev, pos, price, name)
         if sig:
-            return sig
+            return _tag(sig)
         # 5. 做T(需持仓)
         sig = self._check_t_trade(cfg, ind, last, pos, price, quote_high, quote_low, name)
         if sig:
-            return sig
+            return _tag(sig)
         return None
 
     def _indicators(self, df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
@@ -131,7 +144,13 @@ class SignalEngine:
 
     # ------------------------------------------------------------ 首仓信号
     def _check_buy_first(self, cfg, ind, last, prev, pos, price, name) -> Signal | None:
-        """趋势 + 动量 + 量能三共振, 加权得分 >= 入场线."""
+        """趋势 + 动量 + 量能三共振, 加权得分 >= 入场线.
+
+        仅空仓可触发: 已持仓时加仓/减仓/止损/做T 不满足即保持观望(None),
+        绝不再报首仓(否则会把持有中的票误报成新开仓建议).
+        """
+        if pos.has_position:
+            return None
         trend = cfg["趋势"]
         momentum = cfg["动量"]
         volume = cfg["量能"]
@@ -184,9 +203,13 @@ class SignalEngine:
         )
 
     # ------------------------------------------------------------ 加仓信号
-    def _check_add(self, cfg, ind, last, pos, price, name) -> Signal | None:
-        """已持仓且浮盈 + 回踩 MA 中轨不破 + 动量未死叉."""
+    def _check_add(self, cfg, ind, last, prev, pos, price, name, mode_decision) -> Signal | None:
+        """已持仓 + 浮盈达模式门槛 + 回踩 MA 中轨不破 + 动量未死叉; 多因子动态打分(Q1)."""
         if not pos.has_position or price <= pos.cost:
+            return None
+        mode = mode_decision.mode
+        # 模式禁止加仓(如防守模式)直接跳过
+        if not mode.get("allow_add", True):
             return None
         trend = cfg["趋势"]
         ma_m = f"ma{trend['ma_mid']}"
@@ -200,13 +223,87 @@ class SignalEngine:
         if dif < dea:
             return None
         profit_pct = (price - pos.cost) / pos.cost * 100
-        strength = min(90.0, 55 + profit_pct * 5)
+        # 模式最低浮盈门槛(趋势强攻 2% / 回踩 3% / 震荡 4%)
+        min_pct = float(mode.get("min_add_profit_pct", 0.0))
+        if profit_pct < min_pct:
+            return None
+        # 多因子动态打分(回踩深度/ATR、缩量、RSI 均值回归、ADX 信心乘子、浮盈小权重)
+        score, subs = self._score_add(cfg, ind, last, prev, pos, price, mode_decision)
+        reason = "加仓: " + "、".join(subs) + f"(浮盈{profit_pct:.1f}%, 模式={mode_decision.label})"
         return Signal(
             type="BUY_ADD", symbol=pos.symbol, name=name, direction="buy",
-            strength=round(strength, 1),
-            reason=f"回踩{trend['ma_mid']}日线企稳(现价{price:.2f},浮盈{profit_pct:.1f}%),MACD未死叉",
-            price=price, indicators_snapshot=self._snapshot(last),
+            strength=round(score, 1), reason=reason, price=price,
+            indicators_snapshot=self._snapshot(last),
         )
+
+    def _score_add(self, cfg, ind, last, prev, pos, price, mode_decision) -> tuple[float, list[str]]:
+        """BUY_ADD 多因子动态打分(0-100, 可解释).
+
+        因子与权重:
+        - 回踩 MA 中轨企稳(基础 30)
+        - 回踩缩量(15)            —— 量能扩张反向, 健康回踩不放量
+        - 首次触及短均线反弹(15)  / 沿短均线强势(10)
+        - RSI 自超买回落(15)      / RSI 健康区(8)
+        - 良性回踩深度(距高在 0.5~3 ATR, 10)
+        - ADX 信心乘子(0.7~1.3)   —— 趋势越强越可信
+        - 浮盈仅小权重(封顶 10)   —— 不再主导分数
+        """
+        trend = cfg["趋势"]
+        momentum = cfg["动量"]
+        ma_s = f"ma{trend['ma_short']}"
+        ma_m = f"ma{trend['ma_mid']}"
+        ma_s_v, ma_m_v = _f(last.get(ma_s)), _f(last.get(ma_m))
+        ma_s_prev = _f(prev.get(ma_s))
+        close = _f(last["close"])
+        prev_close = _f(prev["close"])
+        vol_now = _f(last.get("volume"))
+        vol_prev = _f(prev.get("volume"))
+        rsi_now = _f(last.get(f"rsi{momentum['rsi_period']}"), 50)
+        rsi_prev = _f(prev.get(f"rsi{momentum['rsi_period']}"), 50)
+        rsi_ob = momentum["rsi_overbought"]
+        atr_pct = self.atr_pct(last)
+        regime = mode_decision.regime
+        dist_to_high = float(regime.get("dist_to_high_pct", 0.0))
+        profit_pct = (price - pos.cost) / pos.cost * 100
+
+        subs: list[str] = []
+        score = 0.0
+        # 回踩企稳(价格仍在 MA 中轨上方) — 基础 30
+        if close >= ma_m_v * 0.99:
+            subs.append(f"回踩{trend['ma_mid']}日线企稳")
+            score += 30
+        # 缩量回踩 — 15
+        if vol_now > 0 and vol_prev > 0 and vol_now <= vol_prev * 0.9:
+            subs.append("回踩缩量")
+            score += 15
+        # 首次触及短均线反弹 — 15 / 沿短均线强势不回头 — 10
+        if close >= ma_s_v and prev_close < ma_s_v:
+            subs.append(f"首次触及{trend['ma_short']}日线反弹")
+            score += 15
+        elif close >= ma_s_v and ma_s_v >= ma_s_prev:
+            subs.append(f"沿{trend['ma_short']}日线强势")
+            score += 10
+        # RSI 自超买回落后再拐头 — 15 / RSI 健康区 — 8
+        if rsi_prev >= rsi_ob and rsi_now < rsi_prev:
+            subs.append("RSI自超买回落")
+            score += 15
+        elif 40 <= rsi_now <= 65:
+            subs.append("RSI健康区")
+            score += 8
+        # 良性回踩深度(相对 ATR) — 10
+        if atr_pct > 0:
+            pb_atr = dist_to_high / (atr_pct * 100)
+            if 0.5 <= pb_atr <= 3.0:
+                subs.append(f"良性回踩(距高{pb_atr:.1f}ATR)")
+                score += 10
+        # ADX 信心乘子
+        adx = float(regime.get("adx", 0.0))
+        adx_mult = min(1.3, max(0.7, adx / 30.0))
+        score = score * adx_mult
+        # 浮盈仅小权重(封顶 10)
+        score += min(10.0, max(0.0, profit_pct) * 1.0)
+        score = round(min(95.0, max(0.0, score)), 1)
+        return score, subs
 
     # ------------------------------------------------------------ 减仓信号
     def _check_reduce(self, cfg, ind, last, prev, pos, price, name) -> Signal | None:
@@ -247,13 +344,17 @@ class SignalEngine:
         )
 
     # ------------------------------------------------------------ 止损信号
-    def _check_stop(self, cfg, ind, last, pos, price, name) -> Signal | None:
-        """跌破止损线 / 移动止损线; 或 MA 短穿中 + ADX 掉头."""
+    def _check_stop(self, cfg, ind, last, pos, price, name, mode_decision) -> Signal | None:
+        """跌破止损线 / 移动止损线; 或 MA 短穿中 + ADX 掉头.
+
+        止损线优先用当前模式的 stop_loss_pct(模式自带风控), 回退到全局 风控 配置.
+        """
         if not pos.has_position:
             return None
         risk = cfg["风控"]
         trend = cfg["趋势"]
-        stop_price = pos.cost * (1 - risk["stop_loss_pct"] / 100)
+        stop_pct = float(mode_decision.mode.get("stop_loss_pct", risk["stop_loss_pct"]))
+        stop_price = pos.cost * (1 - stop_pct / 100)
         ma_s = f"ma{trend['ma_short']}"
         ma_m = f"ma{trend['ma_mid']}"
         ma_s_v, ma_m_v = _f(last.get(ma_s)), _f(last.get(ma_m))
