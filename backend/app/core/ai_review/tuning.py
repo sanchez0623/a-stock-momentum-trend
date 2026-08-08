@@ -43,7 +43,7 @@ MAX_DRIFT_PCT = 0.50       # 相对出厂默认值累积最大偏离
 COOLDOWN_DAYS = 7          # 同字段冷却天数
 MAX_ACCEPT_PER_REVIEW = 3  # 单次复盘最多采纳的带补丁建议数
 
-FORBIDDEN_GROUPS = ("风控", "仓位", "数据源", "llm", "手续费")
+FORBIDDEN_GROUPS = ("风控", "仓位", "交易模式", "数据源", "llm", "手续费")
 WEIGHT_GROUP = "评分权重"
 
 
@@ -166,6 +166,15 @@ def validate_config(cfg: dict[str, Any]) -> list[str]:
             vals = [float(x) for x in seq]
             if vals != sorted(vals):
                 errs.append(f"{name} 须递增")
+    # 交易模式: 每种模式的加仓比例之和须为 1
+    modes = g("交易模式").get("modes")
+    if isinstance(modes, dict):
+        for mk, mv in modes.items():
+            if not isinstance(mv, dict):
+                continue
+            pr = mv.get("pyramid_ratios")
+            if isinstance(pr, list) and pr and abs(sum(float(x) for x in pr) - 1.0) > 1e-3:
+                errs.append(f"交易模式[{mk}].pyramid_ratios 之和须为 1(当前 {sum(float(x) for x in pr):.3f})")
     # 评分权重
     if w:
         total = sum(float(x) for x in w.values() if isinstance(x, (int, float)))

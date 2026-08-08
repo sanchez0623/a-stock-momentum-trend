@@ -59,8 +59,12 @@ class AkshareSource(DataSourceInterface):
         with _no_proxy_env():
             return await asyncio.to_thread(func, *args, **kwargs)
 
-    async def get_kline(self, symbol: str, period: str = "daily", count: int = 120) -> pd.DataFrame:
+    async def get_kline(self, symbol: str, period: str = "daily", count: int = 120, secid: str | None = None) -> pd.DataFrame:
+        sym = secid or symbol  # akshare 用 6 位代码; 指数需调用方保证格式正确
         if period in MINUTE_MAP:
+            df = await self._call(
+                _ak.stock_zh_a_hist_min_em, symbol=sym, period=MINUTE_MAP[period], adjust=""
+            )
             df = await self._call(
                 _ak.stock_zh_a_hist_min_em, symbol=symbol, period=MINUTE_MAP[period], adjust=""
             )
@@ -74,7 +78,7 @@ class AkshareSource(DataSourceInterface):
         start = (dt.date.today() - dt.timedelta(days=int(count * 2.5) + 30)).strftime("%Y%m%d")
         df = await self._call(
             _ak.stock_zh_a_hist,
-            symbol=symbol,
+            symbol=sym,
             period=PERIOD_MAP.get(period, "daily"),
             start_date=start,
             end_date="20500101",

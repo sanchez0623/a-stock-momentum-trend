@@ -23,7 +23,12 @@ export default function Plans() {
     setGenerating(true)
     setError('')
     try {
-      await api.generatePlan(symbol.trim(), name)
+      const plan = await api.generatePlan(symbol.trim(), name)
+      if (!plan) {
+        setGenerating(false)
+        toast.info('当前无信号, 暂不生成计划')
+        return
+      }
       setSymbol('')
       setName('')
       toast.success(`已生成 ${symbol.trim()} 的交易计划`)

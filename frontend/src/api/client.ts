@@ -41,6 +41,13 @@ export const api = {
   addPosition: (p: { symbol: string; name?: string; qty: number; price: number; reason?: string; action?: string }) =>
     request('/positions', { method: 'POST', body: JSON.stringify(p) }),
   positionDetail: (symbol: string) => request<PositionDetail>(`/positions/${symbol}`),
+  updatePositionTime: (symbol: string, opened_at: string) =>
+    request(`/positions/${symbol}`, { method: 'PATCH', body: JSON.stringify({ opened_at }) }),
+
+  // 资金账户
+  account: () => request<AccountInfo>('/account'),
+  updateAccount: (start_capital: number) =>
+    request<AccountInfo>('/account', { method: 'PUT', body: JSON.stringify({ start_capital }) }),
 
   // 信号
   signals: (symbol?: string, limit = 50) => {
@@ -58,7 +65,7 @@ export const api = {
 
   // 交易计划
   generatePlan: (symbol: string, name = '') =>
-    request<PlanRecord>('/plan/generate', { method: 'POST', body: JSON.stringify({ symbol, name }) }),
+    request<PlanRecord | null>('/plan/generate', { method: 'POST', body: JSON.stringify({ symbol, name }) }),
   currentPlans: () => request<PlanRecord[]>('/plan/current'),
   planStatus: (id: number, status: 'done' | 'ignored') =>
     request<PlanRecord>(`/plan/${id}/status`, { method: 'PUT', body: JSON.stringify({ status }) }),
@@ -184,6 +191,8 @@ export interface PositionItem {
   cost_raw: number
   /** 摊在当前持仓上的买入手续费 = (cost - cost_raw) * qty */
   fee_cost: number
+  /** 持仓时间(首仓录入时间) */
+  opened_at: string
   price: number
   market_value: number
   /** 浮盈已扣买入手续费(因 cost 含费) */
@@ -206,9 +215,18 @@ export interface Portfolio {
 
 export interface PositionDetail {
   position: PositionItem
-  pyramid: { used_stage: number; remaining_ratios: number[]; suggest_next_pct: number }
+  pyramid: { used_stage: number; remaining_ratios: number[]; suggest_next_pct: number; mode?: string }
   take_profit: Array<{ level: number; target_price: number; target_pct: number; suggest_reduce_ratio: number }>
+  mode?: string
+  mode_label?: string
+  mode_reason?: string
   history: Array<{ time: string; action: string; price: number; qty: number; pnl: number; reason: string }>
+}
+
+/** 资金账户: 仅含启动资金; 可用资金/总权益由前端按持仓市值派生 */
+export interface AccountInfo {
+  start_capital: number
+  updated_at: string
 }
 
 export interface Signal {

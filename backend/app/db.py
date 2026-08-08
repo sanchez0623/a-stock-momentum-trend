@@ -44,6 +44,8 @@ def _migrate_columns() -> None:
     alters = [
         ("trade", "fee", "REAL DEFAULT 0.0"),
         ("position", "cost_raw", "REAL DEFAULT 0.0"),
+        ("position", "opened_at", "TEXT DEFAULT ''"),
+        ("position", "pyramid_stage", "INTEGER DEFAULT 0"),
     ]
     added: list[tuple[str, str]] = []
     try:
@@ -70,6 +72,9 @@ def _migrate_columns() -> None:
     # cost_raw 补列后, 按成交流水回放重算持仓的含费成本(一次性)
     if ("position", "cost_raw") in added:
         backfill_position_costs()
+    # pyramid_stage 补列后, 按成交流水估算已加仓档位(一次性, 旧库兼容)
+    if ("position", "pyramid_stage") in added:
+        backfill_position_stages()
 
 
 def backfill_trade_fees() -> int:
@@ -171,6 +176,40 @@ def backfill_position_costs() -> int:
             logger.info("迁移: 持仓成本重算为含费口径 %d 条", updated)
     except Exception as exc:  # noqa: BLE001
         logger.warning("回填持仓含费成本失败: %s", exc)
+    return updated
+
+
+def backfill_position_stages() -> int:
+    """按成交流水估算已加仓档位, 回填 pyramid_stage(旧库兼容).
+
+    规则: 买入成交笔数 - 1 = 已加仓档位数(首仓不算加仓).
+    与旧 pyramid_plan 的 used_stage = len(buys)-1 保持一致, 避免存量数据回退。
+    仅处理 status='holding' 且 qty>0 的持仓行, 可安全重复执行。
+    """
+    updated = 0
+    try:
+        with engine.connect() as conn:
+            rows = list(conn.execute(text(
+                "SELECT id, symbol FROM position "
+                "WHERE status = 'holding' AND qty > 0"
+            )))
+            for pid, symbol in rows:
+                buy_rows = list(conn.execute(
+                    text("SELECT COUNT(*) FROM trade WHERE symbol = :s AND action = 'buy'"),
+                    {"s": symbol},
+                ))
+                buy_count = int(buy_rows[0][0]) if buy_rows else 0
+                stage = max(0, buy_count - 1)
+                conn.execute(
+                    text("UPDATE position SET pyramid_stage = :st WHERE id = :id"),
+                    {"st": stage, "id": pid},
+                )
+                updated += 1
+            conn.commit()
+        if updated:
+            logger.info("迁移: 回填 pyramid_stage %d 条", updated)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("回填 pyramid_stage 失败: %s", exc)
     return updated
 
 

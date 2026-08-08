@@ -7,7 +7,9 @@ from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
 from app.api.deps import get_session
+from app.core.account import account_manager
 from app.core.datasource import data_source_manager
+from app.core.modes import active_mode
 from app.core.plan import plan_generator
 from app.core.position import position_manager
 from app.core.risk import risk_manager
@@ -34,7 +36,7 @@ async def generate_plan(body: GenerateBody, session: Session = Depends(get_sessi
     """为指定票生成交易计划(评估信号 -> 组装人话指引 -> 落库 pending)."""
     df = await data_source_manager.get_kline(body.symbol, "daily", 120)
     if df is None or df.empty:
-        raise HTTPException(status_code=404, detail="无行情数据")
+        return {"code": 0, "msg": "无行情数据, 无法评估", "data": None}
     quotes = await data_source_manager.get_realtime_quote([body.symbol])
     quote = quotes[0] if quotes else None
     pos = position_manager.get_position(body.symbol, session)
@@ -49,18 +51,26 @@ async def generate_plan(body: GenerateBody, session: Session = Depends(get_sessi
         quote_low=quote.low if quote else None,
     )
     if signal is None:
-        raise HTTPException(status_code=404, detail="当前无信号, 无需生成计划")
+        return {"code": 0, "msg": "当前无信号, 无需生成计划", "data": None}
 
-    # 组合汇总(用于风控/仓位文案): 单票市值占总持仓市值比例
+    # 组合汇总(用于风控/仓位文案): 单票市值占总持仓市值比例 + 可用资金(Q4 资金感知)
     portfolio: dict = {"total_pct": 0.0}
     positions = position_manager.list_positions(session)
     total_mv = sum((quote.price if p.symbol == body.symbol else p.cost) * p.qty for p in positions)
     if total_mv > 0 and pos:
         portfolio["total_pct"] = round((pos.cost * pos.qty) / total_mv * 100, 1)
+    acc = account_manager.get(session)
+    start_capital = float(acc.get("start_capital", 0.0) or 0.0)
+    portfolio["start_capital"] = start_capital
+    portfolio["market_value"] = round(total_mv, 2)
+    portfolio["available_capital"] = round(start_capital - total_mv, 2)
 
     risk_status = risk_manager.status(session)
+    # Q2: 规则化市况分类器选出当前交易模式, 注入计划(选型走显式规则, LLM 只解说)
+    mode_decision = active_mode(body.symbol, df)
     plan_data = plan_generator.generate(
-        body.symbol, body.name or (quote.name if quote else ""), signal, quote, portfolio, risk_status
+        body.symbol, body.name or (quote.name if quote else ""), signal, quote,
+        portfolio, risk_status, mode=mode_decision,
     )
     plan = Plan(
         symbol=body.symbol,

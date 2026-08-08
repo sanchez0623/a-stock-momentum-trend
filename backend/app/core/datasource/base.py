@@ -51,6 +51,50 @@ class StockInfo:
     industry: str = ""  # 申万行业(东财 f100, 部分源可能为空)
 
 
+@dataclass
+class Fundamental:
+    """统一季度基本面快照(可选能力 'fundamental').
+
+    字段全部可空: 不同源覆盖度不同, 缺失即 None, 由业务层按需降级.
+    百分比字段统一为 "百分数"口径(如 roe=12.5 表示 12.5%).
+    """
+
+    symbol: str
+    stat_date: str = ""   # 报告期(如 2026-06-30)
+    pub_date: str = ""    # 披露日
+    roe: float | None = None                  # 净资产收益率(%)
+    np_margin: float | None = None            # 销售净利率(%)
+    gp_margin: float | None = None            # 销售毛利率(%)
+    eps_ttm: float | None = None              # 每股收益 TTM
+    yoy_ni: float | None = None               # 归母净利润同比(%)
+    yoy_eps: float | None = None              # 每股收益同比(%)
+    yoy_equity: float | None = None           # 净资产同比(%)
+    liability_to_asset: float | None = None   # 资产负债率(%)
+    current_ratio: float | None = None        # 流动比率
+    cfo_to_np: float | None = None            # 经营现金流/净利润(盈利含金量)
+    dupont_roe: float | None = None           # 杜邦 ROE
+    pe_ttm: float | None = None               # 市盈率 TTM
+    pb_mrq: float | None = None               # 市净率 MRQ
+    ps_ttm: float | None = None               # 市销率 TTM
+    is_st: bool | None = None                 # 是否 ST
+    industry: str = ""                        # 行业(源自带, 如证监会行业)
+    industry_source: str = ""                 # 行业分类体系名
+
+
+@dataclass
+class EarningsEventItem:
+    """业绩预告 / 业绩快报事件(可选能力 'earnings')."""
+
+    symbol: str
+    kind: str = "forecast"       # forecast 预告 / express 快报
+    pub_date: str = ""           # 披露日
+    stat_date: str = ""          # 报告期
+    forecast_type: str = ""      # 预增/略增/扭亏/预减/预亏/续盈...
+    chg_pct_up: float | None = None    # 预告变动上限(%)
+    chg_pct_down: float | None = None  # 预告变动下限(%)
+    abstract: str = ""           # 摘要
+
+
 def normalize_kline(df: pd.DataFrame) -> pd.DataFrame:
     """把任意上游 DataFrame 规整为统一列 [date, open, high, low, close, volume, amount].
 
@@ -90,14 +134,34 @@ def guess_market(symbol: str) -> str:
 
 
 class DataSourceInterface(ABC):
-    """所有数据源必须实现该接口."""
+    """所有数据源必须实现该接口.
+
+    除 4 个必选抽象方法外, 另有一组"可选能力"(见下方 supports/扩展方法):
+    只有声明了该能力的源才会被 DataSourceManager 路由到, 其余源零改动.
+    """
 
     name: str = "base"
     label: str = ""  # 展示名
 
+    # 可选能力声明. 取值见 CAPABILITIES; 空元组 = 只提供基础四件套
+    supports: tuple[str, ...] = ()
+    # 是否参与实时行情轮询(盘后型数据源应置 False, 避免占用尝试位)
+    supports_realtime: bool = True
+
+    def supports_period(self, period: str) -> bool:
+        """是否支持该周期. 不支持时 Manager 会直接跳过, 不计入失败/熔断.
+
+        盘后型数据源(如 Baostock)应关闭分钟线, 避免把隔夜陈旧分钟 K 写进缓存.
+        """
+        return True
+
     @abstractmethod
-    async def get_kline(self, symbol: str, period: str = "daily", count: int = 120) -> pd.DataFrame:
-        """K线. 返回统一列 DataFrame, 按 date 升序."""
+    async def get_kline(self, symbol: str, period: str = "daily", count: int = 120, secid: str | None = None) -> pd.DataFrame:
+        """K线. 返回统一列 DataFrame, 按 date 升序.
+
+        secid: 可选, 显式 secid(如东财指数 "1.000001"). 提供时跳过按代码前缀推断交易所,
+        用于拉取指数 K 线(普通代码前缀规则对指数会错位).
+        """
 
     @abstractmethod
     async def get_realtime_quote(self, symbols: list[str]) -> list[Quote]:
@@ -110,6 +174,32 @@ class DataSourceInterface(ABC):
     @abstractmethod
     async def health_check(self) -> bool:
         """探活: 成功返回 True."""
+
+    # ------------------------------------------------------------ 可选能力
+    # 默认全部 NotImplementedError, Manager 会自动跳过 -> 现有源无需任何改动.
+    async def get_index_constituents(self, index_key: str) -> list[StockInfo]:
+        """指数成分股. index_key: hs300 / zz500 / sz50. 能力名 'constituents'."""
+        raise NotImplementedError(f"{self.name} 不支持指数成分股")
+
+    async def get_industry_map(self, symbols: list[str] | None = None) -> dict[str, dict[str, str]]:
+        """全市场行业映射 {symbol: {name, industry, classification}}. 能力名 'industry'."""
+        raise NotImplementedError(f"{self.name} 不支持行业分类")
+
+    async def get_fundamentals(self, symbol: str, *, full: bool = False) -> Fundamental | None:
+        """单只股票最近一期基本面. full=True 额外取杜邦/现金流. 能力名 'fundamental'."""
+        raise NotImplementedError(f"{self.name} 不支持基本面")
+
+    async def get_earnings_events(self, symbol: str, start_date: str, end_date: str) -> list[EarningsEventItem]:
+        """区间内业绩预告 + 业绩快报. 能力名 'earnings'."""
+        raise NotImplementedError(f"{self.name} 不支持业绩事件")
+
+    async def get_index_kline_by_code(self, index_code: str, period: str = "daily", count: int = 250) -> pd.DataFrame:
+        """按本源自有指数代码取指数 K 线. 能力名 'index_kline'."""
+        raise NotImplementedError(f"{self.name} 不支持指数 K 线")
+
+
+# 可选能力清单(仅作文档与校验用)
+CAPABILITIES = ("constituents", "industry", "fundamental", "earnings", "index_kline")
 
 
 @dataclass

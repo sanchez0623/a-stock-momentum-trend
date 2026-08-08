@@ -71,11 +71,12 @@ class MootdxSource(DataSourceInterface):
             logger.warning("mootdx 连接失败, 将切换服务器 #%d", self._server_idx % len(MOOTDX_SERVERS))
 
     # ------------------------------------------------------------ 接口实现
-    async def get_kline(self, symbol: str, period: str = "daily", count: int = 120) -> pd.DataFrame:
+    async def get_kline(self, symbol: str, period: str = "daily", count: int = 120, secid: str | None = None) -> pd.DataFrame:
+        sym = secid or symbol  # mootdx 用 6 位代码; 指数需调用方保证格式正确
         freq = FREQ_MAP.get(period, 9)
         try:
             client = self._get_client()
-            df = await asyncio.to_thread(client.bars, symbol=symbol, frequency=freq, offset=count)
+            df = await asyncio.to_thread(client.bars, symbol=sym, frequency=freq, offset=count)
             if df is None or df.empty:
                 self._reset_client()
                 return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume", "amount"])

@@ -16,8 +16,41 @@ scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
 
 
 async def _after_close_warmup() -> None:
-    """收盘后预热自选股 K线(占位, 二期接入真实逻辑)."""
-    logger.info("盘后 K线预热任务触发(占位)")
+    """收盘后预热: 把自选股 + 持仓股的日线 K 线预拉入缓存.
+
+    走 data_source_manager.get_kline(沿用 failover + K线缓存), 次日开盘前页面/选股
+    直接命中缓存, 减少实时回源抖动. 任意单只失败不影响其余.
+    """
+    from sqlmodel import select
+
+    from app import db
+    from app.core.datasource import data_source_manager
+    from app.models.models import Watchlist, Position
+
+    try:
+        with db.session_scope() as s:
+            rows = s.exec(
+                select(Watchlist.symbol).union(select(Position.symbol))
+            ).all()
+        symbols = sorted({str(r[0]) for r in rows if r and r[0]})
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("盘后预热: 读取自选/持仓失败: %s", exc)
+        return
+
+    if not symbols:
+        logger.info("盘后 K 线预热: 无自选/持仓, 跳过")
+        return
+
+    logger.info("盘后 K 线预热开始: %d 只", len(symbols))
+    done = 0
+    for sym in symbols:
+        try:
+            df = await data_source_manager.get_kline(sym, "daily", count=120)
+            if df is not None and not df.empty:
+                done += 1
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("盘后预热失败 %s: %s", sym, exc)
+    logger.info("盘后 K 线预热完成: 成功 %d/%d", done, len(symbols))
 
 
 def setup_jobs() -> None:

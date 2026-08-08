@@ -1,0 +1,112 @@
+"""集成测试: 扫描结束后 self.last_scan_summary 是否正确汇总 ④ 闸门 + ⑤ 限配.
+
+不依赖网络/数据库: 用合成 K 线与假分类映射, mock 掉真实 datasource / 指数拉取.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from datetime import datetime, timedelta
+from types import SimpleNamespace
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from app.core import screener as screener_pkg
+from app.core.config import config_manager
+from app.core.screener import engine as engine_mod
+
+
+def _mk_kline(n: int = 60) -> pd.DataFrame:
+    idx = pd.date_range("2024-01-01", periods=n, freq="D")
+    close = 10.0 + np.arange(n) * 0.1  # 单调上行, 保证评分>0
+    return pd.DataFrame({
+        "date": idx,
+        "open": close - 0.02,
+        "high": close + 0.05,
+        "low": close - 0.05,
+        "close": close,
+        "volume": np.full(n, 1_000_000.0),
+        "amount": np.full(n, 1.0e8),  # 1亿 >= 流动性下限
+    })
+
+
+def _mk_index(n: int = 30) -> pd.DataFrame:
+    close = 3000.0 + np.arange(n) * 5.0
+    return pd.DataFrame({"close": close})
+
+
+SYMS = [f"00000{i}" for i in range(1, 7)]
+_IND = ["电子", "电子", "电子", "医药", "医药", "医药"]
+
+
+@pytest.fixture
+def patched(monkeypatch):
+    base = config_manager.get()
+    cfg = {k: v for k, v in base.items()}
+    cfg["择时闸门"] = {**base.get("择时闸门", {}),
+                     "enabled": True, "ma_long": 20, "ma_mid": 5, "min_index_bars": 25}
+    cfg["行业限配"] = base.get("行业限配", {})
+    monkeypatch.setattr(config_manager, "get", lambda: cfg)
+
+    calls = []
+
+    async def fake_kline(*a, **k):
+        calls.append(1)
+        return _mk_kline()
+    monkeypatch.setattr(engine_mod.data_source_manager, "get_kline", fake_kline)
+    cfg["_calls"] = calls  # 供测试断言 mock 真的被调用
+
+    async def fake_idx(gate_cfg):
+        return {"沪深300": _mk_index(30)}
+    from app.core import market_gate
+    monkeypatch.setattr(market_gate, "fetch_gate_index_dfs", fake_idx)
+
+    fake_map = {s: SimpleNamespace(sw_l1=ind) for s, ind in zip(SYMS, _IND)}
+    from app.core import classification
+    monkeypatch.setattr(classification, "load_classification_map", lambda syms: fake_map)
+    return cfg
+
+
+def test_scan_summary_captures_gate_and_cap(patched):
+    res = asyncio.run(screener_pkg.screener.scan(symbols=SYMS, per_industry=2, apply_gate=True))
+    assert patched.get("_calls"), "mock get_kline 未被调用 — 说明 patch 未生效"
+    summary = screener_pkg.screener.last_scan_summary
+
+    assert summary is not None
+    assert summary["scanned_at"] is not None
+    assert summary["requested_top_n"] == 30
+    # 牛市乘数 1.0, top_n 30, 限配后剩 4 只, 未再截断
+    assert summary["final_count"] == 4
+
+    # ④ 闸门
+    g = summary["gate"]
+    assert g["enabled"] is True
+    assert g["applied"] is True
+    assert g["environment"] == "bull"
+    assert g["multiplier"] == 1.0
+    assert g["details"]  # 含指数明细
+
+    # ⑤ 限配: 6 只 -> 每组 2 -> 4 只, 触顶 2 组
+    c = summary["cap"]
+    assert c["enabled"] is True
+    assert c["per_industry"] == 2
+    assert c["level"] == "sw_l1"
+    assert c["before"] == 6
+    assert c["after"] == 4
+    assert c["removed"] == 2
+    assert len(c["capped_groups"]) == 2
+    for grp in c["capped_groups"]:
+        assert grp["before"] == 3 and grp["after"] == 2
+        assert grp["industry"] in ("电子", "医药")
+
+
+def test_scan_summary_off_when_disabled(patched):
+    # 闸门/限配都不启用 -> 汇总标记未生效, 且结果不被缩减
+    asyncio.run(screener_pkg.screener.scan(symbols=SYMS, per_industry=0, apply_gate=False))
+    summary = screener_pkg.screener.last_scan_summary
+    assert summary["gate"]["enabled"] is False
+    assert summary["gate"]["applied"] is False
+    assert summary["cap"]["enabled"] is False
+    assert summary["final_count"] == 6  # 全保留

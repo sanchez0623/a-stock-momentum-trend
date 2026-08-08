@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import datetime as _dt
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlmodel import Session
 
 from app.api.deps import get_session
+from app.core.account import account_manager
 from app.core.datasource import data_source_manager
 from app.core.position import position_manager
 
@@ -20,6 +23,18 @@ class PositionBody(BaseModel):
     price: float = Field(gt=0)
     reason: str = ""
     action: str = Field("buy", pattern="^(buy|sell)$")  # buy=首仓/加仓, sell=减仓
+
+
+class UpdatePositionTimeBody(BaseModel):
+    """修改持仓时间(列表页内联编辑). 格式: YYYY-MM-DD HH:MM:SS."""
+
+    opened_at: str
+
+
+class AccountBody(BaseModel):
+    """修改默认启动资金."""
+
+    start_capital: float = Field(gt=0)
 
 
 @router.get("/positions")
@@ -54,11 +69,14 @@ async def position_detail(symbol: str, session: Session = Depends(get_session)) 
     if pos is None:
         raise HTTPException(status_code=404, detail="无持仓")
     history = position_manager.history(symbol, 50, session)
-    # ATR 波动率(供动态止盈档计算; 失败则回退 fixed 档)
+    # ATR 波动率(供动态止盈档计算; 失败则回退 fixed 档) + Q2 当前交易模式
     atr_pct = None
+    mode = None
+    df = None
     try:
         from app.core.datasource import data_source_manager
         from app.core.indicators import compute_all
+        from app.core.modes import active_mode
 
         df = await data_source_manager.get_kline(symbol, "daily", 60)
         if df is not None and not df.empty:
@@ -68,12 +86,51 @@ async def position_detail(symbol: str, session: Session = Depends(get_session)) 
             atr14 = float(last.get("atr14", 0) or 0)
             if close > 0 and atr14 > 0:
                 atr_pct = atr14 / close
+            mode = active_mode(symbol, df)  # 规则化市况分类, 选出当前模式
     except Exception:  # noqa: BLE001
         atr_pct = None
+    mode_dict = mode.mode if mode else None
     return {"code": 0, "msg": "ok", "data": {
         "position": pos.model_dump(),
-        "pyramid": position_manager.pyramid_plan(symbol, session),
-        "take_profit": position_manager.take_profit_levels(pos.cost, atr_pct, session),
+        "pyramid": position_manager.pyramid_plan(symbol, session, kline_df=df if mode else None),
+        "take_profit": position_manager.take_profit_levels(pos.cost, atr_pct, session, mode=mode_dict),
+        "mode": mode.mode_key if mode else "",
+        "mode_label": mode.label if mode else "",
+        "mode_reason": mode.reason if mode else "",
         "atr_pct": round(atr_pct, 4) if atr_pct else None,
         "history": [t.model_dump() for t in history],
     }}
+
+
+@router.patch("/positions/{symbol}")
+async def update_position(symbol: str, body: UpdatePositionTimeBody,
+                         session: Session = Depends(get_session)) -> dict:
+    """修改持仓时间(仅改 opened_at, 用于 T+1 判定与展示)."""
+    try:
+        _dt.datetime.strptime(body.opened_at, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="时间格式应为 YYYY-MM-DD HH:MM:SS")
+    pos = position_manager.get_position(symbol, session)
+    if pos is None:
+        raise HTTPException(status_code=404, detail="无持仓")
+    pos.opened_at = body.opened_at
+    pos.updated_at = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    session.add(pos)
+    session.commit()
+    return {"code": 0, "msg": "ok", "data": pos.model_dump()}
+
+
+@router.get("/account")
+async def get_account(session: Session = Depends(get_session)) -> dict:
+    """资金账户: 仅返回启动资金(可用资金/总权益由前端按持仓市值派生)."""
+    return {"code": 0, "msg": "ok", "data": account_manager.get(session)}
+
+
+@router.put("/account")
+async def update_account(body: AccountBody, session: Session = Depends(get_session)) -> dict:
+    """修改默认启动资金(可用资金/总权益由前端按新基线重新派生)."""
+    try:
+        data = account_manager.set_start(body.start_capital, session)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"code": 0, "msg": "ok", "data": data}

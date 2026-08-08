@@ -126,10 +126,10 @@ class EastmoneySource(DataSourceInterface):
         return f"{'1' if guess_market(symbol) == 'sh' else '0'}.{symbol}"
 
     # ------------------------------------------------------------ 接口实现
-    async def get_kline(self, symbol: str, period: str = "daily", count: int = 120) -> pd.DataFrame:
+    async def get_kline(self, symbol: str, period: str = "daily", count: int = 120, secid: str | None = None) -> pd.DataFrame:
         klt = KLINE_KLT.get(period, 101)
         params = {
-            "secid": self._secid(symbol),
+            "secid": secid or self._secid(symbol),
             "fields1": "f1,f2,f3,f4,f5,f6",
             "fields2": "f51,f52,f53,f54,f55,f56,f57,f58",
             "klt": klt,

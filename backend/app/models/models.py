@@ -21,6 +21,91 @@ class Stock(SQLModel, table=True):
     industry: str = Field(default="")
 
 
+class StockClassification(SQLModel, table=True):
+    """个股分类映射(申万一级/二级/三级 + 行业板块/概念板块).
+
+    数据来源: akshare (申万 via sw_index_* / 板块 via stock_board_*_em).
+    用途: 选股器每行业限配(⑤) + 板块动量因子(④进阶) + 风控行业集中度.
+    与 Stock.industry(东财 f100 仅一级)互补: 本表是更完整的权威分类, 优先使用.
+    """
+
+    symbol: str = Field(primary_key=True)  # 6 位代码
+    name: str = Field(default="")
+    sw_l1: str = Field(default="", index=True)  # 申万一级
+    sw_l2: str = Field(default="", index=True)  # 申万二级
+    sw_l3: str = Field(default="", index=True)  # 申万三级
+    boards_industry: str = Field(default="[]")  # 行业板块名 JSON list(东财)
+    boards_concept: str = Field(default="[]")  # 概念板块名 JSON list(东财)
+    source: str = Field(default="")  # 数据来源标记
+    updated_at: str = Field(default_factory=_now)
+
+
+class IndexConstituent(SQLModel, table=True):
+    """指数成分股缓存(数据源: baostock).
+
+    用途: 选股 universe 预筛 —— 把 5000+ 只的全A噪声池缩到 300~800 只质量池,
+    扫描更快、出票更贴合中大盘动量趋势风格.
+    index_key: hs300 / zz500 / sz50
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    index_key: str = Field(default="", index=True)
+    symbol: str = Field(default="", index=True)  # 6 位代码
+    name: str = Field(default="")
+    updated_at: str = Field(default_factory=_now)
+
+
+class StockFundamental(SQLModel, table=True):
+    """季度基本面 + 估值快照(数据源: baostock).
+
+    用途: 把纯价格动量升级为"动量 + 质量" —— 剔除 ROE 低/负债高/业绩下滑的票.
+    由后台刷新任务批量填充, 选股时只读本表, 不产生额外网络调用.
+    百分比字段统一为百分数口径(roe=12.5 表示 12.5%).
+    """
+
+    symbol: str = Field(primary_key=True)
+    name: str = Field(default="")
+    stat_date: str = Field(default="", index=True)  # 报告期
+    pub_date: str = Field(default="")
+    roe: float | None = Field(default=None)
+    np_margin: float | None = Field(default=None)
+    gp_margin: float | None = Field(default=None)
+    eps_ttm: float | None = Field(default=None)
+    yoy_ni: float | None = Field(default=None)
+    yoy_eps: float | None = Field(default=None)
+    yoy_equity: float | None = Field(default=None)
+    liability_to_asset: float | None = Field(default=None)
+    current_ratio: float | None = Field(default=None)
+    cfo_to_np: float | None = Field(default=None)
+    dupont_roe: float | None = Field(default=None)
+    pe_ttm: float | None = Field(default=None)
+    pb_mrq: float | None = Field(default=None)
+    ps_ttm: float | None = Field(default=None)
+    is_st: bool | None = Field(default=None)
+    industry: str = Field(default="", index=True)   # 证监会行业(baostock)
+    industry_source: str = Field(default="")
+    source: str = Field(default="baostock")
+    updated_at: str = Field(default_factory=_now)
+
+
+class EarningsEvent(SQLModel, table=True):
+    """业绩预告 / 业绩快报事件(数据源: baostock).
+
+    用途: 动量策略最爱的催化剂 —— 近期业绩超预期的票给动量分加权/打事件标签.
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    symbol: str = Field(default="", index=True)
+    kind: str = Field(default="forecast", index=True)  # forecast 预告 / express 快报
+    pub_date: str = Field(default="", index=True)
+    stat_date: str = Field(default="")
+    forecast_type: str = Field(default="")   # 预增/略增/扭亏/预减/预亏/快报...
+    chg_pct_up: float | None = Field(default=None)
+    chg_pct_down: float | None = Field(default=None)
+    abstract: str = Field(default="")
+    updated_at: str = Field(default_factory=_now)
+
+
 class ConfigRow(SQLModel, table=True):
     """全局配置(单行 JSON)."""
 
@@ -58,6 +143,11 @@ class Position(SQLModel, table=True):
     cost: float = Field(default=0.0)  # 含费摊薄成本(加权, 已摊入买入手续费), 券商 APP 口径
     cost_raw: float = Field(default=0.0)  # 纯成交均价(不含费), 仅用于顺向加仓判断
     status: str = Field(default="holding", index=True)  # holding / closed
+    # 金字塔加仓档位: 已完成的分档数(0=仅首仓, 1=已加1档, 2=已加2档).
+    # 取代原先「由成交笔数倒推」的脆弱逻辑, 由 open_or_add 显式维护. 新增列, 旧库迁移默认 0.
+    pyramid_stage: int = Field(default=0)
+    # 持仓时间(首仓录入时间, 加仓不刷新); 用于 T+1 锁定期判定与列表展示
+    opened_at: str = Field(default_factory=_now)
     updated_at: str = Field(default_factory=_now)
 
 
@@ -116,6 +206,20 @@ class RiskState(SQLModel, table=True):
     consecutive_losses: int = Field(default=0)
     last_trade_pnl: float = Field(default=0.0)
     day_pnl: float = Field(default=0.0)
+    updated_at: str = Field(default_factory=_now)
+
+
+class Account(SQLModel, table=True):
+    """资金账户(单行).
+
+    start_capital: 启动资金(默认 50w, 可在前端修改).
+    可用资金与总权益为前端派生值, 不在后端落库:
+      可用资金 = 启动资金 - 持仓市值(实时)
+      总权益   = 持仓市值 + 可用资金 = 启动资金
+    """
+
+    id: int = Field(default=1, primary_key=True)
+    start_capital: float = Field(default=500000.0)
     updated_at: str = Field(default_factory=_now)
 
 

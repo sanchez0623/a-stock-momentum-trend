@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -11,8 +13,8 @@ from app.api.deps import get_session
 from app.core.datasource import data_source_manager
 from app.core.position import position_manager
 from app.core.signals import SignalEngine
-from app.core.signals.engine import PositionInfo
-from app.models.models import SignalRecord
+from app.core.signals.engine import PositionInfo, Signal
+from app.models.models import SignalRecord, _now
 
 router = APIRouter(prefix="/api", tags=["signals"])
 
@@ -45,6 +47,32 @@ async def latest_signal(symbol: str, session: Session = Depends(get_session)) ->
     return {"code": 0, "msg": "ok", "data": row.model_dump()}
 
 
+def _store_signal(session: Session, symbol: str, name: str, signal: Signal | None) -> None:
+    """评估产生信号时写入 SignalRecord; 同代码同类型当日已记录则跳过, 避免重复刷屏.
+
+    仅落库真实信号(signal 非空); 无信号/行情缺失不写, 保证「最近信号」只反映有效信号。
+    """
+    if signal is None:
+        return
+    today = _now()[:10]
+    latest = session.exec(
+        select(SignalRecord).where(SignalRecord.symbol == symbol).order_by(SignalRecord.time.desc())
+    ).first()
+    # 同日同类型已存在 -> 视为重复评估, 跳过
+    if latest is not None and latest.time[:10] == today and latest.type == signal.type:
+        return
+    session.add(SignalRecord(
+        time=_now(),
+        symbol=signal.symbol,
+        name=signal.name or name or "",
+        type=signal.type,
+        direction=signal.direction,
+        strength=round(float(signal.strength), 2),
+        reason=signal.reason,
+        indicators_json=json.dumps(signal.indicators_snapshot or {}, ensure_ascii=False),
+    ))
+
+
 async def _evaluate_one(symbol: str, session: Session) -> dict:
     """评估单只票(不落库). 返回 {symbol, name, price, signal|None, error?}."""
     try:
@@ -66,6 +94,7 @@ async def _evaluate_one(symbol: str, session: Session) -> dict:
             quote_high=quote.high if quote else None,
             quote_low=quote.low if quote else None,
         )
+        _store_signal(session, symbol, quote.name if quote else "", signal)
         return {
             "symbol": symbol,
             "name": quote.name if quote else "",
@@ -78,8 +107,9 @@ async def _evaluate_one(symbol: str, session: Session) -> dict:
 
 @router.post("/signals/evaluate/{symbol}")
 async def evaluate_symbol(symbol: str, session: Session = Depends(get_session)) -> dict:
-    """手动评估一只票: 取K线+行情 -> 生成信号(不落库, 供计划生成用)."""
+    """手动评估一只票: 取K线+行情 -> 生成信号并落库(供仪表盘「最近信号」与信号记录)."""
     data = await _evaluate_one(symbol, session)
+    session.commit()
     if data.get("error") == "无行情数据":
         return JSONResponse(status_code=404, content={"code": 1, "msg": "无行情数据", "data": None})
     return {"code": 0, "msg": "ok", "data": data}
@@ -87,8 +117,9 @@ async def evaluate_symbol(symbol: str, session: Session = Depends(get_session)) 
 
 @router.post("/signals/evaluate-batch")
 async def evaluate_batch(body: EvaluateBatchBody, session: Session = Depends(get_session)) -> dict:
-    """批量评估多只(持仓一键分析): 并发取数, 返回每只的结果列表."""
+    """批量评估多只(持仓一键分析): 并发取数, 信号落库, 返回每只的结果列表."""
     results = await _evaluate_many(body.symbols, session)
+    session.commit()
     return {"code": 0, "msg": "ok", "data": results}
 
 

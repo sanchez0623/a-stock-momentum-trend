@@ -9,3 +9,6 @@ apscheduler>=3.10,<4.0
 rich>=13.7
 pytz>=2024.1
 python-multipart>=0.0.9
+
+# === 可选数据源(盘后下载型, 选股 universe/基本面/业绩事件增强) ===
+baostock>=0.8.8

@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import pytest
+from app import db
+from app.core.account import account_manager
 from app.core.config import config_manager
 from app.core.fees import compute_trade_fee
 from app.core.position.manager import PositionManager, PositionManagerError
+from app.models.models import Position
+from sqlmodel import select
 
 pm = PositionManager()
 
@@ -13,6 +17,16 @@ pm = PositionManager()
 def _fee(action: str, amount: float) -> float:
     """按当前费率配置算单笔手续费(不写死数值, 费率改了用例仍成立)."""
     return compute_trade_fee(action, amount, config_manager.get().get("手续费"))
+
+
+def _backdate(symbol: str, opened_at: str = "2020-01-01 09:30:00") -> None:
+    """把持仓时间改到过去, 解除 T+1 锁定(用于测试正常减仓/清仓)."""
+    with db.session_scope() as s:
+        p = s.exec(select(Position).where(Position.symbol == symbol)).first()
+        assert p is not None, f"{symbol} 无持仓, 无法 backdate"
+        p.opened_at = opened_at
+        s.add(p)
+        s.commit()
 
 
 def test_open_first_position(tmp_engine):
@@ -51,6 +65,7 @@ def test_flat_price_add_allowed(tmp_engine):
 def test_reduce_realized_pnl(tmp_engine):
     """已实现盈亏 = 现价 − 含费成本 − 卖出费, 即扣掉双边费用的净额."""
     pos = pm.open_or_add("300750", "宁德时代", 200, 100.0, "首仓", None)
+    _backdate("300750")  # 解除 T+1 锁定, 否则当日买入不可减仓
     cost_incl = pos.cost  # 已摊入买入手续费
     pnl = pm.reduce("300750", 100, 120.0, "减仓", None)
     expected = round((120.0 - cost_incl) * 100, 2) - _fee("sell", 120.0 * 100)
@@ -62,11 +77,65 @@ def test_reduce_realized_pnl(tmp_engine):
 
 def test_close_position(tmp_engine):
     pos = pm.open_or_add("600519", "贵州茅台", 100, 100.0, "首仓", None)
+    _backdate("600519")  # 解除 T+1 锁定, 否则当日买入不可清仓
     cost_incl = pos.cost
     pnl = pm.close("600519", 110.0, "清仓", None)
     expected = round((110.0 - cost_incl) * 100, 2) - _fee("sell", 110.0 * 100)
     assert pnl == pytest.approx(expected, abs=0.01)
     assert pm.get_position("600519", None) is None  # 已清仓不在持仓列表
+
+
+def test_t_plus_one_blocks_sell(tmp_engine):
+    """当日买入的持仓当日不可减仓/卖出(T+1)."""
+    pm.open_or_add("300750", "宁德时代", 100, 100.0, "首仓", None)
+    assert pm.is_t_plus_one_locked("300750", None) is True
+    with pytest.raises(PositionManagerError):
+        pm.reduce("300750", 100, 120.0, "减仓", None)
+    with pytest.raises(PositionManagerError):
+        pm.close("300750", 110.0, "清仓", None)
+
+
+def test_t_plus_one_allows_next_day(tmp_engine):
+    """持仓时间改为昨日即解锁, 可正常减仓."""
+    pm.open_or_add("300750", "宁德时代", 100, 100.0, "首仓", None)
+    _backdate("300750", "2020-01-01 09:30:00")
+    assert pm.is_t_plus_one_locked("300750", None) is False
+    assert pm.reduce("300750", 100, 120.0, "减仓", None) is not None
+
+
+def test_opened_at_recorded_and_stable_on_add(tmp_engine):
+    """首仓记录持仓时间; 加仓不刷新(仍为首仓时刻)."""
+    pos = pm.open_or_add("300750", "宁德时代", 100, 100.0, "首仓", None)
+    first = pos.opened_at
+    assert first
+    pm.open_or_add("300750", "宁德时代", 100, 120.0, "加仓", None)
+    assert pm.get_position("300750", None).opened_at == first
+
+
+def test_account_start_capital_edit_and_default(tmp_engine):
+    """启动资金可修改并持久化; 后端不再返回已废弃的 remaining_capital.
+
+    可用资金/总权益改为前端派生(= 启动资金 - 持仓市值), 此处仅校验
+    后端资金账户以 start_capital 为唯一真值源。
+    """
+    acc = account_manager.get(None)
+    assert acc["start_capital"] == pytest.approx(500000.0, abs=0.01)  # 默认 50w
+    assert "remaining_capital" not in acc  # 旧字段已废弃
+
+    account_manager.set_start(1000000.0, None)
+    acc = account_manager.get(None)
+    assert acc["start_capital"] == pytest.approx(1000000.0, abs=0.01)
+
+    # 买入/卖出不再改变后端账户(可用资金由前端按持仓市值派生)
+    pm.open_or_add("300750", "宁德时代", 100, 100.0, "首仓", None)
+    _backdate("300750")
+    assert pm.reduce("300750", 100, 120.0, "减仓", None) is not None
+    acc = account_manager.get(None)
+    assert acc["start_capital"] == pytest.approx(1000000.0, abs=0.01)
+
+    with pytest.raises(ValueError):
+        account_manager.set_start(-1.0, None)
+
 
 
 def test_reduce_without_position_raises(tmp_engine):
@@ -80,6 +149,27 @@ def test_pyramid_plan_stage(tmp_engine):
     assert plan["strategy"] == "pyramid"
     assert plan["used_stage"] == 0  # 首仓后, 第一档(0.5)已用
     assert plan["suggest_next_pct"] == plan["remaining_ratios"][0] * 100
+
+
+def test_pyramid_plan_stage_after_add(tmp_engine):
+    """已加一档后, 下一档应为第3档(20%), 不再误报第1档."""
+    pm.open_or_add("300750", "宁德时代", 100, 100.0, "首仓", None)
+    pm.open_or_add("300750", "宁德时代", 60, 100.0, "加仓", None)
+    plan = pm.pyramid_plan("300750", None)
+    assert plan["used_stage"] == 1
+    assert plan["next_stage_index"] == 2
+    assert plan["suggest_next_pct"] == pytest.approx(20.0)
+
+
+def test_pyramid_stage_not_bumped_on_same_day_double_count(tmp_engine):
+    """同日多笔买入(分批建仓)应各算一档, 但仍由显式字段维护, 而非按笔数倒推误判."""
+    pm.open_or_add("300750", "宁德时代", 100, 100.0, "首仓", None)
+    pm.open_or_add("300750", "宁德时代", 50, 100.0, "加仓", None)
+    pm.open_or_add("300750", "宁德时代", 30, 100.0, "加仓", None)
+    pos = pm.get_position("300750", None)
+    assert pos.pyramid_stage == 2  # 首仓 + 两次加仓 = 已用2档
+    plan = pm.pyramid_plan("300750", None)
+    assert plan["next_stage_exhausted"] is True  # 三档(0.5/0.3/0.2)已用尽
 
 
 def test_take_profit_levels(tmp_engine):

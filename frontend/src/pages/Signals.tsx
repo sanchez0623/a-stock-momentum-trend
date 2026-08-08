@@ -78,7 +78,13 @@ export default function Signals() {
     setBusy(true)
     setError('')
     try {
-      await api.generatePlan(symbol, nm)
+      const plan = await api.generatePlan(symbol, nm)
+      if (!plan) {
+        // 后端返回 data:null => 当前无信号/无行情, 属预期, 弹信息提示, 不跳转
+        setBusy(false)
+        toast.info('当前无信号, 暂不生成计划')
+        return
+      }
       toast.success(`已生成 ${symbol} 的交易计划, 已跳转`)
       navigate('/plans')
     } catch (e) {

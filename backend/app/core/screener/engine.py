@@ -1,8 +1,8 @@
 """选股器核心实现.
 
 - 三因子评分(与入场信号同源, 方案 §4.5):
-  趋势分(0-40): ADX + 多头排列
-  动量分(0-40): ROC + RSI 位置 + MACD 柱
+  趋势分(0-40): ADX(强度 + 近 N 根斜率) + 多头排列 + 趋势连贯性
+  动量分(0-40): ROC(过热衰减) + RSI 位置 + MACD 柱(ATR 归一化) + 加速度
   量能分(0-20): 量比 + 量价配合度
 - 过滤: 剔除 ST / 停牌 / 流动性不足(日均成交额阈值)
 - 输出: Top N 排名表, 含每项得分/总分/人话理由/建议关注度
@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import Counter
+from datetime import datetime
 from typing import Any, Callable
 
 import pandas as pd
@@ -99,6 +101,14 @@ def _build_reason(f: dict[str, Any], cfg: dict) -> dict[str, Any]:
         parts_t.append(f"ADX {adx:.0f} 达标(阈值{adx_th}), 趋势成立")
         tags.append(_tag(f"ADX{adx:.0f}", "good"))
 
+    # ② 趋势持续度/连贯性(与分数同源, 不重算指标)
+    if f.get("adx_rising"):
+        tags.append(_tag("ADX走高", "good"))
+    elif adx >= adx_th:
+        risks.append("ADX 走平或回落, 趋势动能减弱")
+    if f.get("consistency", 0) >= 0.8 and f["bullish"]:
+        tags.append(_tag("趋势连贯", "good"))
+
     # ---------------------------------------------------------------- 动量
     roc, rsi_v, hist, hist_prev = f["roc"], f["rsi"], f["hist"], f["hist_prev"]
     parts_m: list[str] = []
@@ -183,9 +193,9 @@ def _build_reason(f: dict[str, Any], cfg: dict) -> dict[str, Any]:
 
 
 def score_indicators(ind: pd.DataFrame, cfg: dict | None = None) -> dict[str, Any]:
-    """三因子评分(纯函数, 输入已含指标列的 DataFrame, 取最后一根 bar).
+    """三因子评分(纯函数, 输入已含指标列的 DataFrame, 主要取最后一根 bar, 并辅以近 N 根序列判断趋势持续度/加速度/连贯性).
 
-    输出除各项得分外, 还含 reason/risk/tags/detail 四个人话字段(见 _build_reason).
+    输出除各项得分外, 还含 reason/risk/tags/detail 四个人话字段(见 _build_reason)。
     """
     cfg = cfg or config_manager.get()
     trend = cfg["趋势"]
@@ -193,22 +203,47 @@ def score_indicators(ind: pd.DataFrame, cfg: dict | None = None) -> dict[str, An
     volume = cfg["量能"]
     last = ind.iloc[-1]
     prev = ind.iloc[-2] if len(ind) > 1 else last
+    adx_period = int(trend.get("adx_period", 14))
+    roc_period = int(momentum["roc_period"])
     ma_s, ma_m, ma_l = f"ma{trend['ma_short']}", f"ma{trend['ma_mid']}", f"ma{trend['ma_long']}"
 
     # ---- 趋势分 0-40
-    adx = _f(last.get(f"adx{trend.get('adx_period', 14)}"))
+    adx = _f(last.get(f"adx{adx_period}"))
     ma_s_v, ma_m_v, ma_l_v = _f(last.get(ma_s)), _f(last.get(ma_m)), _f(last.get(ma_l))
     bullish = ma_s_v > ma_m_v > ma_l_v
-    trend_score = min(20.0, max(0.0, (adx - trend["adx_threshold"]) / 25 * 20)) + (20.0 if bullish else 0.0)
+    # ② 趋势持续度: 读近 N 根判断 ADX 是否仍在走强, 达标但转弱打折
+    adx_n_ago = _f(ind[f"adx{adx_period}"].iloc[-6]) if len(ind) > 5 else adx
+    adx_rising = adx >= adx_n_ago and adx >= trend["adx_threshold"]
+    adx_base = min(20.0, max(0.0, (adx - trend["adx_threshold"]) / 25 * 20))
+    if adx >= trend["adx_threshold"] and not adx_rising:
+        adx_base *= 0.7  # 趋势力度达标但动能衰减
+    trend_score = adx_base + (20.0 if bullish else 0.0)
 
     # ---- 动量分 0-40
-    roc = _f(last.get(f"roc{momentum['roc_period']}"))
+    roc = _f(last.get(f"roc{roc_period}"))
     rsi = _f(last.get(f"rsi{momentum['rsi_period']}"), 50)
     hist = _f(last.get("macd_hist"))
     hist_prev = _f(prev.get("macd_hist"))
-    roc_score = min(15.0, max(0.0, roc / 5 * 15))
+    close_now, close_prev = _f(last["close"]), _f(prev["close"])
+    # ③ ROC 过热衰减: 0~8% 健康区线性给满, 8~20% 边际递减, 20%+ 追高继续衰减到下限
+    if roc <= 0:
+        roc_score = 0.0
+    elif roc < 8:
+        roc_score = roc / 8 * 15
+    elif roc < 20:
+        roc_score = 15 - (roc - 8) / 12 * 5
+    else:
+        roc_score = max(3.0, 10 - (roc - 20) / 15 * 7)
+    roc_score = round(min(15.0, max(0.0, roc_score)), 2)
+    # ② 动量加速度: 近几日 ROC 变化, 减速则轻微打折
+    roc_n_ago = _f(ind[f"roc{roc_period}"].iloc[-4]) if len(ind) > 3 else roc
+    if roc > 0 and (roc - roc_n_ago) < 0:
+        roc_score *= 0.9
     rsi_score = 10.0 if 50 <= rsi <= 70 else (5.0 if 40 <= rsi < 50 or 70 < rsi <= 80 else 0.0)
-    macd_score = min(15.0, max(0.0, hist / 1.0 * 15))
+    # ① MACD 评分按 ATR 归一化(无 ATR 时回退 close), 消除绝对价位扭曲
+    atr_v = _f(last.get(f"atr{momentum.get('atr_period', 14)}"))
+    macd_norm = hist / atr_v if atr_v > 0 else (hist / close_now if close_now > 0 else 0.0)
+    macd_score = min(15.0, max(0.0, macd_norm * 15.0))
     momentum_score = min(40.0, roc_score + rsi_score + macd_score)
 
     # ---- 量能分 0-20
@@ -216,9 +251,11 @@ def score_indicators(ind: pd.DataFrame, cfg: dict | None = None) -> dict[str, An
     vr_threshold = volume["volume_ratio_threshold"]
     volume_score = min(10.0, max(0.0, (vr - vr_threshold) / 3 * 10))
     # 量价配合: 收阳 + 放量 加分
-    close_now, close_prev = _f(last["close"]), _f(prev["close"])
     price_up = close_now > close_prev
     volume_score += 10.0 if (price_up and vr > vr_threshold) else 0.0
+
+    # ② 趋势连贯性: 近 20 日收盘站在短期均线之上的占比(0~1)
+    consistency = round(float((ind["close"].tail(20) > ind[ma_s].tail(20)).mean()), 2) if len(ind) >= 20 else 0.0
 
     total = round(trend_score + momentum_score + volume_score, 1)
     if total >= 70:
@@ -245,6 +282,8 @@ def score_indicators(ind: pd.DataFrame, cfg: dict | None = None) -> dict[str, An
         "rsi": round(rsi, 1),
         "volume_ratio": round(vr, 2),
         "bias": bias,
+        "adx_rising": adx_rising,
+        "consistency": consistency,
         "date": str(last["date"]),
     }
     # 人话理由(与上面得分同源, 不重算指标)
@@ -262,7 +301,7 @@ class StockScreener:
     """全市场扫描(盘后定时) / 指定池扫描."""
 
     def __init__(self) -> None:
-        pass
+        self.last_scan_summary: dict[str, Any] | None = None
 
     def _cfg(self) -> dict:
         return config_manager.get()
@@ -327,14 +366,53 @@ class StockScreener:
         min_amount: float = MIN_DAILY_AMOUNT,
         progress_cb: Callable[[int, int], None] | None = None,
         count: int = 80,
+        per_industry: int = 0,       # ⑤ 每行业限配 N 只(0=不限)
+        industry_level: str = "sw_l1",  # 分组用申万级别
+        apply_gate: bool = True,     # ④ 大盘择时闸门
+        universe: str | None = None,    # ⑥ 选股池: all/hs300/zz500/hs300+zz500/sz50
+        apply_factors: bool = True,     # ⑦ 基本面质量 + 业绩事件因子
     ) -> list[dict[str, Any]]:
-        """扫描并排名. symbols 为空时用本地缓存/在线列表(默认过滤 ST), 支持板块/行业缩小范围."""
+        """扫描并排名.
+
+        symbols 为空时用本地缓存/在线列表(默认过滤 ST), 支持板块/行业缩小范围.
+        ④ 大盘择时闸门: 环境差时缩减 top_n(扫描前拉参考指数 K 线).
+        ⑤ 每行业限配: 排序后按申万级别分组, 每组截到 per_industry 只.
+        ⑥ 选股池预筛: 用指数成分股(沪深300/中证500/上证50)缩小扫描池.
+        ⑦ 基本面 + 事件: 质量筛/加分与业绩预告加权(只读本地表, 零额外网络调用).
+        """
+        from app.core.classification import apply_per_industry_cap, load_classification_map
+        from app.core.market_gate import compute_market_gate, fetch_gate_index_dfs
+        from app.core.universe import apply_universe, ensure_universe
+
         cfg = self._cfg()
         pool: list[tuple[str, str, str]] = []
         if symbols is not None:
             pool = [(sym, "", "") for sym in symbols]
         else:
             pool = await self._resolve_symbols(market)
+
+        # ---- ⑥ 选股池预筛(指数成分股, 在最耗时的逐票取数之前先缩池) ----
+        uni_cfg = cfg.get("选股池", {})
+        uni_name = (universe or uni_cfg.get("universe") or "all").strip()
+        uni_info: dict[str, Any] = {"universe": uni_name, "applied": False,
+                                    "before": len(pool), "after": len(pool), "note": "全A(未预筛)"}
+        if uni_name.lower() != "all":
+            try:
+                allowed, note = await ensure_universe(uni_name, int(uni_cfg.get("max_age_days", 7)))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("选股池预筛失败, 降级为全A: %s", exc)
+                allowed, note = set(), f"预筛异常降级: {exc}"
+            if allowed:
+                before = len(pool)
+                pool = apply_universe(pool, allowed)
+                uni_info.update({"applied": True, "before": before, "after": len(pool), "note": note})
+                logger.info("选股池预筛: %s -> %d 只(原 %d 只) | %s", uni_name, len(pool), before, note)
+                if not pool and not uni_cfg.get("fallback_on_empty", True):
+                    logger.warning("选股池预筛后为空且未允许降级, 返回空结果")
+                    return []
+            else:
+                uni_info["note"] = note
+                logger.warning("选股池 %s 不可用, 按全A扫描: %s", uni_name, note)
 
         # 过滤 ST / *ST / 退市
         filtered = [(sym, name, ind) for sym, name, ind in pool
@@ -354,6 +432,28 @@ class StockScreener:
             return []
         # symbol -> name 映射(结果带名称, 零额外接口调用)
         name_map = {sym: name for sym, name, _ in filtered}
+
+        # ---- ④ 大盘择时闸门(扫描前, 仅拉几次指数 K 线) ----
+        gate_info: dict[str, Any] = {"enabled": False, "environment": "neutral", "multiplier": 1.0, "reason": "", "details": []}
+        gate_cfg = cfg.get("择时闸门", {})
+        if apply_gate and gate_cfg.get("enabled"):
+            try:
+                idx_dfs = await fetch_gate_index_dfs(gate_cfg)
+                gate_info = compute_market_gate(idx_dfs, gate_cfg)
+                gate_info["enabled"] = True
+                mult = float(gate_info.get("multiplier", 1.0))
+                eff = int(top_n * mult)
+                logger.info(
+                    "择时闸门生效: 环境=%s 乘数=%.2f top_n %d→%d | %s",
+                    gate_info["environment"], mult, top_n, eff, gate_info["reason"],
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("择时闸门计算失败, 降级为不缩减: %s", exc)
+                gate_info = {"enabled": True, "environment": "neutral", "multiplier": 1.0,
+                             "reason": f"闸门计算异常, 降级不缩减: {exc}", "details": []}
+        else:
+            logger.info("择时闸门未启用(apply_gate=%s, 配置enabled=%s) -> 不缩放",
+                        apply_gate, bool(gate_cfg.get("enabled")))
 
         results: list[dict[str, Any]] = []
         total = len(symbols)
@@ -385,5 +485,120 @@ class StockScreener:
                 continue
             await asyncio.sleep(0.05)  # 降压
 
+        # 按总分降序
         results.sort(key=lambda r: r["total"], reverse=True)
-        return results[:top_n]
+
+        # ---- ⑦ 基本面质量 + 业绩事件因子(读本地表, 零额外网络调用) ----
+        # 放在行业限配之前: 质量 filter 先剔除垃圾, 限配再在"质量达标"的池子里分组
+        q_cfg = cfg.get("基本面因子", {})
+        e_cfg = cfg.get("业绩事件", {})
+        factor_enabled = bool(q_cfg.get("enabled") or e_cfg.get("enabled"))
+        factor_info: dict[str, Any] = {"enabled": factor_enabled, "applied": False}
+        if factor_enabled and apply_factors:
+            from app.core.fundamentals import (
+                apply_fundamental_factors,
+                load_fundamentals_map,
+                load_recent_events,
+            )
+            syms = [r["symbol"] for r in results]
+            fund_map = load_fundamentals_map(syms)
+            event_map = load_recent_events(syms, int(e_cfg.get("lookback_days", 90)))
+            results, factor_stats = apply_fundamental_factors(
+                results, fund_map, event_map, q_cfg, e_cfg,
+            )
+            factor_info.update({"applied": True, **factor_stats})
+            logger.info(
+                "基本面+事件因子生效: 候选%d -> %d(剔除%d, 无数据%d, 事件命中%d)",
+                factor_stats.get("before", 0), factor_stats.get("after", 0),
+                factor_stats.get("removed", 0), factor_stats.get("no_fundamental_data", 0),
+                factor_stats.get("event_hits", 0),
+            )
+        elif factor_enabled and not apply_factors:
+            factor_info["reason"] = "apply_factors=False 本次跳过"
+            logger.info("apply_factors=False, 跳过基本面+事件因子")
+        else:
+            factor_info["reason"] = "配置未启用"
+            logger.info("基本面+事件因子未启用(配置 enabled=false)")
+
+        # ---- ⑤ 每行业限配(内存后处理, 零额外调用) ----
+        cap_cfg = cfg.get("行业限配", {})
+        cap_enabled = False
+        cap_per = per_industry
+        cap_level = industry_level
+        cap_before = len(results)
+        cap_after = len(results)
+        cap_removed = 0
+        cap_capped: list[dict[str, Any]] = []
+        if per_industry <= 0 and cap_cfg.get("enabled"):
+            cap_per = int(cap_cfg.get("per_industry", 0) or 0)
+            cap_level = cap_cfg.get("level", "sw_l1") or "sw_l1"
+            per_industry = cap_per
+            industry_level = cap_level
+        if per_industry > 0:
+            cap_enabled = True
+            class_map = load_classification_map([r["symbol"] for r in results])
+            before = results
+            results = apply_per_industry_cap(results, class_map, per_industry, industry_level)
+
+            # 统计每组截断情况(验证/日志/汇总用)
+            def _grp(r: dict[str, Any]) -> str:
+                cls = class_map.get(r.get("symbol", ""))
+                key = str(getattr(cls, industry_level, "") or getattr(cls, "industry", "") or "").strip()
+                return key or "_未知_"
+            before_groups = Counter(_grp(r) for r in before)
+            after_groups = Counter(_grp(r) for r in results)
+            capped = {k: (b, after_groups.get(k, 0))
+                      for k, b in before_groups.items() if after_groups.get(k, 0) < b}
+            cap_before = len(before)
+            cap_after = len(results)
+            cap_removed = len(before) - len(results)
+            cap_capped = [{"industry": k, "before": b, "after": a}
+                          for k, (b, a) in sorted(capped.items(), key=lambda x: -x[1][0])]
+            if capped:
+                detail = ", ".join(f"{c['industry']}:{c['before']}→{c['after']}" for c in cap_capped)
+                logger.info("行业限配生效(level=%s, 每组%d): 移除%d只→剩%d只; 触顶组[%s]",
+                            industry_level, per_industry, cap_removed, cap_after, detail)
+            else:
+                logger.info("行业限配生效(level=%s, 每组%d): 无组触顶, 剩%d只",
+                            industry_level, per_industry, cap_after)
+        else:
+            logger.info("行业限配未启用(per_industry=%d) -> 不限制", per_industry)
+
+        # ---- ④ 闸门乘子作用于 top_n ----
+        effective_top_n = int(top_n * float(gate_info.get("multiplier", 1.0)))
+        results = results[:effective_top_n]
+        if gate_info.get("enabled"):
+            for r in results:
+                r["market_gate"] = {
+                    "environment": gate_info["environment"],
+                    "multiplier": gate_info["multiplier"],
+                    "reason": gate_info["reason"],
+                }
+
+        # ---- 汇总本次扫描的闸门/限配结果, 供 GET /api/screener/last-scan-summary 读取 ----
+        self.last_scan_summary = {
+            "scanned_at": datetime.now().isoformat(timespec="seconds"),
+            "requested_top_n": top_n,
+            "effective_top_n": effective_top_n,
+            "final_count": len(results),
+            "universe": uni_info,
+            "factor": factor_info,
+            "gate": {
+                "enabled": bool(gate_info.get("enabled")),
+                "applied": bool(apply_gate and gate_cfg.get("enabled")),
+                "environment": gate_info["environment"],
+                "multiplier": float(gate_info.get("multiplier", 1.0)),
+                "reason": gate_info.get("reason", ""),
+                "details": gate_info.get("details", []),
+            },
+            "cap": {
+                "enabled": cap_enabled,
+                "per_industry": cap_per,
+                "level": cap_level,
+                "before": cap_before,
+                "after": cap_after,
+                "removed": cap_removed,
+                "capped_groups": cap_capped,
+            },
+        }
+        return results

@@ -3,18 +3,33 @@
 from __future__ import annotations
 
 import pytest
+from app import db
 from app.core.config import config_manager
 from app.core.fees import compute_trade_fee
 from app.core.logger import trade_logger
 from app.core.stats import stats
 from app.core.tradelog import trade_log
+from app.models.models import Position
+from sqlmodel import select
+
+
+def _backdate(symbol: str, opened_at: str = "2020-01-01 09:30:00") -> None:
+    """把持仓时间改到过去, 解除 T+1 锁定(测试当日买当日卖需如此)."""
+    with db.session_scope() as s:
+        p = s.exec(select(Position).where(Position.symbol == symbol)).first()
+        if p:
+            p.opened_at = opened_at
+            s.add(p)
+            s.commit()
 
 
 def _seed_trades(tmp_engine):
     """构造 3 笔完整回合: 买A -> 卖A(盈利) / 买B -> 卖B(亏损) / 买C(持有中)."""
     trade_logger.manual_entry("000001", "平安银行", "buy", 10.0, 1000, "首仓")
+    _backdate("000001")  # 解除 T+1, 否则当日买入不可卖
     trade_logger.manual_entry("000001", "平安银行", "sell", 11.0, 1000, "止盈")
     trade_logger.manual_entry("000002", "万科A", "buy", 20.0, 500, "首仓")
+    _backdate("000002")
     trade_logger.manual_entry("000002", "万科A", "sell", 18.0, 500, "止损")
     trade_logger.manual_entry("000003", "测试C", "buy", 30.0, 300, "首仓")
 

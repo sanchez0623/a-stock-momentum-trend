@@ -1,13 +1,34 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api/client'
-import type { Portfolio, Quote, WatchlistItem } from '../api/client'
+import type { AccountInfo, Portfolio, PositionItem, Quote, WatchlistItem } from '../api/client'
 import { colorByPct, fmtPct } from '../const/colors'
 import { Button, Card, EmptyState, ErrorBox, Field, ListRow, Loading, Tag, inputStyle, toast } from '../components/ui'
 import SymbolInput from '../components/SymbolInput'
 
+/** "YYYY-MM-DD HH:MM:SS" -> datetime-local 值 "YYYY-MM-DDTHH:MM" */
+function toLocalInput(v: string): string {
+  if (!v) return ''
+  return v.replace(' ', 'T').slice(0, 16)
+}
+/** datetime-local 值 -> "YYYY-MM-DD HH:MM:SS" */
+function fromLocalInput(v: string): string {
+  if (!v) return ''
+  return v.replace('T', ' ') + ':00'
+}
+function isToday(v: string): boolean {
+  if (!v) return false
+  const d = new Date()
+  const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  return v.slice(0, 10) === today
+}
+function fmtMoney(n: number): string {
+  return '¥' + n.toLocaleString('zh-CN', { maximumFractionDigits: 2 })
+}
+
 export default function Watchlist() {
   const [watch, setWatch] = useState<WatchlistItem[]>([])
   const [portfolio, setPortfolio] = useState<Portfolio | null>(null)
+  const [account, setAccount] = useState<AccountInfo | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
@@ -22,6 +43,7 @@ export default function Watchlist() {
     Promise.all([
       api.watchlist().then(setWatch).catch(() => {}),
       api.positions().then(setPortfolio).catch((e) => setError(String(e.message || e))),
+      api.account().then(setAccount).catch(() => {}),
     ])
 
   useEffect(() => {
@@ -68,6 +90,16 @@ export default function Watchlist() {
     }
   }
 
+  // 资金账户派生(后端只存启动资金; 可用/总权益按实时持仓市值计算):
+  //   可用资金 = 启动资金 - 持仓市值
+  //   总权益   = 持仓市值 + 可用资金 = 启动资金
+  const availableCap = account && portfolio
+    ? account.start_capital - portfolio.market_value
+    : null
+  const totalEquity = account && portfolio
+    ? account.start_capital
+    : null
+
   if (loading) return <Loading />
 
   return (
@@ -94,24 +126,7 @@ export default function Watchlist() {
             ) : (
               <div>
                 {portfolio.positions.map((p) => (
-                  <ListRow key={p.symbol} className="py-2.5">
-                    <span className="font-semibold">{p.symbol} <span className="font-normal text-ink-muted">{p.name}</span></span>
-                    <span
-                      className="text-ink-secondary"
-                      title={`含费成本 ${p.cost.toFixed(4)} = 成交均价 ${p.cost_raw.toFixed(4)} + 摊入手续费 ¥${p.fee_cost.toFixed(2)}`}
-                    >
-                      {p.qty} 股 · 成本 {p.cost.toFixed(2)}
-                      <span className="ml-1 text-[10px] text-ink-faint">含费</span>
-                    </span>
-                    <span className="text-right">
-                      <span className={`font-semibold ${colorByPct(p.unrealized_pct)}`}>
-                        {p.price.toFixed(2)} ({fmtPct(p.unrealized_pct)})
-                      </span>
-                      <span className={`block text-xs ${colorByPct(p.unrealized_pnl)}`}>
-                        {p.unrealized_pnl >= 0 ? '+' : ''}{p.unrealized_pnl.toLocaleString('zh-CN', { maximumFractionDigits: 0 })} 元
-                      </span>
-                    </span>
-                  </ListRow>
+                  <PosRow key={p.symbol} p={p} onChanged={refresh} />
                 ))}
                 <div className="flex justify-between pt-2.5 text-[13px] font-semibold">
                   <span>合计盈亏</span>
@@ -129,7 +144,7 @@ export default function Watchlist() {
           </Card>
         </div>
 
-        {/* 右: 表单 */}
+        {/* 右: 表单 + 资金账户 */}
         <div className="flex flex-col gap-4">
           <Card title="添加自选">
             <Field label="股票代码">
@@ -153,9 +168,17 @@ export default function Watchlist() {
             </Field>
             <Button onClick={addPosition} disabled={!posSymbol.trim() || !posPrice}>录入</Button>
             <div className="mt-2 text-[11px] text-ink-faint">
-              加仓价须高于当前成交均价(顺向); 手续费按设置的费率自动摊入成本。减仓到「交易日志」页(三期)。
+              加仓价须高于当前成交均价(顺向); 手续费按设置的费率自动摊入成本。减仓到「交易日志」页操作。
             </div>
           </Card>
+
+          <AccountCard
+            account={account}
+            availableCap={availableCap}
+            marketValue={portfolio?.market_value ?? 0}
+            totalEquity={totalEquity}
+            onChanged={refresh}
+          />
         </div>
       </div>
     </div>
@@ -182,5 +205,168 @@ function WatchRow({ symbol, name, onRemove }: { symbol: string; name: string; on
         <button onClick={onRemove} className="cursor-pointer border-none bg-transparent text-[12px] text-ink-faint hover:text-ink">✕</button>
       </span>
     </ListRow>
+  )
+}
+
+function PosRow({ p, onChanged }: { p: PositionItem; onChanged: () => void }) {
+  const [editing, setEditing] = useState(false)
+  const [val, setVal] = useState(toLocalInput(p.opened_at))
+  const [saving, setSaving] = useState(false)
+  const locked = isToday(p.opened_at)
+
+  const startEdit = () => {
+    setVal(toLocalInput(p.opened_at))
+    setEditing(true)
+  }
+  const save = async () => {
+    if (!val) return
+    setSaving(true)
+    try {
+      await api.updatePositionTime(p.symbol, fromLocalInput(val))
+      toast.success('持仓时间已更新')
+      setEditing(false)
+      onChanged()
+    } catch (e) {
+      toast.error(String((e as Error).message))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <ListRow className="py-2.5">
+      <span className="font-semibold">{p.symbol} <span className="font-normal text-ink-muted">{p.name}</span></span>
+      <span
+        className="text-ink-secondary"
+        title={`含费成本 ${p.cost.toFixed(4)} = 成交均价 ${p.cost_raw.toFixed(4)} + 摊入手续费 ¥${p.fee_cost.toFixed(2)}`}
+      >
+        {p.qty} 股 · 成本 {p.cost.toFixed(2)}
+        <span className="ml-1 text-[10px] text-ink-faint">含费</span>
+      </span>
+      <span className="text-right">
+        <span className={`font-semibold ${colorByPct(p.unrealized_pct)}`}>
+          {p.price.toFixed(2)} ({fmtPct(p.unrealized_pct)})
+        </span>
+        <span className={`block text-xs ${colorByPct(p.unrealized_pnl)}`}>
+          {p.unrealized_pnl >= 0 ? '+' : ''}{p.unrealized_pnl.toLocaleString('zh-CN', { maximumFractionDigits: 0 })} 元
+        </span>
+      </span>
+      <div className="col-span-full mt-1 flex items-center gap-2 text-[11px] text-ink-faint">
+        <span>持仓时间:</span>
+        {editing ? (
+          <>
+            <input
+              type="datetime-local"
+              value={val}
+              onChange={(e) => setVal(e.target.value)}
+              style={{ ...inputStyle, width: 'auto', padding: '2px 6px', fontSize: 11 }}
+            />
+            <button className="cursor-pointer border-none bg-transparent text-[11px] text-ink hover:underline" onClick={save} disabled={saving}>
+              {saving ? '保存中' : '保存'}
+            </button>
+            <button className="cursor-pointer border-none bg-transparent text-[11px] text-ink-faint hover:underline" onClick={() => setEditing(false)}>
+              取消
+            </button>
+          </>
+        ) : (
+          <>
+            <span>{p.opened_at || '—'}</span>
+            <button className="cursor-pointer border-none bg-transparent text-[11px] text-ink hover:underline" onClick={startEdit}>
+              修改
+            </button>
+            {locked && <Tag color="#d48806">T+1 今日买入·不可减仓</Tag>}
+          </>
+        )}
+      </div>
+    </ListRow>
+  )
+}
+
+function AccountCard({
+  account, availableCap, marketValue, totalEquity, onChanged,
+}: {
+  account: AccountInfo | null
+  availableCap: number | null
+  marketValue: number
+  totalEquity: number | null
+  onChanged: () => void
+}) {
+  const [editing, setEditing] = useState(false)
+  const [val, setVal] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  const startEdit = () => {
+    setVal(String(account?.start_capital ?? 500000))
+    setEditing(true)
+  }
+  const save = async () => {
+    const n = Number(val)
+    if (!n || n <= 0) {
+      toast.error('请输入正数启动资金')
+      return
+    }
+    setSaving(true)
+    try {
+      await api.updateAccount(n)
+      toast.success('启动资金已更新, 可用资金已同步')
+      setEditing(false)
+      onChanged()
+    } catch (e) {
+      toast.error(String((e as Error).message))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Card title="资金账户">
+      {!account ? (
+        <EmptyState>加载中...</EmptyState>
+      ) : (
+        <div className="flex flex-col gap-2 text-[13px]">
+          <div className="flex items-center justify-between">
+            <span className="text-ink-secondary">启动资金</span>
+            {editing ? (
+              <span className="flex items-center gap-1.5">
+                <input
+                  type="number"
+                  value={val}
+                  onChange={(e) => setVal(e.target.value)}
+                  style={{ ...inputStyle, width: 130, padding: '3px 8px', fontSize: 12 }}
+                />
+                <button className="cursor-pointer border-none bg-transparent text-[12px] text-ink hover:underline" onClick={save} disabled={saving}>
+                  {saving ? '保存中' : '保存'}
+                </button>
+                <button className="cursor-pointer border-none bg-transparent text-[12px] text-ink-faint hover:underline" onClick={() => setEditing(false)}>
+                  取消
+                </button>
+              </span>
+            ) : (
+              <span className="flex items-center gap-1.5">
+                <span className="font-semibold">{fmtMoney(account.start_capital)}</span>
+                <button className="cursor-pointer border-none bg-transparent text-[12px] text-ink hover:underline" onClick={startEdit}>
+                  修改
+                </button>
+              </span>
+            )}
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-ink-secondary">可用资金</span>
+            <span className="font-semibold">{availableCap != null ? fmtMoney(availableCap) : '—'}</span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-ink-secondary">持仓市值</span>
+            <span className="font-semibold">{fmtMoney(marketValue)}</span>
+          </div>
+          <div className="flex items-center justify-between border-t border-[#eee] pt-2 text-[13px] font-semibold">
+            <span>总权益</span>
+            <span>{totalEquity != null ? fmtMoney(totalEquity) : '—'}</span>
+          </div>
+          <div className="text-[11px] text-ink-faint">
+            可用资金 = 启动资金 − 持仓市值, 总权益 = 持仓市值 + 可用资金 = 启动资金; 买入抬高持仓市值, 可用资金随之下降, 自动同步。
+          </div>
+        </div>
+      )}
+    </Card>
   )
 }

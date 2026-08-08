@@ -63,15 +63,16 @@ class TencentSource(DataSourceInterface):
         return f"{guess_market(symbol) or 'sz'}{symbol}"
 
     # ------------------------------------------------------------ 接口实现
-    async def get_kline(self, symbol: str, period: str = "daily", count: int = 120) -> pd.DataFrame:
+    async def get_kline(self, symbol: str, period: str = "daily", count: int = 120, secid: str | None = None) -> pd.DataFrame:
         p = PERIOD_PARAM.get(period, "day")
         suffix = ",qfq" if p in ("day", "week") else ""
-        url = f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={self._code(symbol)},{p},,,{count}{suffix}"
+        code = secid or self._code(symbol)
+        url = f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={code},{p},,,{count}{suffix}"
         text = await self._text(url)
         import json
 
         data = json.loads(text)
-        node = (data.get("data") or {}).get(self._code(symbol)) or {}
+        node = (data.get("data") or {}).get(code) or {}
         rows_raw = node.get(f"qfq{p}") or node.get(p) or []
         rows = []
         for r in rows_raw:

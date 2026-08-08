@@ -69,14 +69,19 @@ class PositionManager:
             raise PositionManagerError("数量与价格必须为正")
         with _session(session) as s:
             pos = self.get_position(symbol, s)
+            first_open = pos is None
             if pos is None:
-                pos = Position(symbol=symbol, name=name, qty=0, cost=0.0, cost_raw=0.0, status="holding")
+                # 首仓: 记录持仓时间(加仓不刷新, 用于 T+1 判定); 档位置 0(仅首仓)
+                pos = Position(symbol=symbol, name=name, qty=0, cost=0.0, cost_raw=0.0,
+                               status="holding", opened_at=_now(), pyramid_stage=0)
                 s.add(pos)
             else:
                 # 顺向判断用纯均价: 含费成本天然高于成交价, 用它会误杀平价加仓
                 ref = pos.cost_raw or pos.cost
                 if price < ref:
                     raise PositionManagerError(f"加仓价 {price:.2f} 低于当前成本 {ref:.2f}, 拒绝顺向加仓")
+                # 显式推进金字塔档位(取代旧「按成交笔数倒推」的脆弱逻辑)
+                pos.pyramid_stage = (pos.pyramid_stage or 0) + 1
             # 先落成交, 以 trade.fee 为手续费唯一真相源(避免与日志层重复计算而口径漂移)
             trade = trade_logger.record(symbol, name, "buy", price, qty, reason, note="仓位管理", session=s)
             amount = trade.amount
@@ -101,6 +106,8 @@ class PositionManager:
         pos.cost 已含买入手续费 -> (price - cost) * qty 天然扣掉了买入侧费用;
         record() 再扣卖出侧费用(含印花税), 最终 trade.pnl 即完整含费净额.
         减仓不改变每股成本(加权平均法), 剩余仓位继续沿用原含费成本.
+
+        T+1 限制: 当日买入的持仓当日不可减仓/卖出(与 A 股 T+1 规则一致).
         """
         if qty <= 0 or price <= 0:
             raise PositionManagerError("数量与价格必须为正")
@@ -108,18 +115,42 @@ class PositionManager:
             pos = self.get_position(symbol, s)
             if pos is None or pos.qty <= 0:
                 raise PositionManagerError(f"{symbol} 无持仓")
+            if self.is_t_plus_one_locked(symbol, s):
+                raise PositionManagerError(
+                    f"{symbol} 处于 T+1 锁定期(今日买入), 当日不可减仓/卖出, 下一交易日方可操作"
+                )
             if qty > pos.qty:
                 qty = pos.qty
             realized_pnl = round((price - pos.cost) * qty, 2)
             pos.qty -= qty
             if pos.qty == 0:
                 pos.status = "closed"
+                pos.pyramid_stage = 0  # 清仓后档位归零, 重开即首仓
             pos.updated_at = _now()
             # 交易日志双写(SQLite + CSV); record 内部扣卖出手续费, trade.pnl 为净额
             trade = trade_logger.record(symbol, pos.name, "sell", price, qty, reason,
                                         pnl=realized_pnl, note="仓位管理", session=s)
             s.commit()
             return trade.pnl if trade.pnl is not None else realized_pnl
+
+    def is_t_plus_one_locked(self, symbol: str, session: Session | None = None) -> bool:
+        """持仓是否处于 T+1 锁定期: 当日买入, 当日不可卖出/减仓.
+
+        以持仓时间(opened_at)的日期与当前日期比较; 无持仓或时间为空视为非锁定.
+        """
+        with _session(session) as s:
+            pos = self.get_position(symbol, s)
+            if pos is None:
+                return False
+            opened = (pos.opened_at or "").strip()
+            if not opened:
+                return False
+            try:
+                opened_date = opened[:10]
+                today = dt.datetime.now().strftime("%Y-%m-%d")
+                return opened_date == today
+            except Exception:  # noqa: BLE001
+                return False
 
     def close(self, symbol: str, price: float, reason: str = "清仓", session: Session | None = None) -> float:
         """清仓, 返回已实现盈亏."""
@@ -130,35 +161,56 @@ class PositionManager:
             return self.reduce(symbol, pos.qty, price, reason, s)
 
     # ------------------------------------------------------------ 仓位建议
-    def pyramid_plan(self, symbol: str, session: Session | None = None) -> dict[str, Any]:
-        """金字塔加仓建议: 已用档位/剩余档位/建议比例."""
+    def pyramid_plan(self, symbol: str, session: Session | None = None,
+                     kline_df: Any | None = None) -> dict[str, Any]:
+        """金字塔加仓建议: 已用档位/剩余档位/建议比例.
+
+        pyramid_stage = 已完成的分档数(0=仅首仓, 1=已加1档, 2=已加2档),
+        由 open_or_add 显式维护, 不再从成交笔数倒推(避免同日多笔/减后回补误判).
+        ratios[0] 即首仓本身, 因此「下一档加仓」对应索引 = pyramid_stage + 1.
+
+        比率默认取全局「仓位.pyramid_ratios」; 当交易模式(Q2)启用且提供 K 线时,
+        取当前模式(mode.pyramid_ratios) —— 不同市况下首仓/加仓比例自动切换.
+        """
         cfg = config_manager.get()
-        ratios = cfg["仓位"]["pyramid_ratios"]
         pos = self.get_position(symbol, session)
-        used = 0
-        # 由 trades 表估算已加仓次数(buy 记录数 - 1)
-        if pos is not None:
-            trades = self.history(symbol, limit=20, session=session)
-            buys = [t for t in trades if t.action == "buy"][::-1]
-            used = max(0, len(buys) - 1)
-        remaining = ratios[used:] if used < len(ratios) else []
+        stage = pos.pyramid_stage if pos is not None else 0
+        # 选比率: 模式启用 + 有 K 线 -> 当前模式的金字塔比例
+        ratios = cfg["仓位"]["pyramid_ratios"]
+        mode_key = ""
+        if cfg.get("交易模式", {}).get("enabled", True) and kline_df is not None:
+            try:
+                from app.core.modes import active_mode
+                md = active_mode(symbol, kline_df, cfg)
+                if md.mode.get("pyramid_ratios"):
+                    ratios = md.mode["pyramid_ratios"]
+                    mode_key = md.mode_key
+            except Exception:  # noqa: BLE001
+                pass
+        next_idx = stage + 1  # 下一档加仓在 ratios 中的索引(首仓 ratios[0] 已占用)
+        remaining = ratios[next_idx:] if next_idx < len(ratios) else []
         return {
             "strategy": "pyramid",
             "ratios": ratios,
-            "used_stage": used,
+            "mode": mode_key,
+            "used_stage": stage,
+            "next_stage_index": next_idx,
+            "next_stage_exhausted": next_idx >= len(ratios),
             "remaining_ratios": remaining,
             "suggest_next_pct": remaining[0] * 100 if remaining else 0.0,
         }
 
     def take_profit_levels(self, cost: float, atr_pct: float | None = None,
-                           session: Session | None = None) -> list[dict[str, float]]:
+                           session: Session | None = None,
+                           mode: dict[str, Any] | None = None) -> list[dict[str, float]]:
         """分批止盈计划: 每档触发价与建议减仓比例.
 
         atr_pct 给定 -> ATR 动态档(成本 × (1+倍数×ATR), 带下限保护);
         atr_pct 为空 -> 使用配置中的 fixed 档位(向后兼容).
+        mode 给定(当前交易模式) -> 优先用模式的止盈配置, 否则用全局「仓位」配置.
         """
         cfg = config_manager.get()
-        pc = cfg["仓位"]
+        pc = mode or cfg["仓位"]
         ratios = pc.get("take_profit_ratios", [0.2, 0.3, 0.5])
         mode = pc.get("take_profit_mode", "atr")
         if mode == "atr" and atr_pct is not None:
@@ -217,6 +269,7 @@ class PositionManager:
             items.append({
                 "symbol": p.symbol, "name": p.name, "qty": p.qty, "cost": p.cost,
                 "cost_raw": round(cost_raw, 4), "fee_cost": round(fee_cost, 2),
+                "opened_at": p.opened_at or "",
                 "price": round(price, 3), "market_value": round(mv, 2),
                 "unrealized_pnl": round(pnl, 2),
                 "unrealized_pct": round(pnl / cv * 100, 2) if cv else 0.0,
