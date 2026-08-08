@@ -21,5 +21,7 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     chunkSizeWarningLimit: 800,
+    // 临时: WorkBuddy 安全删除保护异常导致 vite 清空 dist(emptyDir→rmSync)失败, 跳过清空直接覆盖写
+    emptyOutDir: false,
   },
 })

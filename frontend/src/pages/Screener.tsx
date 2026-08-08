@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useRef, useState } from 'react'
 import { api } from '../api/client'
-import type { ScreenerTask } from '../api/client'
+import type { ScreenerTask, UniverseStats } from '../api/client'
 import { Button, Card, EmptyState, ErrorBox, Loading, Tag, toast } from '../components/ui'
 import { cn } from '../components/ui'
 
@@ -14,6 +14,15 @@ const TAG_COLOR: Record<string, string> = {
 
 const FACTORS = ['趋势', '动量', '量能'] as const
 
+/** 组合选股池: 需其包含的指数都有数据才可用 */
+const UNIVERSE_COMBO: Array<{ value: string; label: string; needs: string[] }> = [
+  {
+    value: 'hs300+zz500',
+    label: '沪深300+中证500(≈中证800)',
+    needs: ['hs300', 'zz500'],
+  },
+]
+
 export default function Screener() {
   const [task, setTask] = useState<ScreenerTask | null>(null)
   const [loading, setLoading] = useState(true)
@@ -21,6 +30,9 @@ export default function Screener() {
   const [market, setMarket] = useState('all')
   const [board, setBoard] = useState('')
   const [industry, setIndustry] = useState('')
+  const [universe, setUniverse] = useState('')
+  const [universeStats, setUniverseStats] = useState<UniverseStats | null>(null)
+  const [universeNote, setUniverseNote] = useState('')
   const [running, setRunning] = useState(false)
   const [expanded, setExpanded] = useState<string | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -35,6 +47,14 @@ export default function Screener() {
   useEffect(() => {
     api.screenerLatest().then((t) => { if (t && (t.status === 'done' || t.status === 'failed')) setTask(t) }).catch(() => {})
       .finally(() => setLoading(false))
+    // 选股池缓存概况: 有数据的指数渲染为可选项; 全空则禁用并提示
+    api.universeStats()
+      .then((s) => {
+        setUniverseStats(s)
+        const keys = Object.keys(s)
+        if (keys.length === 0) setUniverseNote('成分股缓存为空, 请先在后端刷新选股池(Swagger: POST /screener/universe/refresh)')
+      })
+      .catch(() => setUniverseNote('选股池状态读取失败'))
     return stopPoll
   }, [])
 
@@ -42,7 +62,7 @@ export default function Screener() {
     setRunning(true)
     setError('')
     try {
-      const { task_id } = await api.screenerRun(market, 30, board || undefined, industry.trim() || undefined)
+      const { task_id } = await api.screenerRun(market, 30, board || undefined, industry.trim() || undefined, universe || undefined)
       toast.info('扫描已启动, 完成后自动刷新结果')
       stopPoll()
       pollRef.current = setInterval(async () => {
@@ -105,13 +125,37 @@ export default function Screener() {
               className="w-[110px] rounded border border-[#d0d3d9] px-2.5 py-[7px] text-[13px]"
             />
           </label>
+          <label className="flex items-center gap-1.5 text-[13px]">
+            选股池
+            <select
+              value={universe}
+              onChange={(e) => setUniverse(e.target.value)}
+              disabled={!universeStats || Object.keys(universeStats).length === 0}
+              className="rounded border border-[#d0d3d9] px-2.5 py-[7px] text-[13px] disabled:cursor-not-allowed disabled:bg-[#f5f6f8] disabled:text-ink-faint"
+            >
+              <option value="">全部A股</option>
+              {universeStats &&
+                Object.entries(universeStats).map(([key, v]) => (
+                  <option key={key} value={key}>
+                    {v.label}成分({v.count}只)
+                  </option>
+                ))}
+                {universeStats &&
+                  UNIVERSE_COMBO.filter((c) => c.needs.every((k) => universeStats[k]?.count > 0)).map((c) => (
+                    <option key={c.value} value={c.value}>
+                      {c.label}
+                    </option>
+                  ))}
+            </select>
+          </label>
           <Button onClick={run} disabled={scanning}>
             {scanning ? '扫描中...' : '开始扫描'}
           </Button>
           {task && <span className="text-xs text-ink-muted">最近任务: {task.status} · {task.done}/{task.total} · {task.progress}%</span>}
         </div>
         <div className="mt-2 text-[11px] text-ink-faint">
-          市场/板块/行业可组合缩小范围(如 科创板+半导体). 行业需本地股票列表含行业数据(东财列表成功拉取一次后自动填充).
+          市场/板块/行业/选股池可组合缩小范围(如 科创板+半导体, 或 沪深300成分). 行业需本地股票列表含行业数据(东财列表成功拉取一次后自动填充).
+          {universeNote && <span className="text-[#ea580c]"> {universeNote}</span>}
         </div>
         {task?.error && <div className="mt-2 text-xs text-orange-500">任务异常: {task.error}</div>}
       </Card>
