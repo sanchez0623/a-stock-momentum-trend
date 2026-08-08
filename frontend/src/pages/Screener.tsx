@@ -1,6 +1,6 @@
-import { Fragment, useEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api/client'
-import type { ScreenerTask, UniverseStats } from '../api/client'
+import type { IndustryItem, ScreenerTask, UniverseStats } from '../api/client'
 import { Button, Card, EmptyState, ErrorBox, Loading, Tag, toast } from '../components/ui'
 import { cn } from '../components/ui'
 
@@ -14,25 +14,54 @@ const TAG_COLOR: Record<string, string> = {
 
 const FACTORS = ['趋势', '动量', '量能'] as const
 
+const BOARDS = [
+  { value: 'main', label: '主板' },
+  { value: 'chinext', label: '创业板' },
+  { value: 'star', label: '科创板' },
+  { value: 'bj', label: '北交所' },
+] as const
+
 /** 组合选股池: 需其包含的指数都有数据才可用 */
-const UNIVERSE_COMBO: Array<{ value: string; label: string; needs: string[] }> = [
-  {
-    value: 'hs300+zz500',
-    label: '沪深300+中证500(≈中证800)',
-    needs: ['hs300', 'zz500'],
-  },
+const UNIVERSE_COMBO = { value: 'hs300+zz500', label: '沪深300+中证500(≈中证800)', needs: ['hs300', 'zz500'] }
+
+const CAP_OPTIONS = [
+  { value: 0, label: '跟随全局' },
+  { value: 3, label: '3只/行业' },
+  { value: 5, label: '5只/行业' },
+  { value: 10, label: '10只/行业' },
+]
+
+const LEVEL_OPTIONS = [
+  { value: 'sw_l1', label: '申万一级' },
+  { value: 'sw_l2', label: '申万二级' },
+  { value: 'sw_l3', label: '申万三级' },
 ]
 
 export default function Screener() {
   const [task, setTask] = useState<ScreenerTask | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [market, setMarket] = useState('all')
-  const [board, setBoard] = useState('')
-  const [industry, setIndustry] = useState('')
+
+  // ① 股票池
   const [universe, setUniverse] = useState('')
   const [universeStats, setUniverseStats] = useState<UniverseStats | null>(null)
   const [universeNote, setUniverseNote] = useState('')
+
+  // ② 过滤条件
+  const [boards, setBoards] = useState<string[]>([])
+  const [industries, setIndustries] = useState<string[]>([])
+  const [industryList, setIndustryList] = useState<IndustryItem[]>([])
+  const [industryNote, setIndustryNote] = useState('')
+  const [industryKeyword, setIndustryKeyword] = useState('')
+
+  // ③ 扫描参数
+  const [showAdvanced, setShowAdvanced] = useState(false)
+  const [topN, setTopN] = useState(30)
+  const [perIndustry, setPerIndustry] = useState(0)
+  const [industryLevel, setIndustryLevel] = useState('sw_l1')
+  const [applyGate, setApplyGate] = useState(true)
+  const [applyFactors, setApplyFactors] = useState(true)
+
   const [running, setRunning] = useState(false)
   const [expanded, setExpanded] = useState<string | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -47,22 +76,40 @@ export default function Screener() {
   useEffect(() => {
     api.screenerLatest().then((t) => { if (t && (t.status === 'done' || t.status === 'failed')) setTask(t) }).catch(() => {})
       .finally(() => setLoading(false))
-    // 选股池缓存概况: 有数据的指数渲染为可选项; 全空则禁用并提示
-    api.universeStats()
-      .then((s) => {
-        setUniverseStats(s)
-        const keys = Object.keys(s)
-        if (keys.length === 0) setUniverseNote('成分股缓存为空, 请先在后端刷新选股池(Swagger: POST /screener/universe/refresh)')
-      })
-      .catch(() => setUniverseNote('选股池状态读取失败'))
+    api.universeStats().then((s) => {
+      setUniverseStats(s)
+      if (Object.keys(s).length === 0) setUniverseNote('成分股缓存为空, 请先在后端刷新选股池(Swagger: POST /screener/universe/refresh)')
+    }).catch(() => setUniverseNote('选股池状态读取失败'))
+    api.screenerIndustries().then((r) => {
+      setIndustryList(r.items ?? [])
+      if (!r.items?.length) setIndustryNote('行业数据为空, 需东财股票列表成功拉取一次后自动填充')
+    }).catch(() => setIndustryNote('行业列表读取失败'))
     return stopPoll
   }, [])
+
+  const toggleBoard = (b: string) =>
+    setBoards((prev) => (prev.includes(b) ? prev.filter((x) => x !== b) : [...prev, b]))
+
+  const toggleIndustry = (name: string) =>
+    setIndustries((prev) => (prev.includes(name) ? prev.filter((x) => x !== name) : [...prev, name]))
+
+  const filteredIndustries = useMemo(() => {
+    const kw = industryKeyword.trim().toLowerCase()
+    const list = kw ? industryList.filter((i) => i.name.toLowerCase().includes(kw)) : industryList
+    return list.slice(0, 30)
+  }, [industryList, industryKeyword])
 
   const run = async () => {
     setRunning(true)
     setError('')
     try {
-      const { task_id } = await api.screenerRun(market, 30, board || undefined, industry.trim() || undefined, universe || undefined)
+      const { task_id } = await api.screenerRun(
+        'all', topN,
+        boards.join(',') || undefined,
+        industries.join(',') || undefined,
+        universe || undefined,
+        { perIndustry, industryLevel, applyGate, applyFactors },
+      )
       toast.info('扫描已启动, 完成后自动刷新结果')
       stopPoll()
       pollRef.current = setInterval(async () => {
@@ -90,76 +137,206 @@ export default function Screener() {
 
   const scanning = running || (task?.status === 'running' || task?.status === 'pending')
 
+  const selectedChips = [
+    ...(universe ? [{ label: `股票池 ${universeStats?.[universe]?.label ?? (universe === UNIVERSE_COMBO.value ? UNIVERSE_COMBO.label : universe)}` }] : []),
+    ...boards.map((b) => ({ label: BOARDS.find((x) => x.value === b)?.label ?? b })),
+    ...industries.map((n) => ({ label: n })),
+  ]
+
   return (
     <div>
       <h1 className="mb-4 text-[20px] font-semibold">选股</h1>
       {error && <ErrorBox message={error} />}
 
-      <Card title="全市场扫描(三因子: 趋势40 + 动量40 + 量能20)">
-        <div className="flex flex-wrap items-end gap-2">
-          <label className="flex items-center gap-1.5 text-[13px]">
-            市场
-            <select value={market} onChange={(e) => setMarket(e.target.value)} className="rounded border border-[#d0d3d9] px-2.5 py-[7px] text-[13px]">
-              <option value="all">全部A股</option>
-              <option value="sh">沪市</option>
-              <option value="sz">深市</option>
-              <option value="bj">北交所</option>
-            </select>
-          </label>
-          <label className="flex items-center gap-1.5 text-[13px]">
-            板块
-            <select value={board} onChange={(e) => setBoard(e.target.value)} className="rounded border border-[#d0d3d9] px-2.5 py-[7px] text-[13px]">
-              <option value="">不限</option>
-              <option value="main">主板</option>
-              <option value="chinext">创业板</option>
-              <option value="star">科创板</option>
-              <option value="bj">北交所</option>
-            </select>
-          </label>
-          <label className="flex items-center gap-1.5 text-[13px]">
-            申万行业
-            <input
-              value={industry}
-              onChange={(e) => setIndustry(e.target.value)}
-              placeholder="如 半导体"
-              className="w-[110px] rounded border border-[#d0d3d9] px-2.5 py-[7px] text-[13px]"
-            />
-          </label>
-          <label className="flex items-center gap-1.5 text-[13px]">
-            选股池
-            <select
-              value={universe}
-              onChange={(e) => setUniverse(e.target.value)}
-              disabled={!universeStats || Object.keys(universeStats).length === 0}
-              className="rounded border border-[#d0d3d9] px-2.5 py-[7px] text-[13px] disabled:cursor-not-allowed disabled:bg-[#f5f6f8] disabled:text-ink-faint"
+      {/* ---------- ① 股票池 ---------- */}
+      <Card title="① 股票池 · 从哪批股票里选">
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => setUniverse('')}
+            className={cn(
+              'rounded-full border px-3 py-1.5 text-[13px] transition-colors',
+              universe === '' ? 'border-[#dc2626] bg-[#dc2626] text-white' : 'border-[#d0d3d9] hover:border-[#a0a5ad]',
+            )}
+          >
+            全部A股
+          </button>
+          {universeStats && Object.entries(universeStats).map(([key, v]) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => setUniverse(key)}
+              className={cn(
+                'rounded-full border px-3 py-1.5 text-[13px] transition-colors',
+                universe === key ? 'border-[#dc2626] bg-[#dc2626] text-white' : 'border-[#d0d3d9] hover:border-[#a0a5ad]',
+              )}
             >
-              <option value="">全部A股</option>
-              {universeStats &&
-                Object.entries(universeStats).map(([key, v]) => (
-                  <option key={key} value={key}>
-                    {v.label}成分({v.count}只)
-                  </option>
-                ))}
-                {universeStats &&
-                  UNIVERSE_COMBO.filter((c) => c.needs.every((k) => universeStats[k]?.count > 0)).map((c) => (
-                    <option key={c.value} value={c.value}>
-                      {c.label}
-                    </option>
-                  ))}
-            </select>
-          </label>
-          <Button onClick={run} disabled={scanning}>
-            {scanning ? '扫描中...' : '开始扫描'}
-          </Button>
-          {task && <span className="text-xs text-ink-muted">最近任务: {task.status} · {task.done}/{task.total} · {task.progress}%</span>}
+              {v.label}成分 · {v.count}只
+            </button>
+          ))}
+          {universeStats && UNIVERSE_COMBO.needs.every((k) => universeStats[k]?.count > 0) && (
+            <button
+              type="button"
+              onClick={() => setUniverse(UNIVERSE_COMBO.value)}
+              className={cn(
+                'rounded-full border px-3 py-1.5 text-[13px] transition-colors',
+                universe === UNIVERSE_COMBO.value ? 'border-[#dc2626] bg-[#dc2626] text-white' : 'border-[#d0d3d9] hover:border-[#a0a5ad]',
+              )}
+            >
+              {UNIVERSE_COMBO.label}
+            </button>
+          )}
         </div>
-        <div className="mt-2 text-[11px] text-ink-faint">
-          市场/板块/行业/选股池可组合缩小范围(如 科创板+半导体, 或 沪深300成分). 行业需本地股票列表含行业数据(东财列表成功拉取一次后自动填充).
-          {universeNote && <span className="text-[#ea580c]"> {universeNote}</span>}
-        </div>
-        {task?.error && <div className="mt-2 text-xs text-orange-500">任务异常: {task.error}</div>}
+        {universeNote && <p className="mt-2 text-[11px] text-[#ea580c]">{universeNote}</p>}
       </Card>
 
+      {/* ---------- ② 过滤条件 ---------- */}
+      <Card title="② 过滤条件 · 池内缩小范围(可组合)" className="mt-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-[13px] text-ink-secondary">上市板块</span>
+          {BOARDS.map((b) => (
+            <button
+              key={b.value}
+              type="button"
+              onClick={() => toggleBoard(b.value)}
+              className={cn(
+                'rounded-full border px-3 py-1.5 text-[13px] transition-colors',
+                boards.includes(b.value) ? 'border-[#185fa5] bg-[#185fa5] text-white' : 'border-[#d0d3d9] hover:border-[#a0a5ad]',
+              )}
+            >
+              {b.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="mt-3">
+          <div className="flex items-center gap-2">
+            <span className="text-[13px] text-ink-secondary">申万行业</span>
+            <input
+              value={industryKeyword}
+              onChange={(e) => setIndustryKeyword(e.target.value)}
+              placeholder="搜索行业..."
+              className="w-[160px] rounded border border-[#d0d3d9] px-2.5 py-[6px] text-[13px]"
+            />
+            {industries.length > 0 && (
+              <span className="text-[11px] text-ink-faint">已选 {industries.length} 个</span>
+            )}
+          </div>
+          <div className="mt-2 flex max-h-[104px] flex-wrap gap-1.5 overflow-y-auto">
+            {filteredIndustries.map((i) => (
+              <button
+                key={i.name}
+                type="button"
+                onClick={() => toggleIndustry(i.name)}
+                title={`覆盖 ${i.count} 只`}
+                className={cn(
+                  'rounded-full border px-2.5 py-1 text-[12px] transition-colors',
+                  industries.includes(i.name) ? 'border-[#185fa5] bg-[#185fa5] text-white' : 'border-[#d0d3d9] hover:border-[#a0a5ad]',
+                )}
+              >
+                {i.name} · {i.count}
+              </button>
+            ))}
+            {filteredIndustries.length === 0 && (
+              <span className="text-[12px] text-ink-faint">{industryNote || '无匹配行业'}</span>
+            )}
+          </div>
+          {industries.length > 0 && (
+            <div className="mt-1.5 flex flex-wrap gap-1.5">
+              {industries.map((n) => (
+                <span key={n} className="flex items-center gap-1 rounded-full bg-[#eef2f7] px-2.5 py-0.5 text-[12px] text-[#185fa5]">
+                  {n}
+                  <button type="button" onClick={() => toggleIndustry(n)} className="text-[#64748b] hover:text-[#185fa5]">×</button>
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      </Card>
+
+      {/* ---------- ③ 扫描参数 ---------- */}
+      <Card className="mt-3">
+        <button
+          type="button"
+          onClick={() => setShowAdvanced((v) => !v)}
+          className="flex w-full items-center justify-between text-[13px] font-medium"
+        >
+          <span>③ 扫描参数</span>
+          <span className="text-ink-faint">{showAdvanced ? '收起 ▲' : '展开 ▼'}</span>
+        </button>
+        {showAdvanced && (
+          <div className="mt-3 grid gap-3 md:grid-cols-3">
+            <label className="flex items-center gap-2 text-[13px]">
+              结果数量 TopN
+              <input
+                type="number" min={5} max={200}
+                value={topN}
+                onChange={(e) => setTopN(Number(e.target.value) || 30)}
+                className="w-[70px] rounded border border-[#d0d3d9] px-2 py-1.5 text-[13px]"
+              />
+            </label>
+            <label className="flex items-center gap-2 text-[13px]">
+              行业限配
+              <select
+                value={perIndustry}
+                onChange={(e) => setPerIndustry(Number(e.target.value))}
+                className="rounded border border-[#d0d3d9] px-2 py-1.5 text-[13px]"
+              >
+                {CAP_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </label>
+            <label className="flex items-center gap-2 text-[13px]">
+              行业分级
+              <select
+                value={industryLevel}
+                onChange={(e) => setIndustryLevel(e.target.value)}
+                className="rounded border border-[#d0d3d9] px-2 py-1.5 text-[13px]"
+              >
+                {LEVEL_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </label>
+            <label className="flex items-center gap-2 text-[13px]">
+              择时闸门
+              <button
+                type="button"
+                onClick={() => setApplyGate((v) => !v)}
+                className={cn('rounded-full border px-3 py-1 text-[12px]', applyGate ? 'border-[#185fa5] bg-[#185fa5] text-white' : 'border-[#d0d3d9]')}
+              >
+                {applyGate ? '开' : '关'}
+              </button>
+            </label>
+            <label className="flex items-center gap-2 text-[13px]">
+              基本面+事件因子
+              <button
+                type="button"
+                onClick={() => setApplyFactors((v) => !v)}
+                className={cn('rounded-full border px-3 py-1 text-[12px]', applyFactors ? 'border-[#185fa5] bg-[#185fa5] text-white' : 'border-[#d0d3d9]')}
+              >
+                {applyFactors ? '开' : '关'}
+              </button>
+            </label>
+          </div>
+        )}
+      </Card>
+
+      {/* ---------- 扫描按钮 + 已选摘要 ---------- */}
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <Button onClick={run} disabled={scanning}>
+          {scanning ? '扫描中...' : '开始扫描'}
+        </Button>
+        {task && <span className="text-xs text-ink-muted">最近任务: {task.status} · {task.done}/{task.total} · {task.progress}%</span>}
+        {selectedChips.length > 0 && (
+          <span className="flex flex-wrap items-center gap-1.5 text-[11px] text-ink-faint">
+            已选:
+            {selectedChips.map((c, i) => (
+              <span key={`${c.label}-${i}`} className="rounded bg-[#f1f3f5] px-2 py-0.5 text-[#185fa5]">{c.label}</span>
+            ))}
+          </span>
+        )}
+      </div>
+      {task?.error && <div className="mt-2 text-xs text-orange-500">任务异常: {task.error}</div>}
+
+      {/* ---------- 结果 ---------- */}
       {task && task.status === 'done' && (
         <Card title={`排名 Top ${task.result.length}(日成交额 ≥ 5000万)`} className="mt-3">
           {task.result.length === 0 ? (

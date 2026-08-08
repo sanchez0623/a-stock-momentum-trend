@@ -356,12 +356,19 @@ class StockScreener:
         prefixes = BOARD_PREFIXES.get(board)
         return bool(prefixes) and symbol.startswith(prefixes)
 
+    @staticmethod
+    def _split_multi(value: str | None) -> list[str]:
+        """逗号分隔多值参数 -> 去空白列表. 空/None -> []."""
+        if not value:
+            return []
+        return [x.strip() for x in value.split(",") if x.strip()]
+
     async def scan(
         self,
         symbols: list[str] | None = None,
         market: str = "all",
-        board: str | None = None,   # main/chinext/star/bj
-        industry: str | None = None,  # 申万行业名(包含匹配)
+        board: str | None = None,   # main/chinext/star/bj, 逗号分隔可多值(如 "main,chinext")
+        industry: str | None = None,  # 行业名(包含匹配), 逗号分隔可多值(任一命中即通过)
         top_n: int = 30,
         min_amount: float = MIN_DAILY_AMOUNT,
         progress_cb: Callable[[int, int], None] | None = None,
@@ -417,13 +424,17 @@ class StockScreener:
         # 过滤 ST / *ST / 退市
         filtered = [(sym, name, ind) for sym, name, ind in pool
                     if "ST" not in name.upper() and "退" not in name]
-        # 板块过滤(代码前缀)
-        if board and board in BOARD_PREFIXES:
-            filtered = [(sym, name, ind) for sym, name, ind in filtered if self._match_board(sym, board)]
-        # 行业过滤(申万行业, 包含匹配)
-        if industry:
-            kw = industry.strip().lower()
-            filtered = [(sym, name, ind) for sym, name, ind in filtered if kw in (ind or "").lower()]
+        # 板块过滤(代码前缀, 多值任一命中)
+        boards = self._split_multi(board)
+        if boards:
+            filtered = [(sym, name, ind) for sym, name, ind in filtered
+                        if any(self._match_board(sym, b) for b in boards)]
+        # 行业过滤(行业名包含匹配, 多值任一命中)
+        keywords = self._split_multi(industry)
+        if keywords:
+            lowered = [kw.lower() for kw in keywords]
+            filtered = [(sym, name, ind) for sym, name, ind in filtered
+                        if any(kw in (ind or "").lower() for kw in lowered)]
             if not filtered:
                 logger.warning("行业过滤后为空: %s(本地行业数据可能未就绪, 需东财列表成功拉取一次)", industry)
 

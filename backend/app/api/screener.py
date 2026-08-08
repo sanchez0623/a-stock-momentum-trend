@@ -24,8 +24,8 @@ class WatchlistBody(BaseModel):
 @router.post("/screener/run")
 async def run_screener(
     market: str = Query("all", pattern="^(all|sh|sz|bj)$"),
-    board: str | None = Query(None, pattern="^(main|chinext|star|bj)$", description="板块: main主板/chinext创业板/star科创板/bj北交所"),
-    industry: str | None = Query(None, description="申万行业名(包含匹配, 需本地行业数据)"),
+    board: str | None = Query(None, description="板块, 逗号分隔可多值: main主板/chinext创业板/star科创板/bj北交所(如 main,chinext)"),
+    industry: str | None = Query(None, description="行业名(包含匹配), 逗号分隔可多值, 需本地行业数据(如 半导体,电力设备)"),
     top_n: int = Query(30, ge=5, le=200),
     per_industry: int = Query(0, ge=0, le=50, description="每行业限配 N 只(0=用配置/不限)"),
     industry_level: str = Query("sw_l1", pattern="^(sw_l1|sw_l2|sw_l3)$", description="分组用申万级别"),
@@ -33,7 +33,7 @@ async def run_screener(
     universe: str | None = Query(None, description="选股池预筛: all/hs300/zz500/sz50/hs300+zz500/zz800(空=用配置)"),
     apply_factors: bool = Query(True, description="是否叠加基本面质量 + 业绩事件因子"),
 ) -> dict:
-    """触发扫描(异步, 返回 task_id). 支持 market + board + industry + 每行业限配 + 闸门 + 选股池预筛 + 因子."""
+    """触发扫描(异步, 返回 task_id). 支持 market + 板块多值 + 行业多值 + 每行业限配 + 闸门 + 选股池预筛 + 因子."""
     task_id = scan_tasks.create(market, top_n)
     scan_tasks.update(task_id, status="running")
 
@@ -148,6 +148,33 @@ async def universe_stats_api() -> dict:
     from app.core import universe as uni_mod
 
     return {"code": 0, "msg": "ok", "data": uni_mod.universe_stats()}
+
+
+@router.get("/screener/industries")
+async def screener_industries() -> dict:
+    """可选行业列表(供选股下拉): 合并 东财行业(Stock.industry) 与 申万一级(sw_l1), 按股票数降序."""
+    from sqlmodel import func
+
+    from app.models.models import Stock, StockClassification
+
+    counts: dict[str, int] = {}
+    with db.session_scope() as s:
+        for row in s.exec(
+            select(Stock.industry, func.count()).where(Stock.industry != "").group_by(Stock.industry)
+        ).all():
+            name = (row[0] or "").strip()
+            if name:
+                counts[name] = counts.get(name, 0) + int(row[1])
+        for row in s.exec(
+            select(StockClassification.sw_l1, func.count())
+            .where(StockClassification.sw_l1 != "")
+            .group_by(StockClassification.sw_l1)
+        ).all():
+            name = (row[0] or "").strip()
+            if name:
+                counts[name] = counts.get(name, 0) + int(row[1])
+    items = [{"name": n, "count": c} for n, c in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))]
+    return {"code": 0, "msg": "ok", "data": {"items": items, "total": len(items)}}
 
 
 # ---------------------------------------------------------------- 基本面 + 业绩事件

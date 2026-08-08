@@ -75,17 +75,30 @@ export const api = {
   riskReset: () => request<RiskStatus>('/risk/reset', { method: 'POST' }),
 
   // 选股
-  screenerRun: (market = 'all', topN = 30, board?: string, industry?: string, universe?: string) => {
+  screenerRun: (
+    market = 'all',
+    topN = 30,
+    board?: string,
+    industry?: string,
+    universe?: string,
+    opts?: { perIndustry?: number; industryLevel?: string; applyGate?: boolean; applyFactors?: boolean },
+  ) => {
     const q = new URLSearchParams({ market, top_n: String(topN) })
     if (board) q.set('board', board)
     if (industry) q.set('industry', industry)
     if (universe) q.set('universe', universe)
+    if (opts?.perIndustry && opts.perIndustry > 0) q.set('per_industry', String(opts.perIndustry))
+    if (opts?.industryLevel) q.set('industry_level', opts.industryLevel)
+    if (opts?.applyGate === false) q.set('apply_gate', 'false')
+    if (opts?.applyFactors === false) q.set('apply_factors', 'false')
     return request<{ task_id: string }>(`/screener/run?${q.toString()}`, { method: 'POST' })
   },
   screenerResult: (taskId: string) => request<ScreenerTask>(`/screener/result?task_id=${taskId}`),
   screenerLatest: () => request<ScreenerTask | null>('/screener/result/latest'),
   /** 选股池(指数成分股)缓存概况: key=指数标识, value=数量/更新时间/名称 */
   universeStats: () => request<UniverseStats>('/screener/universe/stats'),
+  /** 可选行业列表(合并东财行业+申万一级, 按股票数降序) */
+  screenerIndustries: () => request<{ items: IndustryItem[]; total: number }>('/screener/industries'),
 
   // ---------------------------------------------------------------- 三期: 交易日志/统计
   trades: (params: { symbol?: string; action?: string; limit?: number; offset?: number } = {}) => {
@@ -282,6 +295,12 @@ export interface UniverseStats {
     updated_at: string
     label: string
   }
+}
+
+/** 行业选项(数量为覆盖股票数) */
+export interface IndustryItem {
+  name: string
+  count: number
 }
 
 /** 选股理由标签. kind: good 利多 / warn 需注意 / bad 偏空 / info 中性 */

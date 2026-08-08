@@ -6,13 +6,11 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
 import pytest
-
 from app.core import screener as screener_pkg
 from app.core.config import config_manager
 from app.core.screener import engine as engine_mod
@@ -63,14 +61,14 @@ def patched(monkeypatch):
     from app.core import market_gate
     monkeypatch.setattr(market_gate, "fetch_gate_index_dfs", fake_idx)
 
-    fake_map = {s: SimpleNamespace(sw_l1=ind) for s, ind in zip(SYMS, _IND)}
+    fake_map = {s: SimpleNamespace(sw_l1=ind) for s, ind in zip(SYMS, _IND, strict=True)}
     from app.core import classification
     monkeypatch.setattr(classification, "load_classification_map", lambda syms: fake_map)
     return cfg
 
 
 def test_scan_summary_captures_gate_and_cap(patched):
-    res = asyncio.run(screener_pkg.screener.scan(symbols=SYMS, per_industry=2, apply_gate=True))
+    asyncio.run(screener_pkg.screener.scan(symbols=SYMS, per_industry=2, apply_gate=True))
     assert patched.get("_calls"), "mock get_kline 未被调用 — 说明 patch 未生效"
     summary = screener_pkg.screener.last_scan_summary
 
@@ -110,3 +108,28 @@ def test_scan_summary_off_when_disabled(patched):
     assert summary["gate"]["applied"] is False
     assert summary["cap"]["enabled"] is False
     assert summary["final_count"] == 6  # 全保留
+
+
+def test_board_multi_value_filter(patched):
+    """板块多值: board=\"main,chinext\" 只保留沪深主板+创业板, 剔除科创板."""
+    syms = ["000001", "000002", "300001", "300002", "688001", "600001"]
+    res = asyncio.run(screener_pkg.screener.scan(
+        symbols=syms, board="main,chinext", per_industry=0, apply_gate=False))
+    got = {r["symbol"] for r in res}
+    assert got == {"000001", "000002", "300001", "300002", "600001"}
+    assert "688001" not in got
+
+
+def test_industry_multi_value_filter(patched, monkeypatch):
+    """行业多值: industry=\"半导体,电力\" 任一命中即通过(区分包含匹配与大小写)."""
+    pool = [("000001", "A", "半导体"), ("000002", "B", "医药生物"),
+            ("300001", "C", "电子"), ("300002", "D", "电力设备")]
+
+    async def fake_resolve(market):
+        return pool
+    monkeypatch.setattr(screener_pkg.screener, "_resolve_symbols", fake_resolve)
+
+    res = asyncio.run(screener_pkg.screener.scan(
+        market="all", industry="半导体,电力", per_industry=0, apply_gate=False))
+    got = {r["symbol"] for r in res}
+    assert got == {"000001", "300002"}
