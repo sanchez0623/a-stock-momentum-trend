@@ -64,11 +64,12 @@ def _event_cross_up(a: pd.Series, b: pd.Series) -> bool:
     return any(ta[i] > tb[i] and ta[i - 1] <= tb[i - 1] for i in range(1, len(ta)))
 
 
-def detect_stage(ind: pd.DataFrame, cfg: dict) -> dict[str, Any]:
+def detect_stage(ind: pd.DataFrame, cfg: dict, end: int | None = None) -> dict[str, Any]:
     """识别趋势阶段(方案B, 纯函数, 与评分同源).
 
     阶段: launch 启动 / accelerate 加速 / overheat 过热 / exhaust 衰竭 / none 无趋势.
     判定优先级: 衰竭 > 过热 > 启动 > 加速 > 无趋势(仅对趋势向上标的判阶段).
+    end: 可选, 指定判定位置(回测逐日复用整段指标时传入, 避免反复复制).
 
     输出: {stage, events, bonus, penalty, note}
       events  命中的启动事件列表(macd_golden/roc_turn/ma_cross/adx_first)
@@ -79,12 +80,15 @@ def detect_stage(ind: pd.DataFrame, cfg: dict) -> dict[str, Any]:
     momentum = cfg["动量"]
     volume = cfg["量能"]
     sc = cfg.get("趋势阶段", {})
+    n = len(ind)
+    if end is None:
+        end = n
     out: dict[str, Any] = {"stage": "none", "events": [], "bonus": 0.0, "penalty": 0.0, "note": ""}
-    if not sc.get("enabled", True) or len(ind) < STAGE_WINDOW:
+    if not sc.get("enabled", True) or end < STAGE_WINDOW:
         return out
 
-    last = ind.iloc[-1]
-    prev = ind.iloc[-2] if len(ind) > 1 else last
+    last = ind.iloc[end - 1]
+    prev = ind.iloc[end - 2] if end > 1 else last
     adx_period = int(trend.get("adx_period", 14))
     roc_period = int(momentum["roc_period"])
     ma_s = f"ma{trend['ma_short']}"
@@ -100,16 +104,17 @@ def detect_stage(ind: pd.DataFrame, cfg: dict) -> dict[str, Any]:
     # 趋势向上前提: 收盘站上中期均线(比"多头排列"宽松, 启动期均线往往未完全理顺)
     up_trend = close > ma_m_v > 0
 
-    # ---- 启动事件(近 N 根内"刚发生")
+    # ---- 启动事件(近 N 根内"刚发生")——只取判定窗口, 避免整段复制
+    win = slice(max(0, end - STAGE_WINDOW), end)
     events: list[str] = []
-    if _event_golden_cross(ind["macd_hist"]):
+    if _event_golden_cross(ind["macd_hist"].iloc[win]):
         events.append("macd_golden")
-    if _event_turn_positive(ind[f"roc{roc_period}"]):
+    if _event_turn_positive(ind[f"roc{roc_period}"].iloc[win]):
         events.append("roc_turn")
-    if _event_cross_up(ind[ma_s], ind[ma_m]):
+    if _event_cross_up(ind[ma_s].iloc[win], ind[ma_m].iloc[win]):
         events.append("ma_cross")
-    adx_tail = [_f(v) for v in ind[f"adx{adx_period}"].tail(STAGE_WINDOW)]
-    adx_rising = adx >= _f(ind[f"adx{adx_period}"].iloc[-6]) if len(ind) > 5 else True
+    adx_tail = [_f(v) for v in ind[f"adx{adx_period}"].iloc[win]]
+    adx_rising = adx >= _f(ind[f"adx{adx_period}"].iloc[end - 6]) if end > 5 else True
     if adx >= adx_th and any(v < adx_th for v in adx_tail) and adx_rising:
         events.append("adx_first")
 

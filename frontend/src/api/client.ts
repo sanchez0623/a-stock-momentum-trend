@@ -73,7 +73,6 @@ export const api = {
   // 风控
   riskStatus: () => request<RiskStatus>('/risk/status'),
   riskReset: () => request<RiskStatus>('/risk/reset', { method: 'POST' }),
-
   // 选股
   screenerRun: (
     market = 'all',
@@ -99,6 +98,10 @@ export const api = {
   universeStats: () => request<UniverseStats>('/screener/universe/stats'),
   /** 可选行业列表(合并东财行业+申万一级, 按股票数降序) */
   screenerIndustries: () => request<{ items: IndustryItem[]; total: number }>('/screener/industries'),
+
+  // ---------------------------------------------------------------- 回测中心(方案C: 阶段分桶)
+  backtestFactor: (body: { symbols?: string[] | null; hold_days?: number[]; min_bars?: number; cost?: boolean }) =>
+    request<BacktestFactorReport>('/backtest/factor', { method: 'POST', body: JSON.stringify(body) }),
 
   // ---------------------------------------------------------------- 三期: 交易日志/统计
   trades: (params: { symbol?: string; action?: string; limit?: number; offset?: number } = {}) => {
@@ -344,6 +347,34 @@ export interface ScreenerTask {
     stage_note?: string
   }>
   error: string
+}
+
+// ---------------------------------------------------------------- 回测中心类型
+export interface BacktestHoldStats {
+  n: number
+  win_rate: number
+  avg: number
+  median: number
+  expectancy: number
+}
+
+export interface BacktestStageResult {
+  label: string
+  holds: Record<string, BacktestHoldStats> // hold_5 / hold_10 / hold_20
+}
+
+export interface BacktestFactorReport {
+  meta: {
+    symbols_total: number
+    symbols_used: number
+    hold_days: number[]
+    cost_included: boolean
+    date_from: string
+    date_to: string
+    notes: string
+  }
+  by_stage: Record<string, BacktestStageResult>
+  stage_distribution: Record<string, number>
 }
 
 // ---------------------------------------------------------------- 三期类型

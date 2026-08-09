@@ -65,6 +65,20 @@ class KlineStore:
             return None
         return pd.DataFrame(rows)
 
+    def list_symbols(self, period: str = "daily") -> list[str]:
+        """列出缓存了指定周期且有数据(非空段)的 symbol, 升序. 供回测/预热统计用."""
+        try:
+            with Session(db.engine) as s:
+                stmt = select(KlineCache.symbol).where(
+                    KlineCache.period == period,
+                    KlineCache.ohlcv_json.not_in(["[]", ""]),
+                )
+                # 注意: 单列查询返回标量 str(非 Row 元组), 直接排序即可
+                return sorted(r for r in s.exec(stmt).all())
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("KlineStore.list_symbols 失败: %s", exc)
+            return []
+
     def merge_and_save(self, symbol: str, period: str, fresh_rows: list[dict]) -> pd.DataFrame:
         """缓存合并: 旧缓存 + 新取, 按 date 去重(新覆盖旧), 升序返回 DataFrame."""
         old = self.load(symbol, period) or []

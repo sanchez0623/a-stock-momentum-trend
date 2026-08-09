@@ -37,6 +37,23 @@ def test_kline_store_merge_dedup(tmp_engine):
     assert df["date"].is_monotonic_increasing
 
 
+def test_kline_store_list_symbols(tmp_engine):
+    """list_symbols 只返回非空段且返回完整 symbol(回归: 曾取字符串首字符变 '0')."""
+    from app import db
+    from app.models.models import KlineCache
+    from sqlmodel import Session
+
+    with Session(db.engine) as s:
+        s.add(KlineCache(symbol="000001", period="daily", ohlcv_json='[{"date":"2026-01-02"}]'))
+        s.add(KlineCache(symbol="600000", period="daily", ohlcv_json='[{"date":"2026-01-02"}]'))
+        s.add(KlineCache(symbol="000002", period="daily", ohlcv_json="[]"))  # 空段应被过滤
+        s.add(KlineCache(symbol="300750", period="weekly", ohlcv_json='[{"date":"2026-01-02"}]'))  # 不同周期
+        s.commit()
+    store = KlineStore()
+    syms = store.list_symbols("daily")
+    assert syms == ["000001", "600000"]
+
+
 def test_quote_cache_ttl():
     cache = QuoteCache(ttl=0.1)
     q = Quote(symbol="300750", price=100.0)

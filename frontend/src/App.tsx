@@ -15,6 +15,7 @@ const Plans = lazy(() => import('./pages/Plans'))
 const Trades = lazy(() => import('./pages/Trades'))
 const Review = lazy(() => import('./pages/Review'))
 const AiReview = lazy(() => import('./pages/AiReview'))
+const Backtest = lazy(() => import('./pages/Backtest'))
 const Settings = lazy(() => import('./pages/Settings'))
 
 // react-query 全局客户端(默认 15s 轮询由各页面 query 配置)
@@ -31,6 +32,7 @@ const NAV = [
   { to: '/trades', label: '交易日志' },
   { to: '/review', label: '历史回顾' },
   { to: '/ai-review', label: 'AI复盘' },
+  { to: '/backtest', label: '回测中心' },
   { to: '/settings', label: '设置' },
 ]
 
@@ -87,6 +89,7 @@ function AppShell() {
                 <Route path="/trades" element={<Trades />} />
                 <Route path="/review" element={<Review />} />
                 <Route path="/ai-review" element={<AiReview />} />
+                <Route path="/backtest" element={<Backtest />} />
                 <Route path="/settings" element={<Settings />} />
                 <Route path="*" element={<Navigate to="/dashboard" replace />} />
               </Routes>
