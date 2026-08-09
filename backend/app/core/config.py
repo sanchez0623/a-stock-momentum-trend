@@ -179,24 +179,26 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "基本面因子": {
         # 把纯动量升级为"动量 + 质量"(数据源: baostock 季度财报)
-        "enabled": False,
+        # 短线定位(2026-08-09 用户拍板): 财报硬过滤默认不触发(滞后指标不误杀题材/亏损强势票),
+        # 仅保留 ST 实时排除 + 质量加分(bonus_max=5 封顶); 需财报过滤时上调阈值即可。
+        "enabled": True,
         "mode": "both",              # filter 只过滤 / score 只加分 / both
-        "min_roe": 5.0,              # ROE(%) 下限
-        "max_liability_to_asset": 70.0,  # 资产负债率(%) 上限
-        "min_yoy_ni": -20.0,         # 归母净利润同比(%) 下限
-        "max_pe_ttm": 100.0,         # PE(TTM) 上限, <=0 表示不限
-        "exclude_negative_pe": True,  # 剔除亏损股(PE<=0)
-        "exclude_st": True,          # 剔除 baostock 标记的 ST
-        "bonus_max": 10.0,           # 质量分最高加成(叠加到总分)
+        "min_roe": 0.0,              # ROE(%) 下限, 0=不触发
+        "max_liability_to_asset": 100.0,  # 资产负债率(%) 上限, 100=不触发
+        "min_yoy_ni": -999.0,        # 归母净利润同比(%) 下限, 极小值=不触发
+        "max_pe_ttm": 0.0,           # PE(TTM) 上限, <=0 表示不限
+        "exclude_negative_pe": False,  # 不剔除亏损股(短线题材票可为负 PE)
+        "exclude_st": True,          # 剔除 baostock 标记的 ST(实时状态, 非滞后财报)
+        "bonus_max": 5.0,            # 质量分最高加成(叠加到总分)
         "require_data": False,       # True=无基本面数据直接剔除; False=放行(缺数据不惩罚)
     },
     "业绩事件": {
         # 业绩预告/快报催化(数据源: baostock)
-        "enabled": False,
-        "lookback_days": 90,
-        "min_chg_pct": 30.0,   # 预增幅度达到该值才算"超预期"
-        "bonus": 5.0,          # 命中利好加分
-        "penalty": -5.0,       # 命中利空减分(预减/预亏/首亏)
+        "enabled": True,
+        "lookback_days": 3,      # 只认近 3 天内的披露事件(短线催化剂时效强)
+        "min_chg_pct": 30.0,     # 预增幅度达到该值才算"超预期"
+        "bonus": 5.0,            # 命中利好加分
+        "penalty": -5.0,         # 命中利空减分(预减/预亏/首亏)
     },
     "数据源": {
         "priority": ["mootdx", "tencent", "baostock", "eastmoney", "akshare"],

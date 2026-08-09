@@ -68,7 +68,8 @@ def patched(monkeypatch):
 
 
 def test_scan_summary_captures_gate_and_cap(patched):
-    asyncio.run(screener_pkg.screener.scan(symbols=SYMS, per_industry=2, apply_gate=True))
+    # apply_factors=False: 本测试只验证闸门/限配汇总, 与基本面/事件因子解耦(因子默认已启用)
+    asyncio.run(screener_pkg.screener.scan(symbols=SYMS, per_industry=2, apply_gate=True, apply_factors=False))
     assert patched.get("_calls"), "mock get_kline 未被调用 — 说明 patch 未生效"
     summary = screener_pkg.screener.last_scan_summary
 
@@ -101,8 +102,8 @@ def test_scan_summary_captures_gate_and_cap(patched):
 
 
 def test_scan_summary_off_when_disabled(patched):
-    # 闸门/限配都不启用 -> 汇总标记未生效, 且结果不被缩减
-    asyncio.run(screener_pkg.screener.scan(symbols=SYMS, per_industry=0, apply_gate=False))
+    # 闸门/限配都不启用 -> 汇总标记未生效, 且结果不被缩减(因子亦隔离)
+    asyncio.run(screener_pkg.screener.scan(symbols=SYMS, per_industry=0, apply_gate=False, apply_factors=False))
     summary = screener_pkg.screener.last_scan_summary
     assert summary["gate"]["enabled"] is False
     assert summary["gate"]["applied"] is False
@@ -114,7 +115,7 @@ def test_board_multi_value_filter(patched):
     """板块多值: board=\"main,chinext\" 只保留沪深主板+创业板, 剔除科创板."""
     syms = ["000001", "000002", "300001", "300002", "688001", "600001"]
     res = asyncio.run(screener_pkg.screener.scan(
-        symbols=syms, board="main,chinext", per_industry=0, apply_gate=False))
+        symbols=syms, board="main,chinext", per_industry=0, apply_gate=False, apply_factors=False))
     got = {r["symbol"] for r in res}
     assert got == {"000001", "000002", "300001", "300002", "600001"}
     assert "688001" not in got
@@ -130,6 +131,6 @@ def test_industry_multi_value_filter(patched, monkeypatch):
     monkeypatch.setattr(screener_pkg.screener, "_resolve_symbols", fake_resolve)
 
     res = asyncio.run(screener_pkg.screener.scan(
-        market="all", industry="半导体,电力", per_industry=0, apply_gate=False))
+        market="all", industry="半导体,电力", per_industry=0, apply_gate=False, apply_factors=False))
     got = {r["symbol"] for r in res}
     assert got == {"000001", "300002"}
