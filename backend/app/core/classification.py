@@ -25,14 +25,13 @@ import pandas as pd
 from sqlmodel import func, select
 
 from app import db
-from app.core.datasource import data_source_manager
 from app.models.models import StockClassification
 
 logger = logging.getLogger(__name__)
 
 
-def _retry(fn, times: int = 3, sleep: float = 1.0):
-    """同步 I/O 重试: 乐咕乐股页面偶尔返回坏结构, 重试可恢复."""
+def _retry(fn, times: int = 5, sleep: float = 2.0):
+    """同步 I/O 重试(指数退避): 乐咕页面限流/超时/坏页时逐步拉长间隔, 比固定间隔更扛限流."""
     last: Exception | None = None
     for i in range(times):
         try:
@@ -40,17 +39,76 @@ def _retry(fn, times: int = 3, sleep: float = 1.0):
         except Exception as exc:  # noqa: BLE001
             last = exc
             if i < times - 1:
-                time.sleep(sleep)
+                time.sleep(sleep * (2 ** i))
     raise last
 
 
 # ---------------------------------------------------------------- 申万分类拉取
+def _fetch_sw_hierarchy_once() -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
+    """**一次请求**乐咕行业总览页, 解析 level1/2/3 三个 tab, 返回全部行业层级.
+
+    替代 akshare 的 sw_index_first/second/third_info(三者都请求同一页面、各解析一个
+    div, 连调三次 = 三倍限流压力). 本函数单次请求拿到 31+124+335 个行业的
+    代码/名称/上级行业, 限流场景下大幅降低请求数.
+
+    返回 (l3_to_l2, l2_to_l1, l3_name_by_code), 任一步失败抛异常由调用方降级.
+    """
+    import requests
+    from bs4 import BeautifulSoup
+
+    url = "https://legulegu.com/stockdata/sw-industry-overview"
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; classification-refresh/1.0)"}
+
+    def _get():
+        r = requests.get(url, headers=headers, timeout=20)
+        r.raise_for_status()
+        return r.text
+
+    html = _retry(_get)
+    soup = BeautifulSoup(html, features="lxml")
+
+    def _parse(level: str) -> list[tuple[str, str, str]]:
+        """返回 [(代码, 名称, 上级行业)]; 一级无上级则为 ''."""
+        node = soup.find(name="div", attrs={"id": f"level{level}Items"})
+        if node is None:
+            raise ValueError(f"行业总览页缺少 level{level} 区块(限流/坏页)")
+        codes = node.find_all(name="div", attrs={"class": "lg-industries-item-chinese-title"})
+        names = node.find_all(name="div", attrs={"class": "lg-industries-item-number"})
+        if len(codes) != len(names):
+            raise ValueError(f"level{level} 区块结构异常")
+        out: list[tuple[str, str, str]] = []
+        for c, n in zip(codes, names, strict=True):
+            code = c.get_text().strip()
+            raw = n.get_text()
+            name = raw.split("(")[0].strip()
+            parent = ""
+            if level != "1" and n.find("span"):
+                parent = n.find("span").get_text().split("(")[0].strip()[1:-1]
+            if code and name:
+                out.append((code, name, parent))
+        return out
+
+    l3_to_l2: dict[str, str] = {}
+    l2_to_l1: dict[str, str] = {}
+    l3_name_by_code: dict[str, str] = {}
+    for code, name, parent in _parse("3"):
+        l3_to_l2[name] = parent
+        l3_name_by_code[code] = name
+    for _code, name, parent in _parse("2"):
+        l2_to_l1[name] = parent
+    return l3_to_l2, l2_to_l1, l3_name_by_code
+
+
 def _build_sw_hierarchy() -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
     """构建 申万 三级->二级->一级 的父子映射.
 
     数据来自 akshare 的 sw_index_third_info / sw_index_second_info(元数据接口, 稳定可用).
     返回 (l3_to_l2, l2_to_l1, l3_name_by_code). 任一步失败仅降级(缺失部分映射), 不整体崩.
     """
+    try:
+        return _fetch_sw_hierarchy_once()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("单页层级解析失败(%s), 回退 akshare 两次独立调用", exc)
     import akshare as ak
 
     l3_to_l2: dict[str, str] = {}   # 三级名 -> 二级名
@@ -87,8 +145,9 @@ def _fetch_sw_constituents_legulegu(code: str) -> list[str]:
     而乐咕乐股改版后表格列数与表头均变化(还混入了 JSON-LD 脏文本),
     会抛 'Length mismatch'. 这里直接读网页表格真实表头里含 '股票代码' 的列, 稳.
     """
-    import requests
     from io import StringIO
+
+    import requests
 
     url = f"https://legulegu.com/stockdata/index-composition?industryCode={code}"
     headers = {"User-Agent": "Mozilla/5.0 (compatible; classification-refresh/1.0)"}
@@ -122,7 +181,7 @@ async def _fetch_shenwan_raw() -> dict[str, dict[str, str]]:
 
     out: dict[str, dict[str, str]] = {}
     loop = asyncio.get_running_loop()
-    sem = asyncio.Semaphore(4)  # 乐咕有限流, 并发别太猛
+    sem = asyncio.Semaphore(2)  # 乐咕限流敏感, 并发 2 且每请求间隔降压
 
     async def _one(code: str, l3_name: str) -> None:
         try:
@@ -138,6 +197,7 @@ async def _fetch_shenwan_raw() -> dict[str, dict[str, str]]:
     async def _guarded(code: str, name: str) -> None:
         async with sem:
             await _one(code, name)
+            await asyncio.sleep(0.8)  # 每次请求后固定间隔, 压低瞬时频率
 
     await asyncio.gather(*(_guarded(c, n) for c, n in l3_name_by_code.items()))
     return out
@@ -218,8 +278,8 @@ async def refresh_classification(progress_cb: Any = None) -> dict[str, Any]:
     2) 刷新成败回报 manager, 使分类失败计入 akshare 统一熔断(不再游离于健康体系外);
     3) 失败安全 —— 若本次拉取为空但库中已有数据, 保留上次有效数据并显式报错, 绝不静默清空.
     """
-    from app.models.models import _now
     from app.core.datasource import data_source_manager
+    from app.models.models import _now
 
     # 1) 尊重 akshare 熔断: 熔断期跳过, 不浪费时间重试已知坏源
     if data_source_manager.source_circuit_open("akshare"):

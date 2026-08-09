@@ -12,3 +12,6 @@ python-multipart>=0.0.9
 
 # === 可选数据源(盘后下载型, 选股 universe/基本面/业绩事件增强) ===
 baostock>=0.8.8
+
+# === 可选数据源(申万行业分类/板块映射, classification.refresh_classification 依赖) ===
+akshare>=1.14
