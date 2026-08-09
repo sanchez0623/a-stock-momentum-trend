@@ -206,18 +206,18 @@ def _build_reason(f: dict[str, Any], cfg: dict) -> dict[str, Any]:
 
     # ADX 只衡量趋势"强度"不辨方向: 空头格局下的高 ADX = 强势下跌, 必须标为利空
     if adx < adx_th:
-        parts_t.append(f"ADX {adx:.0f} 未达阈值{adx_th}, 趋势力度不足")
-        risks.append(f"ADX {adx:.0f} 低于{adx_th}, 可能是震荡而非趋势")
+        parts_t.append(f"ADX {adx:.1f} 低于阈值{adx_th:.0f}, 趋势力度不足")
+        risks.append(f"ADX {adx:.1f} 低于{adx_th:.0f}, 可能是震荡而非趋势")
     elif is_bear:
-        parts_t.append(f"ADX {adx:.0f} 趋势力度强, 但方向向下(强势下跌)")
-        tags.append(_tag(f"ADX{adx:.0f} 下跌趋势", "bad"))
-        risks.append(f"ADX {adx:.0f} 配合空头排列, 属强势下跌, 不宜抄底")
+        parts_t.append(f"ADX {adx:.1f} 趋势力度强, 但方向向下(强势下跌)")
+        tags.append(_tag(f"ADX{adx:.1f} 下跌趋势", "bad"))
+        risks.append(f"ADX {adx:.1f} 配合空头排列, 属强势下跌, 不宜抄底")
     elif adx >= adx_th + 10:
-        parts_t.append(f"ADX {adx:.0f} 趋势强劲")
-        tags.append(_tag(f"ADX{adx:.0f} 强趋势", "good"))
+        parts_t.append(f"ADX {adx:.1f} 趋势强劲")
+        tags.append(_tag(f"ADX{adx:.1f} 强趋势", "good"))
     else:
-        parts_t.append(f"ADX {adx:.0f} 达标(阈值{adx_th}), 趋势成立")
-        tags.append(_tag(f"ADX{adx:.0f}", "good"))
+        parts_t.append(f"ADX {adx:.1f} 达标(阈值{adx_th:.0f}), 趋势成立")
+        tags.append(_tag(f"ADX{adx:.1f}", "good"))
 
     # ② 趋势持续度/连贯性(与分数同源, 不重算指标)
     if f.get("adx_rising"):

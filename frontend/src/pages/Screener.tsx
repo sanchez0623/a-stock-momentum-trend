@@ -459,13 +459,19 @@ export default function Screener() {
                                     </div>
                                   )}
                                   <div className="mt-2 text-[11px] text-ink-faint">
-                                    乖离率(现价相对短期均线) {r.bias?.toFixed(1) ?? '-'}% · 近20日均成交额 {r.amount_avg?.toFixed(2) ?? '-'} 亿 ·
-                                    评分口径 趋势40 + 动量40 + 量能20
-                                    {(r.stage_bonus ?? 0) > 0 || (r.stage_penalty ?? 0) > 0 ? (
-                                      <span>
-                                        {' '}· 阶段调整 {(r.stage_bonus ?? 0) > 0 ? `+${r.stage_bonus}` : ''}{(r.stage_penalty ?? 0) > 0 ? `-${r.stage_penalty}` : ''}
-                                      </span>
-                                    ) : null}
+                                    乖离率(现价相对短期均线) {r.bias?.toFixed(1) ?? '-'}% · 近20日均成交额 {r.amount_avg?.toFixed(2) ?? '-'} 亿
+                                    <div className="mt-1">
+                                      评分口径 趋势40 + 动量40 + 量能20
+                                      {(r.stage_bonus ?? 0) > 0 || (r.stage_penalty ?? 0) > 0 ? (
+                                        <span>
+                                          {' '}· 阶段调整 {(r.stage_bonus ?? 0) > 0 ? `+${r.stage_bonus}` : ''}{(r.stage_penalty ?? 0) > 0 ? `-${r.stage_penalty}` : ''}
+                                        </span>
+                                      ) : null}
+                                      {typeof r.factor_delta === 'number' && r.factor_delta !== 0 && (
+                                        <span>{' '}· 因子调整 {r.factor_delta > 0 ? '+' : ''}{r.factor_delta.toFixed(1)}</span>
+                                      )}
+                                      <span className="font-semibold text-ink-secondary">{' '}· 合计 {r.total.toFixed(1)}</span>
+                                    </div>
                                   </div>
                                 </div>
                               )}

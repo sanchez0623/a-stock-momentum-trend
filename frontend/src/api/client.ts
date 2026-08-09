@@ -349,6 +349,11 @@ export interface ScreenerTask {
     stage_bonus?: number
     stage_penalty?: number
     stage_note?: string
+    // 基本面/事件因子叠加(apply_fundamental_factors 产出): base_total 为叠加前三因子+阶段分, factor_delta 为叠加值
+    base_total?: number
+    factor_delta?: number
+    quality_score?: number
+    event_score?: number
   }>
   error: string
 }
