@@ -79,13 +79,19 @@ class KlineStore:
             logger.warning("KlineStore.list_symbols 失败: %s", exc)
             return []
 
+    @staticmethod
+    def _norm_date(date_str: str) -> str:
+        """日期归一: 不同源格式不同(腾讯 '2026-02-06' vs 东财/akshare '2026-02-06 15:00'),
+        统一取前 10 位作去重 key, 避免 merge 把同一天当两条."""
+        return str(date_str)[:10]
+
     def merge_and_save(self, symbol: str, period: str, fresh_rows: list[dict]) -> pd.DataFrame:
-        """缓存合并: 旧缓存 + 新取, 按 date 去重(新覆盖旧), 升序返回 DataFrame."""
+        """缓存合并: 旧缓存 + 新取, 按归一化日期去重(新覆盖旧), 升序返回 DataFrame."""
         old = self.load(symbol, period) or []
-        by_date: dict[str, dict] = {r["date"]: r for r in old}
+        by_date: dict[str, dict] = {self._norm_date(r["date"]): r for r in old}
         for r in fresh_rows:
-            by_date[r["date"]] = r
-        merged = sorted(by_date.values(), key=lambda r: r["date"])
+            by_date[self._norm_date(r["date"])] = r
+        merged = sorted(by_date.values(), key=lambda r: self._norm_date(r["date"]))
         self.save(symbol, period, merged)
         return pd.DataFrame(merged)
 

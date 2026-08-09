@@ -164,16 +164,21 @@ class DataSourceManager:
         return out
 
     # ------------------------------------------------------------ 数据入口
-    async def get_kline(self, symbol: str, period: str = "daily", count: int = 120, secid: str | None = None) -> pd.DataFrame:
+    async def get_kline(self, symbol: str, period: str = "daily", count: int = 120,
+                        secid: str | None = None, prefer_long: bool = False) -> pd.DataFrame:
         """K线: 缓存优先, 缺失/过期回源, 合并后返回最近 count 条.
 
         secid: 显式 secid(如东财指数 "1.000001"). 提供时跳过按代码前缀推断交易所,
         用于拉取指数 K 线(普通代码前缀规则对指数会错位).
+
+        prefer_long: 长历史优先模式(补拉历史用). 默认 False 行为不变(首个源成功即返回);
+        True 时根数不足 count 的源不终止尝试, 继续试能给更多历史的源(baostock/东财),
+        全部不足则返回根数最多的结果. 该模式不调整全局源偏好, 避免污染日常取数顺序.
         """
         cached = kline_store.get_dataframe(symbol, period)
         if cached is not None and len(cached) >= count and self._cache_fresh(cached, period):
             return cached.tail(count).reset_index(drop=True)
-        fresh = await self._fetch_kline(symbol, period, count, secid=secid)
+        fresh = await self._fetch_kline(symbol, period, count, secid=secid, prefer_long=prefer_long)
         if fresh is not None and not fresh.empty:
             merged = kline_store.merge_and_save(symbol, period, fresh.to_dict("records"))
             if not merged.empty:
@@ -283,7 +288,10 @@ class DataSourceManager:
                                          start_date, end_date, timeout=60, allow_empty=True)
         return res or []
 
-    async def _fetch_kline(self, symbol: str, period: str, count: int, secid: str | None = None) -> pd.DataFrame | None:
+    async def _fetch_kline(self, symbol: str, period: str, count: int,
+                           secid: str | None = None, prefer_long: bool = False) -> pd.DataFrame | None:
+        best: pd.DataFrame | None = None
+        best_name = ""
         for name in self._active_order():
             if self._health[name].is_circuit_open():
                 continue
@@ -297,14 +305,24 @@ class DataSourceManager:
                 latency = (time.perf_counter() - t0) * 1000
                 if df is not None and not df.empty:
                     self._record(name, True, latency)
-                    self._bump_preference(name)
-                    return df
-                self._record(name, False, latency)
+                    if not prefer_long or len(df) >= count:
+                        self._bump_preference(name)
+                        return df
+                    # prefer_long: 根数不足继续试更全的源, 先记录根数最多的
+                    if best is None or len(df) > len(best):
+                        best, best_name = df, name
+                else:
+                    self._record(name, False, latency)
             except TimeoutError:
                 self._record(name, False, 0.0)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("数据源 %s 取 K线失败 %s: %s", name, symbol, exc)
                 self._record(name, False, 0.0)
+        if best is not None:
+            # 不 bump 偏好: 补拉模式不应污染日常取数顺序
+            logger.info("prefer_long 无源满足 %d 根, 返回最长 %d 根(%s): %s",
+                        count, len(best), best_name, symbol)
+            return best
         return None
 
     async def get_realtime_quote(self, symbols: list[str]) -> list[Quote]:

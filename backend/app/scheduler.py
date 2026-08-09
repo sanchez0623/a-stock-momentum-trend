@@ -25,7 +25,7 @@ async def _after_close_warmup() -> None:
 
     from app import db
     from app.core.datasource import data_source_manager
-    from app.models.models import Watchlist, Position
+    from app.models.models import Position, Watchlist
 
     try:
         with db.session_scope() as s:
@@ -45,7 +45,7 @@ async def _after_close_warmup() -> None:
     done = 0
     for sym in symbols:
         try:
-            df = await data_source_manager.get_kline(sym, "daily", count=120)
+            df = await data_source_manager.get_kline(sym, "daily", count=260)
             if df is not None and not df.empty:
                 done += 1
         except Exception as exc:  # noqa: BLE001

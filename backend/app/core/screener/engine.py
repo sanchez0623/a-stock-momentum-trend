@@ -516,7 +516,7 @@ class StockScreener:
         top_n: int = 30,
         min_amount: float = MIN_DAILY_AMOUNT,
         progress_cb: Callable[[int, int], None] | None = None,
-        count: int = 80,
+        count: int = 260,  # 日线根数: 覆盖 52 周高点/长均线/回测所需; 由历史补拉(backfill)预填缓存, 日常命中缓存
         per_industry: int = 0,       # ⑤ 每行业限配 N 只(0=不限)
         industry_level: str = "sw_l1",  # 分组用申万级别
         apply_gate: bool = True,     # ④ 大盘择时闸门

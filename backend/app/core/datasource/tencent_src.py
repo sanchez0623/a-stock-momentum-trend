@@ -27,6 +27,16 @@ USER_AGENTS = [
 PERIOD_PARAM = {"1m": "m1", "5m": "m5", "15m": "m15", "30m": "m30", "60m": "m60", "daily": "day", "weekly": "week"}
 
 
+def _fnum(v: object, default: float = 0.0) -> float:
+    """安全转 float: 腾讯偶发在 K 线第 7 位塞除权信息 dict(如 {'FHcontent': '10派1.3元'}), 必须跳过."""
+    if isinstance(v, (dict, list)):
+        return default
+    try:
+        return float(v)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+
+
 class TencentSource(DataSourceInterface):
     name = "tencent"
     label = "腾讯财经"
@@ -80,12 +90,13 @@ class TencentSource(DataSourceInterface):
                 continue
             rows.append({
                 "date": r[0],
-                "open": float(r[1]),
-                "close": float(r[2]),
-                "high": float(r[3]),
-                "low": float(r[4]),
-                "volume": float(r[5]),
-                "amount": float(r[6]) if len(r) > 6 else 0.0,
+                "open": _fnum(r[1]),
+                "close": _fnum(r[2]),
+                "high": _fnum(r[3]),
+                "low": _fnum(r[4]),
+                "volume": _fnum(r[5]),
+                # 第 7 位可能是成交额, 也可能是除权信息 dict, 用 _fnum 兜底
+                "amount": _fnum(r[6]) if len(r) > 6 else 0.0,
             })
         return normalize_kline(pd.DataFrame(rows))
 

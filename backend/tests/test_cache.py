@@ -37,6 +37,30 @@ def test_kline_store_merge_dedup(tmp_engine):
     assert df["date"].is_monotonic_increasing
 
 
+def test_kline_store_merge_dedup_cross_format(tmp_engine):
+    """回归: 不同源日期格式不一致('2025-01-01' vs '2025-01-01 15:00')必须按归一化去重,
+    否则同一天会存两条导致缓存膨胀与指标污染."""
+    store = KlineStore()
+    old = [
+        {"date": "2025-01-01 15:00", "open": 10.0, "high": 11.0, "low": 9.0,
+         "close": 10.5, "volume": 1000.0, "amount": 10500.0},
+        {"date": "2025-01-02 15:00", "open": 10.0, "high": 11.0, "low": 9.0,
+         "close": 10.5, "volume": 1000.0, "amount": 10500.0},
+    ]
+    store.save("600111", "daily", old)
+    fresh = [  # 腾讯格式: 无时间部分, 且 01-01 数值更新
+        {"date": "2025-01-01", "open": 10.1, "high": 11.1, "low": 9.1,
+         "close": 10.6, "volume": 1100.0, "amount": 0.0},
+        {"date": "2025-01-03", "open": 10.2, "high": 11.2, "low": 9.2,
+         "close": 10.7, "volume": 1200.0, "amount": 0.0},
+    ]
+    df = store.merge_and_save("600111", "daily", fresh)
+    assert len(df) == 3  # 01-01 两条跨格式合并为 1 条(新覆盖旧)
+    row_0101 = df[df["date"].str.startswith("2025-01-01")].iloc[0]
+    assert row_0101["close"] == 10.6  # 新数据覆盖旧数据
+    assert df["date"].is_monotonic_increasing
+
+
 def test_kline_store_list_symbols(tmp_engine):
     """list_symbols 只返回非空段且返回完整 symbol(回归: 曾取字符串首字符变 '0')."""
     from app import db
