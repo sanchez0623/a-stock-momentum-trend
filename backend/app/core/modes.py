@@ -16,15 +16,13 @@
 
 from __future__ import annotations
 
-import dataclasses
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 import pandas as pd
 
 from app.core.config import config_manager
 from app.core.indicators import compute_all
-
 
 # 模式分组在 config 中的键与默认值来源
 MODE_GROUP = "交易模式"
@@ -73,12 +71,17 @@ def _compute_indicators(df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     )
 
 
-def regime_features(ind: pd.DataFrame, cfg: dict) -> dict[str, Any]:
-    """从指标表末行提取市况特征."""
+def regime_features(ind: pd.DataFrame, cfg: dict, end: int | None = None) -> dict[str, Any]:
+    """从指标表末行提取市况特征. end: 判定位置(回测逐日复用, 默认末行)."""
     if ind is None or len(ind) == 0:
         return {}
-    last = ind.iloc[-1]
-    prev = ind.iloc[-2] if len(ind) > 1 else last
+    n = len(ind)
+    if end is None:
+        end = n
+    if end < 2:
+        return {}
+    last = ind.iloc[end - 1]
+    prev = ind.iloc[end - 2]
     trend = cfg["趋势"]
     volume = cfg["量能"]
     ma_s = f"ma{trend['ma_short']}"
@@ -186,14 +189,16 @@ def _default_decision(cfg: dict) -> ModeDecision:
     )
 
 
-def mode_for_ind(ind: pd.DataFrame | None, cfg: dict | None = None) -> ModeDecision:
-    """由已算好指标的 DataFrame 分类(引擎内部复用)."""
+def mode_for_ind(ind: pd.DataFrame | None, cfg: dict | None = None, end: int | None = None) -> ModeDecision:
+    """由已算好指标的 DataFrame 分类(引擎内部复用). end: 判定位置(回测逐日, 默认末行)."""
     cfg = cfg or config_manager.get()
     if not cfg.get(MODE_GROUP, {}).get("enabled", True):
         return _default_decision(cfg)
     if ind is None or len(ind) < 2:
         return _default_decision(cfg)
-    regime = regime_features(ind, cfg)
+    if end is not None and end < 2:
+        return _default_decision(cfg)
+    regime = regime_features(ind, cfg, end=end)
     key, reason = classify(regime, cfg)
     modes = cfg[MODE_GROUP]["modes"]
     md = modes.get(key, modes.get(cfg[MODE_GROUP].get("default_mode", DEFAULT_MODE_KEY), {}))

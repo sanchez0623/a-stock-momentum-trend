@@ -90,9 +90,37 @@ class SignalEngine:
             return None
         cfg = self._reload_cfg()
         ind = self._indicators(kline_df, cfg)
-        mode_decision = mode_for_ind(ind, cfg)  # Q2: 规则化市况分类, 选出当前交易模式
-        last = ind.iloc[-1]
-        prev = ind.iloc[-2] if len(ind) > 1 else last
+        return self.evaluate_with_ind(
+            symbol=symbol, name=name, ind=ind, position=position,
+            quote_price=quote_price, quote_high=quote_high, quote_low=quote_low,
+        )
+
+    def evaluate_with_ind(
+        self,
+        symbol: str,
+        name: str = "",
+        ind: pd.DataFrame | None = None,
+        position: PositionInfo | None = None,
+        quote_price: float | None = None,
+        quote_high: float | None = None,
+        quote_low: float | None = None,
+        end: int | None = None,
+    ) -> Signal | None:
+        """与 evaluate 同逻辑, 但接收已算好的指标表(回测逐日复用, 避免重复 compute_all).
+
+        end: 可选判定位置(回测逐日传 i, 默认末行). 行为与 evaluate 完全一致.
+        """
+        if ind is None or len(ind) < 30:
+            return None
+        n = len(ind)
+        if end is None:
+            end = n
+        if end < 30:
+            return None
+        cfg = self._reload_cfg()
+        mode_decision = mode_for_ind(ind, cfg, end=end)  # Q2: 规则化市况分类, 选出当前交易模式
+        last = ind.iloc[end - 1]
+        prev = ind.iloc[end - 2] if end > 1 else last
         price = quote_price or _f(last["close"])
         pos = position or PositionInfo(symbol=symbol)
 
@@ -107,7 +135,7 @@ class SignalEngine:
             return s
 
         # 1. 止损(优先级最高)
-        sig = self._check_stop(cfg, ind, last, pos, price, name, mode_decision)
+        sig = self._check_stop(cfg, ind, last, prev, pos, price, name, mode_decision)
         if sig:
             return _tag(sig)
         # 2. 减仓
@@ -344,7 +372,7 @@ class SignalEngine:
         )
 
     # ------------------------------------------------------------ 止损信号
-    def _check_stop(self, cfg, ind, last, pos, price, name, mode_decision) -> Signal | None:
+    def _check_stop(self, cfg, ind, last, prev, pos, price, name, mode_decision) -> Signal | None:
         """跌破止损线 / 移动止损线; 或 MA 短穿中 + ADX 掉头.
 
         止损线优先用当前模式的 stop_loss_pct(模式自带风控), 回退到全局 风控 配置.
@@ -359,7 +387,7 @@ class SignalEngine:
         ma_m = f"ma{trend['ma_mid']}"
         ma_s_v, ma_m_v = _f(last.get(ma_s)), _f(last.get(ma_m))
         adx_now = _f(last.get(f"adx{trend.get('adx_period', 14)}"))
-        adx_prev = _f(ind.iloc[-2].get(f"adx{trend.get('adx_period', 14)}")) if len(ind) > 1 else adx_now
+        adx_prev = _f(prev.get(f"adx{trend.get('adx_period', 14)}")) if prev is not None else adx_now
         reasons = []
         if price <= stop_price:
             reasons.append(f"跌破止损线{stop_price:.2f}")

@@ -1,13 +1,16 @@
-"""回测中心 API(方案C MVP: 阶段分桶因子回测)."""
+"""回测中心 API(方案C: 阶段分桶因子回测 + 全流程策略回测)."""
 
 from __future__ import annotations
 
 import asyncio
+import threading
+import uuid
 
 from fastapi import APIRouter
 from pydantic import BaseModel
 
 from app.core.backtest.factor import backtest_factors
+from app.core.backtest.strategy import run_strategy_backtest
 
 router = APIRouter(prefix="/api", tags=["backtest"])
 
@@ -17,6 +20,11 @@ class BacktestFactorBody(BaseModel):
     hold_days: list[int] = [5, 10, 20]
     min_bars: int = 60
     cost: bool = True                  # 是否扣除双边手续费
+
+
+class BacktestStrategyBody(BaseModel):
+    symbols: list[str] | None = None   # 为空 = 自选 + 持仓
+    initial_capital: float = 1_000_000.0
 
 
 @router.post("/backtest/factor")
@@ -34,3 +42,50 @@ async def run_factor(body: BacktestFactorBody) -> dict:
         return {"code": 0, "msg": "ok", "data": report}
     except Exception as exc:  # noqa: BLE001
         return {"code": 1, "msg": f"回测失败: {exc}", "data": None}
+
+
+# ---------------------------------------------------------------- 策略回测(异步任务)
+# 内存任务表(进程内有效, 重启丢失; MVP 够用). 结构: {task_id: {status, progress, result, error}}
+_tasks: dict[str, dict] = {}
+_tasks_lock = threading.Lock()
+
+
+@router.post("/backtest/strategy")
+async def run_strategy(body: BacktestStrategyBody) -> dict:
+    """全流程策略回测(异步: 建仓/加仓/止盈/止损/做T + 风控三道闸门). 返回 task_id."""
+    task_id = uuid.uuid4().hex[:12]
+    with _tasks_lock:
+        _tasks[task_id] = {"status": "running", "progress": 0, "result": None, "error": ""}
+
+    def _run() -> None:
+        try:
+            def cb(done: int, total: int) -> None:
+                with _tasks_lock:
+                    _tasks[task_id]["progress"] = round(done / total * 100) if total else 0
+
+            report = run_strategy_backtest(
+                symbols=body.symbols,
+                initial_capital=max(10_000.0, float(body.initial_capital)),
+                progress_cb=cb,
+            )
+            with _tasks_lock:
+                _tasks[task_id]["result"] = report
+                _tasks[task_id]["status"] = "done"
+                _tasks[task_id]["progress"] = 100
+        except Exception as exc:  # noqa: BLE001
+            with _tasks_lock:
+                _tasks[task_id]["status"] = "error"
+                _tasks[task_id]["error"] = str(exc)
+
+    threading.Thread(target=_run, daemon=True).start()
+    return {"code": 0, "msg": "ok", "data": {"task_id": task_id}}
+
+
+@router.get("/backtest/tasks/{task_id}")
+async def get_task(task_id: str) -> dict:
+    """查询策略回测任务进度/结果."""
+    with _tasks_lock:
+        t = _tasks.get(task_id)
+    if t is None:
+        return {"code": 1, "msg": "任务不存在(进程重启后任务丢失)", "data": None}
+    return {"code": 0, "msg": "ok", "data": dict(t)}

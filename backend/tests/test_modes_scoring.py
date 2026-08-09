@@ -282,24 +282,25 @@ def test_check_stop_uses_mode_stop_loss():
     cfg = config_manager.get()
     ind = _stop_ind()
     last = ind.iloc[-1]
+    prev = ind.iloc[-2] if len(ind) > 1 else last
     pos = PositionInfo(symbol="X", cost=100.0, qty=100)
 
     # 趋势强攻模式止损 6% -> 94.5 元(>-6%) 不触发
     strong = ModeDecision(mode_key="trend_strong", mode={"stop_loss_pct": 6.0},
                           regime={}, reason="", label="趋势强攻")
-    assert eng._check_stop(cfg, ind, last, pos, 94.5, "X", strong) is None
+    assert eng._check_stop(cfg, ind, last, prev, pos, 94.5, "X", strong) is None
 
     # 防守模式止损 3% -> 94.5 元(<=-3%) 触发
     defense = ModeDecision(mode_key="defense", mode={"stop_loss_pct": 3.0},
                            regime={}, reason="", label="防守")
-    s = eng._check_stop(cfg, ind, last, pos, 94.5, "X", defense)
+    s = eng._check_stop(cfg, ind, last, prev, pos, 94.5, "X", defense)
     assert s is not None and s.type == "SELL_STOP"
 
     # 模式未定义 stop_loss_pct -> 回退全局 5% -> 94.5 触发, 96 不触发
     fallback = ModeDecision(mode_key="trend_pullback", mode={},
                             regime={}, reason="", label="趋势回踩")
-    assert eng._check_stop(cfg, ind, last, pos, 94.5, "X", fallback) is not None
-    assert eng._check_stop(cfg, ind, last, pos, 96.0, "X", fallback) is None
+    assert eng._check_stop(cfg, ind, last, prev, pos, 94.5, "X", fallback) is not None
+    assert eng._check_stop(cfg, ind, last, prev, pos, 96.0, "X", fallback) is None
 
 
 def test_advice_buy_first_and_add_use_mode_ratios():

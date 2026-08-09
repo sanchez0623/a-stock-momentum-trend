@@ -102,6 +102,10 @@ export const api = {
   // ---------------------------------------------------------------- 回测中心(方案C: 阶段分桶)
   backtestFactor: (body: { symbols?: string[] | null; hold_days?: number[]; min_bars?: number; cost?: boolean }) =>
     request<BacktestFactorReport>('/backtest/factor', { method: 'POST', body: JSON.stringify(body) }),
+  // 全流程策略回测(异步任务: 建仓/加仓/止盈/止损/做T + 风控)
+  backtestStrategy: (body: { symbols?: string[] | null; initial_capital?: number }) =>
+    request<{ task_id: string }>('/backtest/strategy', { method: 'POST', body: JSON.stringify(body) }),
+  backtestTask: (taskId: string) => request<BacktestTaskState>(`/backtest/tasks/${taskId}`),
 
   // ---------------------------------------------------------------- 三期: 交易日志/统计
   trades: (params: { symbol?: string; action?: string; limit?: number; offset?: number } = {}) => {
@@ -375,6 +379,58 @@ export interface BacktestFactorReport {
   }
   by_stage: Record<string, BacktestStageResult>
   stage_distribution: Record<string, number>
+}
+
+// ---------------------------------------------------------------- 策略回测类型
+export interface BacktestTrade {
+  date: string
+  symbol: string
+  name: string
+  action: string // buy_first/buy_add/sell_reduce/sell_stop/t_sell/t_buy
+  price: number
+  qty: number
+  fee: number
+  pnl: number
+  reason: string
+}
+
+export interface BacktestStrategyReport {
+  meta: {
+    pool: number
+    skipped: number
+    initial_capital: number
+    final_equity: number
+    total_return_pct: number
+    annual_return_pct: number
+    max_drawdown_pct: number
+    sharpe: number
+    days: number
+    notes: string
+  }
+  stats: {
+    trades: number
+    closed: number
+    win_rate: number
+    profit_factor: number
+    expectancy: number
+    avg_win: number
+    avg_loss: number
+    consecutive_losses_max: number
+    turnover_pct: number
+    t_sell_count: number
+    t_contribution: number
+    fuse_triggered: boolean
+    defense_mode: boolean
+  }
+  equity_curve: { date: string; equity: number }[]
+  trades: BacktestTrade[]
+}
+
+export interface BacktestTaskState {
+  status: 'running' | 'done' | 'error'
+  progress: number
+  result: BacktestStrategyReport | null
+  error: string
 }
 
 // ---------------------------------------------------------------- 三期类型
