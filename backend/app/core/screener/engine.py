@@ -35,6 +35,119 @@ BOARD_PREFIXES: dict[str, tuple[str, ...]] = {
     "bj": ("43", "83", "87", "88", "92"),  # 北交所
 }
 
+# 启动事件判定窗口(近 N 根内发生才算"刚起趋势")
+STAGE_WINDOW = 4
+
+_STAGE_EVENT_LABEL = {
+    "macd_golden": "MACD金叉",
+    "roc_turn": "ROC转正",
+    "ma_cross": "短均线刚上穿",
+    "adx_first": "ADX首次达标",
+}
+
+
+def _event_golden_cross(hist: pd.Series) -> bool:
+    """近 N 根内 MACD 柱由非正转正(金叉)."""
+    vals = [_f(v) for v in hist.tail(STAGE_WINDOW)]
+    return any(v > 0 and vals[i - 1] <= 0 for i, v in enumerate(vals) if i > 0)
+
+
+def _event_turn_positive(series: pd.Series) -> bool:
+    """近 N 根内由非正转正(如 ROC 由负转正)."""
+    vals = [_f(v) for v in series.tail(STAGE_WINDOW)]
+    return any(v > 0 and vals[i - 1] <= 0 for i, v in enumerate(vals) if i > 0)
+
+
+def _event_cross_up(a: pd.Series, b: pd.Series) -> bool:
+    """近 N 根内 a 上穿 b(如 短均线刚上穿中均线)."""
+    ta, tb = a.tail(STAGE_WINDOW).tolist(), b.tail(STAGE_WINDOW).tolist()
+    return any(ta[i] > tb[i] and ta[i - 1] <= tb[i - 1] for i in range(1, len(ta)))
+
+
+def detect_stage(ind: pd.DataFrame, cfg: dict) -> dict[str, Any]:
+    """识别趋势阶段(方案B, 纯函数, 与评分同源).
+
+    阶段: launch 启动 / accelerate 加速 / overheat 过热 / exhaust 衰竭 / none 无趋势.
+    判定优先级: 衰竭 > 过热 > 启动 > 加速 > 无趋势(仅对趋势向上标的判阶段).
+
+    输出: {stage, events, bonus, penalty, note}
+      events  命中的启动事件列表(macd_golden/roc_turn/ma_cross/adx_first)
+      bonus   启动加分(已按 launch_bonus_max 封顶)
+      penalty 过热/衰竭扣分
+    """
+    trend = cfg["趋势"]
+    momentum = cfg["动量"]
+    volume = cfg["量能"]
+    sc = cfg.get("趋势阶段", {})
+    out: dict[str, Any] = {"stage": "none", "events": [], "bonus": 0.0, "penalty": 0.0, "note": ""}
+    if not sc.get("enabled", True) or len(ind) < STAGE_WINDOW:
+        return out
+
+    last = ind.iloc[-1]
+    prev = ind.iloc[-2] if len(ind) > 1 else last
+    adx_period = int(trend.get("adx_period", 14))
+    roc_period = int(momentum["roc_period"])
+    ma_s = f"ma{trend['ma_short']}"
+    ma_m = f"ma{trend['ma_mid']}"
+    ma_s_v, ma_m_v = _f(last.get(ma_s)), _f(last.get(ma_m))
+    close = _f(last["close"])
+    adx = _f(last.get(f"adx{adx_period}"))
+    adx_th = float(trend["adx_threshold"])
+    rsi = _f(last.get(f"rsi{momentum['rsi_period']}"), 50)
+    hist, hist_prev = _f(last.get("macd_hist")), _f(prev.get("macd_hist"))
+    vr = _f(last.get(f"volume_ratio{volume['volume_ma']}"))
+    bias = round((close - ma_s_v) / ma_s_v * 100, 2) if ma_s_v > 0 else 0.0
+    # 趋势向上前提: 收盘站上中期均线(比"多头排列"宽松, 启动期均线往往未完全理顺)
+    up_trend = close > ma_m_v > 0
+
+    # ---- 启动事件(近 N 根内"刚发生")
+    events: list[str] = []
+    if _event_golden_cross(ind["macd_hist"]):
+        events.append("macd_golden")
+    if _event_turn_positive(ind[f"roc{roc_period}"]):
+        events.append("roc_turn")
+    if _event_cross_up(ind[ma_s], ind[ma_m]):
+        events.append("ma_cross")
+    adx_tail = [_f(v) for v in ind[f"adx{adx_period}"].tail(STAGE_WINDOW)]
+    adx_rising = adx >= _f(ind[f"adx{adx_period}"].iloc[-6]) if len(ind) > 5 else True
+    if adx >= adx_th and any(v < adx_th for v in adx_tail) and adx_rising:
+        events.append("adx_first")
+
+    # ---- 阶段判定(优先级: 衰竭 > 过热 > 启动 > 加速)
+    rsi_overheat = float(sc.get("rsi_overheat", 75.0))
+    rsi_exhaust = float(sc.get("rsi_exhaust", 80.0))
+    if up_trend and rsi >= rsi_exhaust and hist < hist_prev:
+        out["stage"] = "exhaust"
+        out["penalty"] = float(sc.get("exhaust_penalty", 5.0))
+        out["note"] = f"RSI {rsi:.0f} 超买且 MACD 红柱缩短, 动能衰竭"
+    elif up_trend and (bias >= float(sc.get("overheat_bias", 10.0))
+                       or rsi >= rsi_overheat
+                       or vr >= float(sc.get("overheat_volume", 3.0))):
+        out["stage"] = "overheat"
+        if bias >= float(sc.get("overheat_bias", 10.0)):
+            out["penalty"] += float(sc.get("overheat_bias_penalty", 3.0))
+        if rsi >= rsi_overheat:
+            out["penalty"] += float(sc.get("overheat_rsi_penalty", 2.0))
+        if vr >= float(sc.get("overheat_volume", 3.0)):
+            out["penalty"] += float(sc.get("overheat_volume_penalty", 3.0))
+        out["note"] = f"乖离{bias:.1f}% / RSI {rsi:.0f} / 量比{vr:.1f} 过热"
+    elif events and up_trend:
+        weights = {
+            "macd_golden": float(sc.get("launch_macd_golden", 2.0)),
+            "roc_turn": float(sc.get("launch_roc_turn", 2.0)),
+            "ma_cross": float(sc.get("launch_ma_cross", 2.0)),
+            "adx_first": float(sc.get("launch_adx_first", 1.0)),
+        }
+        out["stage"] = "launch"
+        out["events"] = events
+        out["bonus"] = min(float(sc.get("launch_bonus_max", 5.0)),
+                           sum(weights.get(e, 0.0) for e in events))
+        out["note"] = "刚起趋势: " + "、".join(_STAGE_EVENT_LABEL.get(e, e) for e in events)
+    elif ma_s_v > ma_m_v:
+        out["stage"] = "accelerate"
+        out["note"] = "多头排列且动量健康, 加速期"
+    return out
+
 
 def _f(x: Any, default: float = 0.0) -> float:
     try:
@@ -180,6 +293,20 @@ def _build_reason(f: dict[str, Any], cfg: dict) -> dict[str, Any]:
         risks.append(f"股价偏离MA{ms}达{bias:.1f}%, 短线乖离过大易回踩")
         tags.append(_tag(f"乖离{bias:.0f}%", "warn"))
 
+    # ---------------------------------------------------------------- 趋势阶段(方案B)
+    stage = f.get("stage", "none")
+    if stage == "launch":
+        tags.append(_tag("启动期", "good"))
+        parts_t.append(f"刚起趋势({f.get('stage_note', '')})")
+    elif stage == "accelerate":
+        tags.append(_tag("加速期", "good"))
+    elif stage == "overheat":
+        tags.append(_tag("过热期", "warn"))
+        risks.append(f"趋势过热({f.get('stage_note', '')}), 追高风险大, 宜等回踩")
+    elif stage == "exhaust":
+        tags.append(_tag("衰竭期", "bad"))
+        risks.append(f"趋势衰竭({f.get('stage_note', '')}), 不宜新建仓")
+
     return {
         "reason": "；".join(["、".join(parts_t), "、".join(parts_m), "、".join(parts_v)]),
         "risk": "；".join(risks),
@@ -257,7 +384,13 @@ def score_indicators(ind: pd.DataFrame, cfg: dict | None = None) -> dict[str, An
     # ② 趋势连贯性: 近 20 日收盘站在短期均线之上的占比(0~1)
     consistency = round(float((ind["close"].tail(20) > ind[ma_s].tail(20)).mean()), 2) if len(ind) >= 20 else 0.0
 
-    total = round(trend_score + momentum_score + volume_score, 1)
+    # ---- 趋势阶段(方案B): 启动加分 / 过热·衰竭扣分
+    # 让"刚起趋势"的票浮进高分区, 把乖离过大/动能衰竭的票压下去
+    stage_info = detect_stage(ind, cfg)
+    stage_bonus = stage_info["bonus"]
+    stage_penalty = stage_info["penalty"]
+
+    total = round(trend_score + momentum_score + volume_score + stage_bonus - stage_penalty, 1)
     if total >= 70:
         attention = "强烈关注"
     elif total >= 60:
@@ -285,6 +418,12 @@ def score_indicators(ind: pd.DataFrame, cfg: dict | None = None) -> dict[str, An
         "adx_rising": adx_rising,
         "consistency": consistency,
         "date": str(last["date"]),
+        # 趋势阶段(方案B): 阶段/启动事件/加减分
+        "stage": stage_info["stage"],
+        "stage_events": stage_info["events"],
+        "stage_bonus": round(stage_bonus, 1),
+        "stage_penalty": round(stage_penalty, 1),
+        "stage_note": stage_info["note"],
     }
     # 人话理由(与上面得分同源, 不重算指标)
     out.update(_build_reason({

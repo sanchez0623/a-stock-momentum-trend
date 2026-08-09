@@ -4,7 +4,7 @@
 并落一条可回滚的变更记录。
 
 三道闸门
-1. 白名单   : 只有 21 个数值字段可被 AI 修改; 风控/仓位/数据源/LLM/手续费 永久禁止;
+1. 白名单   : 只有 34 个数值字段可被 AI 修改; 风控/仓位/数据源/LLM/手续费 永久禁止;
               枚举(trend_filter)与开关(做T.enable)也排除 —— 那是换策略不是调参。
 2. 幅度上限 : 单次相对当前值 ±20%, 超出截断到边界并标注; 同时受字段硬边界约束;
               整数字段自动取整。
@@ -57,7 +57,7 @@ class FieldRule:
     label: str
 
 
-# 21 个可调数值字段(排除 趋势.trend_filter 枚举 与 做T.enable 开关)
+# 34 个可调数值字段(排除 趋势.trend_filter 枚举 与 做T.enable 开关)
 WHITELIST: dict[str, FieldRule] = {
     # 趋势 4
     "趋势.ma_short":                FieldRule("int", 3, 60, "短均线周期"),
@@ -75,6 +75,20 @@ WHITELIST: dict[str, FieldRule] = {
     # 量能 2
     "量能.volume_ma":               FieldRule("int", 5, 60, "成交量均线周期"),
     "量能.volume_ratio_threshold":  FieldRule("float", 0.8, 5.0, "量比阈值"),
+    # 趋势阶段 13(方案B: 启动加分/过热·衰竭扣分, AI 可调以找最优解)
+    "趋势阶段.launch_macd_golden":  FieldRule("float", 0, 10, "启动加分·MACD金叉"),
+    "趋势阶段.launch_roc_turn":     FieldRule("float", 0, 10, "启动加分·ROC转正"),
+    "趋势阶段.launch_ma_cross":     FieldRule("float", 0, 10, "启动加分·短均线刚上穿"),
+    "趋势阶段.launch_adx_first":    FieldRule("float", 0, 10, "启动加分·ADX首次达标"),
+    "趋势阶段.launch_bonus_max":    FieldRule("float", 0, 15, "启动加分封顶"),
+    "趋势阶段.overheat_bias":       FieldRule("float", 3, 30, "过热乖离阈值(%)"),
+    "趋势阶段.overheat_bias_penalty": FieldRule("float", 0, 10, "过热乖离扣分"),
+    "趋势阶段.overheat_rsi_penalty":  FieldRule("float", 0, 10, "过热RSI扣分"),
+    "趋势阶段.overheat_volume":     FieldRule("float", 1, 10, "过热量比阈值"),
+    "趋势阶段.overheat_volume_penalty": FieldRule("float", 0, 10, "过热量比扣分"),
+    "趋势阶段.exhaust_penalty":     FieldRule("float", 0, 15, "衰竭扣分"),
+    "趋势阶段.rsi_overheat":        FieldRule("float", 60, 90, "阶段判定RSI过热线"),
+    "趋势阶段.rsi_exhaust":         FieldRule("float", 65, 95, "阶段判定RSI衰竭线"),
     # 评分权重 5
     "评分权重.timing":              FieldRule("float", 0.02, 0.60, "时机权重"),
     "评分权重.position":            FieldRule("float", 0.02, 0.60, "仓位权重"),
@@ -184,6 +198,13 @@ def validate_config(cfg: dict[str, Any]) -> list[str]:
     tr = tt.get("t_position_ratio")
     if isinstance(tr, (int, float)) and not (0 < tr <= 1):
         errs.append("做T仓位比例须在 0~1 之间")
+    # 趋势阶段
+    se = g("趋势阶段")
+    ob_r, ex_r = se.get("rsi_overheat"), se.get("rsi_exhaust")
+    if isinstance(ob_r, (int, float)) and isinstance(ex_r, (int, float)) and ex_r <= ob_r:
+        errs.append(f"趋势阶段: RSI 衰竭线({ex_r})须大于过热线({ob_r})")
+    if isinstance(se.get("launch_bonus_max"), (int, float)) and se["launch_bonus_max"] < 0:
+        errs.append("趋势阶段: 启动加分封顶须为非负")
     # 数据源
     ds_enabled = g("数据源").get("enabled")
     if isinstance(ds_enabled, dict) and not any(bool(x) for x in ds_enabled.values()):
@@ -501,6 +522,31 @@ def suggest_from_issues(issues: list[dict[str, Any]], stats: dict[str, Any],
                          f"近期已平仓 {closed} 笔, 胜率仅 {win_rate}%。建议提高量比阈值, "
                          f"要求上涨必须有量能配合, 提高选股门槛以减少无效信号。",
                          f"rule:low_win_rate({win_rate}%)", cfg))
+
+    # 趋势阶段(方案B): 过热/衰竭期买入 -> 提高对应扣分
+    n = counts.get("buy_overheat", 0)
+    if n >= 2:
+        cands.append(_mk("趋势阶段", "overheat_bias_penalty", 0.20,
+                         f"近期有 {n} 笔买入发生在过热期(乖离/RSI 过高)。建议提高过热扣分, "
+                         f"让高位追买的票在选股里排得更低, 倒逼等回踩。",
+                         f"rule:buy_overheat×{n}", cfg))
+
+    n = counts.get("buy_exhaust", 0)
+    if n >= 1:
+        cands.append(_mk("趋势阶段", "exhaust_penalty", 0.20,
+                         f"有 {n} 笔买入发生在衰竭期(动能见顶回落)。建议提高衰竭扣分, "
+                         f"避免在趋势末端接盘。",
+                         f"rule:buy_exhaust×{n}", cfg))
+
+    # 启动期正反馈: 启动期买入的已平仓胜率高 -> 提高启动加分(数据支持"刚起趋势"打法)
+    bs = stats.get("buy_stages") or {}
+    launch = bs.get("launch") or {}
+    if launch.get("closed", 0) >= 3 and launch.get("win_rate", 0) >= 55:
+        cands.append(_mk("趋势阶段", "launch_macd_golden", 0.20,
+                         f"启动期买入的 {launch['closed']} 笔已平仓, 胜率 {launch['win_rate']}%, "
+                         f"总盈亏 {launch.get('pnl', 0):.0f} 元, 显著优于其它阶段。建议提高启动加分, "
+                         f"让刚起趋势的票更早浮出水面。",
+                         f"rule:launch_wins({launch['win_rate']}%)", cfg))
 
     # 同一字段只保留优先级最高的一条(issues 已按严重度排序)
     out: list[dict[str, Any]] = []

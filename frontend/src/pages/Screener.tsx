@@ -12,6 +12,20 @@ const TAG_COLOR: Record<string, string> = {
   info: '#64748b',
 }
 
+// 趋势阶段(方案B): 启动/加速=红(利多) / 过热=橙(需注意) / 衰竭=绿(偏空)
+const STAGE_LABEL: Record<string, string> = {
+  launch: '启动期',
+  accelerate: '加速期',
+  overheat: '过热期',
+  exhaust: '衰竭期',
+}
+const STAGE_COLOR: Record<string, string> = {
+  launch: '#dc2626',
+  accelerate: '#dc2626',
+  overheat: '#ea580c',
+  exhaust: '#16a34a',
+}
+
 const FACTORS = ['趋势', '动量', '量能'] as const
 
 const BOARDS = [
@@ -357,6 +371,7 @@ export default function Screener() {
                       <th className="px-1.5 py-2">代码</th>
                       <th className="px-1.5 py-2">名称</th>
                       <th className="px-1.5 py-2 text-right">总分</th>
+                      <th className="px-1.5 py-2">阶段</th>
                       <th className="px-1.5 py-2 text-right">趋势</th>
                       <th className="px-1.5 py-2 text-right">动量</th>
                       <th className="px-1.5 py-2 text-right">量能</th>
@@ -384,6 +399,15 @@ export default function Screener() {
                             <td className="px-1.5 py-2 font-semibold">{r.symbol}</td>
                             <td className="px-1.5 py-2">{r.name || '-'}</td>
                             <td className={cn('px-1.5 py-2 text-right font-bold', r.total >= 60 ? 'text-rise' : 'text-ink')}>{r.total.toFixed(1)}</td>
+                            <td className="px-1.5 py-2">
+                              {r.stage && r.stage !== 'none' ? (
+                                <span className={cn('text-[12px] font-medium', STAGE_COLOR[r.stage] ?? 'text-ink-muted')}>
+                                  {STAGE_LABEL[r.stage] ?? r.stage}
+                                </span>
+                              ) : (
+                                <span className="text-ink-faint">-</span>
+                              )}
+                            </td>
                             <td className="px-1.5 py-2 text-right">{r.trend_score.toFixed(1)}</td>
                             <td className="px-1.5 py-2 text-right">{r.momentum_score.toFixed(1)}</td>
                             <td className="px-1.5 py-2 text-right">{r.volume_score.toFixed(1)}</td>
@@ -437,6 +461,11 @@ export default function Screener() {
                                   <div className="mt-2 text-[11px] text-ink-faint">
                                     乖离率(现价相对短期均线) {r.bias?.toFixed(1) ?? '-'}% · 近20日均成交额 {r.amount_avg?.toFixed(2) ?? '-'} 亿 ·
                                     评分口径 趋势40 + 动量40 + 量能20
+                                    {(r.stage_bonus ?? 0) > 0 || (r.stage_penalty ?? 0) > 0 ? (
+                                      <span>
+                                        {' '}· 阶段调整 {(r.stage_bonus ?? 0) > 0 ? `+${r.stage_bonus}` : ''}{(r.stage_penalty ?? 0) > 0 ? `-${r.stage_penalty}` : ''}
+                                      </span>
+                                    ) : null}
                                   </div>
                                 </div>
                               )}

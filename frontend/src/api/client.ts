@@ -337,6 +337,11 @@ export interface ScreenerTask {
     risk?: string
     tags?: ScreenerTag[]
     detail?: Record<string, string>
+    // 趋势阶段(方案B): 启动/加速/过热/衰竭; 旧任务结果缺失, 前端需容错
+    stage?: string
+    stage_bonus?: number
+    stage_penalty?: number
+    stage_note?: string
   }>
   error: string
 }

@@ -11,7 +11,7 @@ from sqlmodel import Session, select
 
 from app import db
 from app.core.ai_review.llm import LLMError, build_client_from_config
-from app.core.ai_review.rules import diagnose
+from app.core.ai_review.rules import diagnose, stage_stats
 from app.core.ai_review.tuning import (
     MAX_ACCEPT_PER_REVIEW,
     apply_patch,
@@ -72,6 +72,8 @@ class ReviewService:
 
         issues = diagnose(trades, signals, klines)
         stats = self._summary(trades)
+        # 买入日的趋势阶段分布(方案B): 规则通道据此建议调启动/过热/衰竭参数, LLM 也可见
+        stats["buy_stages"] = stage_stats(trades, klines)
 
         # 规则通道: 确定性推导可执行参数建议(无需 LLM Key)
         rule_suggestions = suggest_from_issues(issues, stats)
@@ -188,6 +190,10 @@ class ReviewService:
         issue_lines = "\n".join(
             f"- [{i['level']}] {i['title']}: {i['detail']}" for i in issues
         ) or "- 无"
+        stage_lines = "\n".join(
+            f"- {k}: 买入{int(v['n'])}笔 / 平仓{int(v['closed'])} / 胜率{v['win_rate']}% / 盈亏{v['pnl']:.0f}元"
+            for k, v in (stats.get("buy_stages") or {}).items()
+        ) or "- 无(数据不足)"
         tunable = tunable_brief()
         prompt = f"""你是 A 股动量/趋势交易系统的复盘教练。基于以下交易记录与规则诊断, 输出严格的 JSON(不要输出 JSON 外的任何内容):
 {{
@@ -212,6 +218,9 @@ suggestions 输出 2-5 条。
 近 {stats['closed']} 笔已平仓, 胜率 {stats['win_rate']}%, 总盈亏 {stats['total_pnl']} 元。
 规则诊断结果:
 {issue_lines}
+
+买入日的趋势阶段分布(阶段: 笔数/已平仓/胜率/盈亏, 可用于判断是否应调整"启动加分/过热扣分/衰竭扣分"参数):
+{stage_lines}
 
 交易记录(最近):
 {trade_lines}

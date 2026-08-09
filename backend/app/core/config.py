@@ -200,6 +200,28 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "bonus": 5.0,            # 命中利好加分
         "penalty": -5.0,         # 命中利空减分(预减/预亏/首亏)
     },
+    "趋势阶段": {
+        # 趋势生命周期识别(方案B, 2026-08-09): 启动/加速/过热/衰竭 四阶段
+        # - 启动加分: 识别"刚起趋势"(金叉/ROC转正/短均线刚上穿/ADX首次达标),
+        #   让早期票浮进高分区 —— 对应"中间分数/刚起趋势"打法
+        # - 过热/衰竭扣分: 乖离过大、量比异常、动能衰竭的票压分
+        # - 所有数值参数均在 AI 复盘可调白名单(tuning.WHITELIST)内,
+        #   复盘建议可一键采纳热生效, 人工可在设置页修改
+        "enabled": True,
+        "launch_macd_golden": 2.0,   # 近3根内 MACD 金叉(柱由负转正) 加分
+        "launch_roc_turn": 2.0,      # 近3根内 ROC 由负转正 加分
+        "launch_ma_cross": 2.0,      # 近3根内 短均线刚上穿中均线 加分
+        "launch_adx_first": 1.0,     # ADX 首次达标且走高 加分
+        "launch_bonus_max": 5.0,     # 启动加分封顶(防事件叠加虚高)
+        "overheat_bias": 10.0,       # 乖离率 >= 此值(%) 触发过热扣分
+        "overheat_bias_penalty": 3.0,
+        "overheat_rsi_penalty": 2.0, # RSI 过热(>= rsi_overheat) 扣分(动量分已衰减, 象征性再扣)
+        "overheat_volume": 3.0,      # 量比 >= 此值 触发过热扣分
+        "overheat_volume_penalty": 3.0,
+        "exhaust_penalty": 5.0,      # 衰竭期扣分(RSI 超买 + MACD 红柱缩短)
+        "rsi_overheat": 75.0,        # 阶段判定: RSI >= 此值视为过热
+        "rsi_exhaust": 80.0,         # 阶段判定: RSI >= 此值且红柱缩短视为衰竭
+    },
     "数据源": {
         "priority": ["mootdx", "tencent", "baostock", "eastmoney", "akshare"],
         "enabled": {"mootdx": True, "tencent": True, "baostock": True,

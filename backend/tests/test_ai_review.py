@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+import numpy as np
 from app.core.ai_review.rules import diagnose
 from app.core.ai_review.service import ReviewService
 from app.models.models import AiReview, SignalRecord, Trade
@@ -69,6 +70,76 @@ def test_rule_chase_high_and_counter_trend():
     codes = {i["code"] for i in issues}
     assert "chase_high" in codes
     assert "counter_trend" in codes
+
+
+# ---------------------------------------------------------------- 趋势阶段诊断(方案B)
+def _kline_df(close_list):
+    import pandas as pd
+
+    close = np.array(close_list, dtype=float)
+    open_ = np.concatenate([[close[0]], close[:-1]])
+    high = np.maximum(open_, close) * 1.005
+    low = np.minimum(open_, close) * 0.995
+    volume = np.full(len(close), 5_000_000.0)
+    amount = volume * close
+    dates = pd.bdate_range("2026-03-02", periods=len(close))
+    return pd.DataFrame({
+        "date": dates.strftime("%Y-%m-%d"),
+        "open": open_, "high": high, "low": low, "close": close,
+        "volume": volume, "amount": amount,
+    })
+
+
+def _last_date(df) -> str:
+    return str(df["date"].iloc[-1])
+
+
+def test_rule_buy_on_overheat_stage():
+    """买入日趋势处于过热期 -> 检出 buy_overheat."""
+    base = [100 + i * 0.25 + np.sin(i / 6) * 2 for i in range(170)]
+    df = _kline_df(base + [150, 155, 160, 165, 170, 175, 180, 185, 190, 195, 200, 205])
+    day = _last_date(df)
+    close = float(df["close"].iloc[-1])
+    trades = [_mk_trade("300139", "buy", close, 100, f"{day} 10:00:00")]
+    issues = diagnose(trades, [], klines={"300139": df})
+    assert any(i["code"] == "buy_overheat" for i in issues)
+
+
+def test_rule_buy_on_exhaust_stage():
+    """买入日趋势处于衰竭期 -> 检出 buy_exhaust."""
+    base = [100 + i * 0.25 + np.sin(i / 6) * 2 for i in range(170)]
+    df = _kline_df(base + [150, 157, 164, 172, 180, 189, 198, 208, 215, 213])
+    day = _last_date(df)
+    close = float(df["close"].iloc[-1])
+    trades = [_mk_trade("300139", "buy", close, 100, f"{day} 10:00:00")]
+    issues = diagnose(trades, [], klines={"300139": df})
+    assert any(i["code"] == "buy_exhaust" for i in issues)
+
+
+def test_stage_stats_links_closed_pnl():
+    """stage_stats: 阶段分布统计 + 平仓盈亏按最近买入关联."""
+    from app.core.ai_review.rules import stage_stats
+
+    base = [100 + i * 0.25 + np.sin(i / 6) * 2 for i in range(170)]
+    over_df = _kline_df(base + [150, 155, 160, 165, 170, 175, 180, 185, 190, 195, 200, 205])
+    over_day, over_close = _last_date(over_df), float(over_df["close"].iloc[-1])
+    # 启动行情: 震荡后温和突破
+    flat = [100 + np.sin(i / 3) * 4 + np.sin(i / 11) * 2 for i in range(150)]
+    launch_df = _kline_df(flat + [101, 102.2, 103.6, 105.2])
+    launch_day, launch_close = _last_date(launch_df), float(launch_df["close"].iloc[-1])
+
+    trades = [
+        _mk_trade("600001", "buy", launch_close, 100, f"{launch_day} 10:00:00"),   # 启动期买入
+        _mk_trade("600001", "sell", launch_close * 1.1, 100, f"{launch_day} 10:00:01",
+                  pnl=launch_close * 0.1 * 100),                                   # 盈利平仓 -> 归 launch
+        _mk_trade("300139", "buy", over_close, 100, f"{over_day} 10:00:00"),       # 过热期买入
+    ]
+    stats = stage_stats(trades, klines={"600001": launch_df, "300139": over_df})
+    assert stats.get("launch", {}).get("n") == 1
+    assert stats.get("overheat", {}).get("n") == 1
+    assert stats["launch"]["closed"] == 1 and stats["launch"]["wins"] == 1
+    assert stats["launch"]["win_rate"] == 100.0
+    assert stats["launch"]["pnl"] > 0
 
 
 def test_parse_llm_output_json():
