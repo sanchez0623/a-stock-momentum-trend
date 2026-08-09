@@ -186,6 +186,9 @@ function validate(cfg: AnyRec | null): string[] {
     .reduce((s, k) => s + (Number(w[k]) || 0), 0)
   if (Math.abs(ws - 1) > 0.001) errs.push(`评分权重: 五项之和须为 1.00, 当前 ${ws.toFixed(3)}`)
 
+  const se = G('趋势阶段')
+  if (Number(se.rsi_exhaust) <= Number(se.rsi_overheat)) errs.push('趋势阶段: RSI 衰竭线必须大于过热线')
+
   const ds = G('数据源')
   const en = (ds.enabled ?? {}) as Record<string, boolean>
   if (!Object.values(en).some(Boolean)) errs.push('数据源: 至少需要启用一个数据源')
