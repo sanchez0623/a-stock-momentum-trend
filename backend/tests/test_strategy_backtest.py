@@ -120,3 +120,34 @@ def test_strategy_insufficient_data_skipped(monkeypatch):
     _fake_store(monkeypatch, {"SHORT1": short})
     report = run_strategy_backtest(["SHORT1"], initial_capital=1_000_000)
     assert "error" in report or report["meta"]["pool"] == 0
+
+
+def test_strategy_star_board_buy_qty_rule(monkeypatch):
+    """科创板申报合规: 买入 ≥200 股(1股递增); 主板买入 100 整数倍; 卖出不留碎股."""
+    from app.core.backtest.strategy import _round_buy_qty, _sell_qty
+
+    # 科创板: 200 起, 1 股递增
+    assert _round_buy_qty(199, "688146") == 0
+    assert _round_buy_qty(200, "688146") == 200
+    assert _round_buy_qty(205, "688146") == 205
+    # 主板/创业板: 100 整数倍
+    assert _round_buy_qty(99, "000001") == 0
+    assert _round_buy_qty(250, "000001") == 200
+    # 北交所: 100 起, 1 股递增
+    assert _round_buy_qty(99, "830001") == 0
+    assert _round_buy_qty(150, "830001") == 150
+    # 卖出: 剩余不足最小单位 -> 一次性清仓
+    assert _sell_qty(100, 250, "688146") == 250   # 剩 150 < 200 -> 全卖
+    assert _sell_qty(100, 300, "688146") == 100   # 剩 200 >= 200 -> 正常
+    assert _sell_qty(100, 150, "000001") == 150   # 主板剩 50 碎股 -> 全卖
+
+
+def test_strategy_no_odd_lot_on_star_board(monkeypatch):
+    """科创板完整回测: 任何买入 qty >= 200; 卖出后不残留 <200 的碎股持仓."""
+    _fake_store(monkeypatch, {"688001": _win_series()})
+    report = run_strategy_backtest(["688001"], initial_capital=1_000_000)
+    for t in report["trades"]:
+        if t["action"] in ("buy_first", "buy_add", "t_buy"):
+            assert t["qty"] >= 200, f"科创板买入不足200股: {t}"
+        if t["action"] in ("sell_reduce", "t_sell"):
+            assert t["qty"] > 0

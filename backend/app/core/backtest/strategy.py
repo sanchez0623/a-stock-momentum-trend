@@ -63,6 +63,41 @@ def _limit_pct(symbol: str) -> float:
     return DEFAULT_LIMIT
 
 
+# ---------------------------------------------------------------- 申报数量规则(交易所合规)
+# 科创板(688/689): 买入 ≥200 股, 1 股递增
+# 北交所(43/83/87/88/92): 买入 ≥100 股, 1 股递增
+# 主板/创业板(其余): 买入 ≥100 股, 100 股整数倍
+# 卖出: 任意数量可申报, 但卖出后剩余持仓不足最小单位(碎股)时必须一次性全部卖出
+_STAR_PREFIX = ("688", "689")
+_BJ_PREFIX = ("43", "83", "87", "88", "92")
+
+
+def _min_unit(symbol: str) -> int:
+    """最小申报单位(股)."""
+    return 200 if symbol.startswith(_STAR_PREFIX) else 100
+
+
+def _round_buy_qty(raw: int, symbol: str) -> int:
+    """买入数量按板块规则取整: 科创板/北交所 1 股递增(≥下限), 其余 100 整数倍. 不足下限返回 0."""
+    if symbol.startswith(_STAR_PREFIX):
+        return raw if raw >= 200 else 0
+    if symbol.startswith(_BJ_PREFIX):
+        return raw if raw >= 100 else 0
+    qty = raw // 100 * 100
+    return qty if qty >= 100 else 0
+
+
+def _sell_qty(qty: int, pos_qty: int, symbol: str) -> int:
+    """卖出数量合规: 卖出后剩余不足最小单位(碎股)时一次性全部卖出."""
+    if qty <= 0 or pos_qty <= 0:
+        return 0
+    qty = min(qty, pos_qty)
+    remain = pos_qty - qty
+    if 0 < remain < _min_unit(symbol):
+        return pos_qty  # 碎股必须清仓
+    return qty
+
+
 @dataclass
 class Position:
     """回测持仓(与 SignalEngine.PositionInfo 互转)."""
@@ -286,8 +321,9 @@ class StrategyBacktest:
                         self._sell(date, sym, name, open_px * (1 - SLIPPAGE), pos.qty, "sell_stop", sig.reason)
                 elif stype == "SELL_REDUCE":
                     if pos:
-                        qty = max(1, int(pos.qty * REDUCE_RATIO))
-                        self._sell(date, sym, name, open_px * (1 - SLIPPAGE), qty, "sell_reduce", sig.reason)
+                        qty = _sell_qty(max(1, int(pos.qty * REDUCE_RATIO)), pos.qty, sym)
+                        if qty > 0:
+                            self._sell(date, sym, name, open_px * (1 - SLIPPAGE), qty, "sell_reduce", sig.reason)
                 elif stype == "BUY_FIRST":
                     if not gate_open:
                         continue
@@ -295,7 +331,7 @@ class StrategyBacktest:
                     if used_pct >= max_total:
                         continue
                     plan_amount = min(equity_now * plan_ratio * reduced_ratio, self.cash * 0.99)
-                    qty = int(plan_amount / (open_px * (1 + SLIPPAGE)) // 100 * 100)
+                    qty = _round_buy_qty(int(plan_amount / (open_px * (1 + SLIPPAGE))), sym)
                     if qty <= 0:
                         continue
                     self._buy(date, sym, name, open_px * (1 + SLIPPAGE), qty, "buy_first", sig.reason)
@@ -308,7 +344,7 @@ class StrategyBacktest:
                     if stage_idx >= len(pyramid):
                         continue
                     plan_amount = min(equity_now * plan_ratio * pyramid[stage_idx] * reduced_ratio, self.cash * 0.99)
-                    qty = int(plan_amount / (open_px * (1 + SLIPPAGE)) // 100 * 100)
+                    qty = _round_buy_qty(int(plan_amount / (open_px * (1 + SLIPPAGE))), sym)
                     if qty <= 0:
                         continue
                     self._buy(date, sym, name, open_px * (1 + SLIPPAGE), qty, "buy_add", sig.reason)
@@ -347,9 +383,14 @@ class StrategyBacktest:
                         continue  # 除权/脏数据日不参与做T
                     name = pool[sym][1]
                     t_ratio = float(t_cfg.get("t_position_ratio", 0.3))
+                    min_qty = _min_unit(sym)
                     if high_px >= boll_u * 0.995:
+                        if pos.qty <= min_qty:
+                            continue  # 底仓不足最小单位, 不做T高抛
                         t_qty = max(1, int(pos.qty * t_ratio))
-                        t_qty = min(t_qty, pos.qty)
+                        t_qty = min(t_qty, pos.qty - min_qty)  # 保留足额底仓(不产生碎股)
+                        if t_qty <= 0:
+                            continue
                         if open_px > down_limit and high_px > 0:
                             self._sell(date, sym, name, high_px * (1 - SLIPPAGE), t_qty, "t_sell", "日内冲布林上轨,做T高抛")
                             t_outstanding[sym] = t_outstanding.get(sym, 0) + t_qty
@@ -357,7 +398,7 @@ class StrategyBacktest:
                         want = t_outstanding.get(sym, 0)
                         if want <= 0:
                             want = max(1, int(pos.qty * t_ratio))
-                        t_qty = min(want, int(self.cash / (low_px * (1 + SLIPPAGE)) // 100 * 100))
+                        t_qty = min(want, _round_buy_qty(int(self.cash / (low_px * (1 + SLIPPAGE))), sym))
                         if t_qty > 0 and open_px < up_limit:
                             self._buy(date, sym, name, low_px * (1 + SLIPPAGE), t_qty, "t_buy", "日内回踩布林下轨,做T低吸")
                             t_outstanding[sym] = max(0, t_outstanding.get(sym, 0) - t_qty)
