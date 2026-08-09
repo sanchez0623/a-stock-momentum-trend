@@ -75,12 +75,21 @@ def _load_cache_status(target: int) -> dict[str, str]:
     return status
 
 
+# 补拉排除的代码段: "92"=北交所新代码段(920xxx, 上市时间短/数据不全/流动性差), 默认不补拉
+EXCLUDE_PREFIXES = ("92",)
+
+
+def _filter_symbols(symbols: list[str]) -> list[str]:
+    """过滤掉不适于补拉的代码段(92 开头北交所)."""
+    return [s for s in symbols if not s.startswith(EXCLUDE_PREFIXES)]
+
+
 def _all_symbols() -> list[str]:
-    """全市场股票列表(stock 表)."""
+    """全市场股票列表(stock 表), 已排除 92 开头(北交所)."""
     try:
         with Session(db.engine) as s:
             rows = s.exec(select(Stock.symbol)).all()
-        return sorted({str(r) for r in rows if r})
+        return _filter_symbols(sorted({str(r) for r in rows if r}))
     except Exception as exc:  # noqa: BLE001
         logger.warning("backfill: 读取股票列表失败: %s", exc)
         return []

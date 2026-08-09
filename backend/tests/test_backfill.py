@@ -31,6 +31,13 @@ def test_fresh_date_recent_and_old():
 
 
 # ---------------------------------------------------------------- pending_symbols
+def test_filter_symbols_excludes_92():
+    """92 开头(北交所新代码段)不参与补拉."""
+    syms = ["920001", "920999", "600111", "300750", "832000"]
+    assert backfill._filter_symbols(syms) == ["600111", "300750", "832000"]
+    assert backfill._filter_symbols(["920001"]) == []
+
+
 def test_pending_symbols(monkeypatch):
     monkeypatch.setattr(backfill, "_all_symbols", lambda: ["a", "b", "c", "d"])
     monkeypatch.setattr(backfill, "_load_cache_status",
