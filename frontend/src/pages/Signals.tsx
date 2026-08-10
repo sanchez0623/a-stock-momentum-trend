@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { motion } from 'framer-motion'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { api } from '../api/client'
 import type { PositionItem, Signal, SignalRecord } from '../api/client'
 import { Button, Card, ErrorBox, EmptyState, FormRow, ListRow, Loading, Tag, inputStyle, toast } from '../components/ui'
@@ -20,6 +20,7 @@ interface ResultItem {
 
 export default function Signals() {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const [records, setRecords] = useState<SignalRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -35,6 +36,15 @@ export default function Signals() {
   useEffect(() => {
     refresh().finally(() => setLoading(false))
     api.positions().then((p) => setPositions(p.positions)).catch(() => {})
+    // 从选股结果跳转而来(?symbol=xxx): 自动填充代码并评估该票信号
+    const qs = searchParams.get('symbol')
+    if (qs) {
+      setSymbol(qs)
+      const nm = searchParams.get('name')
+      if (nm) setName(nm)
+      evaluate([qs])
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅初始化时执行一次
   }, [])
 
   // 单个/多个代码评估(逗号或空格分隔), 统一走批量接口

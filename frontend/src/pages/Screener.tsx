@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { api } from '../api/client'
 import type { IndustryNode, ScreenerHistoryItem, ScreenerPreset, ScreenerTask, UniverseStats } from '../api/client'
 import { Button, Card, ConfirmDialog, EmptyState, ErrorBox, Loading, Tag, toast } from '../components/ui'
@@ -67,6 +68,7 @@ const LEVEL_OPTIONS = [
 ]
 
 export default function Screener() {
+  const navigate = useNavigate()
   const [task, setTask] = useState<ScreenerTask | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -707,6 +709,7 @@ export default function Screener() {
                       <th className="px-1.5 py-2 text-right">额(亿)</th>
                       <th className="px-1.5 py-2">关注度</th>
                       <th className="px-1.5 py-2" />
+                      <th className="px-1.5 py-2" />
                     </tr>
                   </thead>
                   <tbody>
@@ -745,6 +748,19 @@ export default function Screener() {
                             <td className="px-1.5 py-2 text-right text-ink-muted">{r.amount_avg?.toFixed(1) ?? '-'}</td>
                             <td className="px-1.5 py-2">
                               <Tag color={r.attention === '强烈关注' ? '#dc2626' : r.attention === '重点观察' ? '#ea580c' : '#64748b'}>{r.attention}</Tag>
+                            </td>
+                            {/* 快速进入信号流程: 跳转信号中心并自动评估该票 */}
+                            <td className="px-1.5 py-2 text-center">
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  navigate(`/signals?symbol=${r.symbol}&name=${encodeURIComponent(r.name || '')}`)
+                                }}
+                                className="cursor-pointer border-none bg-transparent text-[12px] text-link hover:underline"
+                              >
+                                看信号
+                              </button>
                             </td>
                             <td className="px-1.5 py-2 text-center text-[10px] text-ink-faint">{open ? '▲' : '▼'}</td>
                           </tr>
