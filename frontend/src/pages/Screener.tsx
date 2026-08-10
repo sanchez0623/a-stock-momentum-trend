@@ -640,7 +640,14 @@ export default function Screener() {
         <Card title={`排名 Top ${task.result.length}(日成交额 ≥ 5000万)`} className="mt-3">
           {task.result.length === 0 ? (
             <EmptyState>
-              无结果。当前股票列表可能降级为自选池(东财列表接口风控期), 或均未达评分/流动性门槛。
+              {conditionChips.length > 0 ? (
+                <>
+                  当前条件组合无匹配股票：{conditionChips.map((c) => c.label).join(' ∩ ')} 交集可能为空。
+                  常见原因: 指数池(如上证50)内没有所选行业/板块的票。建议点「全部A股」清除指数池限制，或放宽板块/行业条件。
+                </>
+              ) : (
+                '无结果。当前股票列表可能降级为自选池(东财列表接口风控期), 或均未达评分/流动性门槛。'
+              )}
             </EmptyState>
           ) : filteredResult.length === 0 ? (
             <EmptyState>该阶段筛选下无结果, 切换其他阶段查看。</EmptyState>
