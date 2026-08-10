@@ -215,7 +215,8 @@ export default function Screener() {
         'all', topN,
         boards.join(',') || undefined,
         industries.join(',') || undefined,
-        universeSel.join(',') || undefined,
+        // 关键: 未选指数池时显式传 'all'(而不是 undefined), 否则后端会回退到配置默认 sz50
+        universeSel.join(',') || 'all',
         { perIndustry, industryLevel, applyGate, applyFactors },
       )
       toast.info('扫描已启动, 完成后自动刷新结果')
