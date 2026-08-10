@@ -94,6 +94,9 @@ export const api = {
   },
   screenerResult: (taskId: string) => request<ScreenerTask>(`/screener/result?task_id=${taskId}`),
   screenerLatest: () => request<ScreenerTask | null>('/screener/result/latest'),
+  screenerHistory: () => request<{ items: ScreenerHistoryItem[] }>('/screener/history'),
+  screenerHistoryDetail: (id: number) => request<ScreenerHistoryItem>(`/screener/history/${id}`),
+  deleteScreenerHistory: (id: number) => request<{ id: number }>(`/screener/history/${id}`, { method: 'DELETE' }),
   /** 选股池(指数成分股)缓存概况: key=指数标识, value=数量/更新时间/名称 */
   universeStats: () => request<UniverseStats>('/screener/universe/stats'),
   /** 可选行业列表(合并东财行业+申万一级, 按股票数降序) */
@@ -233,6 +236,8 @@ export interface Portfolio {
   /** 已摊入持仓的买入手续费合计 */
   fee_cost: number
   unrealized_pnl: number
+  /** 已实现盈亏(历史卖出净额, 已扣双边手续费) */
+  realized_pnl: number
   unrealized_pct: number
 }
 
@@ -356,6 +361,27 @@ export interface ScreenerTask {
     event_score?: number
   }>
   error: string
+}
+
+/** 选股扫描历史(列表项不含结果, 点击后再取详情) */
+export interface ScreenerHistoryItem {
+  id: number
+  time: string
+  market: string
+  board: string
+  industry: string
+  top_n: number
+  per_industry: number
+  industry_level: string
+  apply_gate: boolean
+  universe: string
+  apply_factors: boolean
+  total: number
+  result_count: number
+  status: string
+  /** 仅详情接口返回 */
+  result?: ScreenerTask['result']
+  error?: string
 }
 
 // ---------------------------------------------------------------- 回测中心类型

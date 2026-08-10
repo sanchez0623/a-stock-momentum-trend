@@ -90,14 +90,14 @@ export default function Watchlist() {
     }
   }
 
-  // 资金账户派生(后端只存启动资金; 可用/总权益按实时持仓市值计算):
-  //   可用资金 = 启动资金 - 持仓市值
-  //   总权益   = 持仓市值 + 可用资金 = 启动资金
+  // 资金账户派生(后端只存启动资金; 可用/总权益按 已实现盈亏 + 实时持仓 计算):
+  //   可用资金 = 启动资金 + 已实现盈亏 - 持仓成本(含费)
+  //   总权益   = 可用资金 + 持仓市值 = 启动资金 + 已实现盈亏 + 浮动盈亏
   const availableCap = account && portfolio
-    ? account.start_capital - portfolio.market_value
+    ? account.start_capital + portfolio.realized_pnl - portfolio.cost_value
     : null
   const totalEquity = account && portfolio
-    ? account.start_capital
+    ? account.start_capital + portfolio.realized_pnl + portfolio.unrealized_pnl
     : null
 
   if (loading) return <Loading />
@@ -363,7 +363,7 @@ function AccountCard({
             <span>{totalEquity != null ? fmtMoney(totalEquity) : '—'}</span>
           </div>
           <div className="text-[11px] text-ink-faint">
-            可用资金 = 启动资金 − 持仓市值, 总权益 = 持仓市值 + 可用资金 = 启动资金; 买入抬高持仓市值, 可用资金随之下降, 自动同步。
+            可用资金 = 启动资金 + 已实现盈亏 − 持仓成本(含费); 总权益 = 启动资金 + 已实现盈亏 + 浮动盈亏; 买入消耗资金, 卖出落袋利润, 自动同步。
           </div>
         </div>
       )}
