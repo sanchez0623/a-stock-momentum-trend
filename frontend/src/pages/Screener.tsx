@@ -400,6 +400,16 @@ export default function Screener() {
           )}
         </div>
         {universeNote && <p className="mt-2 text-[11px] text-[#ea580c]">{universeNote}</p>}
+        {universeSel.length > 0 ? (
+          <div className="mt-1.5 text-[11px] text-[#ea580c]">
+            当前限制在指数池内（{universeSel.map((u) => universeLabelOf(u)).join('、')}成分 ∩ 其他条件）。
+            默认上证50（扫描最快）；点「全部A股」可清除指数池限制扫全A（耗时较长）。
+          </div>
+        ) : (
+          <div className="mt-1.5 text-[11px] text-ink-faint">
+            当前不限指数池（扫描全A，耗时较长；建议选择指数池加速）。
+          </div>
+        )}
 
         <div className="my-3 border-t border-divider" />
 
