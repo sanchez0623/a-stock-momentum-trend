@@ -172,6 +172,23 @@ export default function Screener() {
     }
   }
 
+  // 各阶段命中数(筛选条上显示, 随结果/筛选自动更新)
+  const stageCounts = useMemo(() => {
+    const counts: Record<string, number> = { all: task?.result.length ?? 0 }
+    for (const r of task?.result ?? []) {
+      const k = stageKeyOf(r.stage)
+      counts[k] = (counts[k] ?? 0) + 1
+    }
+    return counts
+  }, [task])
+
+  // 按阶段筛选后的结果(历史回看与实时任务共用同一渲染)
+  const filteredResult = useMemo(() => {
+    const list = task?.result ?? []
+    if (!stageFilter || stageFilter === 'all') return list
+    return list.filter((r) => stageKeyOf(r.stage) === stageFilter)
+  }, [task, stageFilter])
+
   if (loading) return <Loading />
 
   const scanning = running || (task?.status === 'running' || task?.status === 'pending')
@@ -225,23 +242,6 @@ export default function Screener() {
     if (!h.apply_factors) parts.push('因子关')
     return parts.join(' · ') || '全A'
   }
-
-  // 各阶段命中数(筛选条上显示, 随结果/筛选自动更新)
-  const stageCounts = useMemo(() => {
-    const counts: Record<string, number> = { all: task?.result.length ?? 0 }
-    for (const r of task?.result ?? []) {
-      const k = stageKeyOf(r.stage)
-      counts[k] = (counts[k] ?? 0) + 1
-    }
-    return counts
-  }, [task])
-
-  // 按阶段筛选后的结果(历史回看与实时任务共用同一渲染)
-  const filteredResult = useMemo(() => {
-    const list = task?.result ?? []
-    if (!stageFilter || stageFilter === 'all') return list
-    return list.filter((r) => stageKeyOf(r.stage) === stageFilter)
-  }, [task, stageFilter])
 
 
   const selectedChips = [
