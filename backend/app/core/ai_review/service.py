@@ -33,8 +33,10 @@ class ReviewService:
     # ------------------------------------------------------------ 范围
     @staticmethod
     def _scope_range(scope: str) -> tuple[str, str]:
-        """解析范围: 'week' | 'month' | 'all' | 'YYYY-MM-DD..YYYY-MM-DD'."""
+        """解析范围: 'day' | 'week' | 'month' | 'all' | 'YYYY-MM-DD..YYYY-MM-DD'."""
         today = dt.date.today()
+        if scope == "day":
+            return today.isoformat(), today.isoformat()
         if scope == "week":
             monday = today - dt.timedelta(days=today.weekday())
             return monday.isoformat(), today.isoformat()

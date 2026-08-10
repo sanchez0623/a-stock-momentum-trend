@@ -155,6 +155,42 @@ def test_parse_llm_output_plain_text():
     assert suggestions  # 拆行兜底
 
 
+def test_review_day_scope_only_today(tmp_engine):
+    """day 范围只统计今天的交易, 历史交易不计入."""
+    import datetime as dt
+
+    from app import db
+    from app.core.ai_review.service import ReviewService
+    from sqlmodel import Session
+
+    today = dt.date.today().isoformat()
+    with Session(db.engine) as s:
+        s.add(_mk_trade("300139", "buy", 10, 100, f"{today} 10:00:00"))
+        s.add(_mk_trade("600000", "buy", 10, 100, "2026-01-01 10:00:00"))  # 旧交易, 不应计入
+        s.commit()
+
+    review = asyncio.run(ReviewService().run("day"))
+    assert review.range == "day"
+    result = json.loads(review.rule_result_json)
+    assert result["stats"]["trades"] == 1  # 仅今日一笔
+
+
+def test_review_scope_range_mapping():
+    """范围解析: day 精确到今日; week/month/all 各自正确边界."""
+    import datetime as dt
+
+    today = dt.date.today()
+    start, end = ReviewService._scope_range("day")
+    assert start == end == today.isoformat()
+    start, end = ReviewService._scope_range("week")
+    assert start == (today - dt.timedelta(days=today.weekday())).isoformat()
+    assert end == today.isoformat()
+    start, end = ReviewService._scope_range("month")
+    assert start == today.replace(day=1).isoformat()
+    assert ReviewService._scope_range("all") == ("", "")
+    assert ReviewService._scope_range("2026-08-01..2026-08-07") == ("2026-08-01", "2026-08-07")
+
+
 # ---------------------------------------------------------------- 复盘服务
 def test_review_run_without_llm(tmp_engine):
     import asyncio
