@@ -180,6 +180,7 @@ export default function AiReview() {
           <label className="flex items-center gap-1.5 text-[13px]">
             复盘范围
             <select value={scope} onChange={(e) => setScope(e.target.value)} style={inputStyle} className="w-24">
+              <option value="day">今日</option>
               <option value="week">本周</option>
               <option value="month">本月</option>
               <option value="all">全部</option>

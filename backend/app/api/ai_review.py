@@ -30,7 +30,7 @@ _tasks: dict[str, dict[str, Any]] = {}
 
 
 class RunBody(BaseModel):
-    scope: str = "week"  # week | month | all | YYYY-MM-DD..YYYY-MM-DD
+    scope: str = "week"  # day | week | month | all | YYYY-MM-DD..YYYY-MM-DD
 
 
 class SuggestionBody(BaseModel):
