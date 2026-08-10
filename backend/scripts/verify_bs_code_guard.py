@@ -1,6 +1,7 @@
 """验证 baostock 代码转换 + 格式闸门: 非法代码绝不传给 baostock.
 
-不联网、不登录, 纯函数 + 拦截检查. 直接 `python scripts/test_bs_code_guard.py` 运行.
+不联网、不登录, 纯函数 + 拦截检查. 直接 `python scripts/verify_bs_code_guard.py` 运行.
+注意: 以 verify_ 开头而非 test_, 避免被 pytest 当作测试收集(脚本顶层 sys.exit).
 """
 import sys
 import os

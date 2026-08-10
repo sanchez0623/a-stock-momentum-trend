@@ -1,7 +1,8 @@
 """联网验证 get_kline 格式闸门:
 1. 非法 secid(旧代码 bug 模式: 把 6 位裸代码当 secid 传) -> 拦截, 不请求 baostock, 返回空 df
 2. 合法 6 位股票代码 -> 正常放行, 返回真实 K 线
-需 baostock 已装且联网。"""
+需 baostock 已装且联网。
+注意: 以 verify_ 开头而非 test_, 避免被 pytest 当作测试收集(脚本顶层 sys.exit)."""
 import sys
 import os
 import asyncio

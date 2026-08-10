@@ -8,8 +8,8 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
+from sqlalchemy import event, text
 from sqlmodel import Session, SQLModel, create_engine
-from sqlalchemy import text
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +23,22 @@ engine = create_engine(
     connect_args={"check_same_thread": False},
     pool_pre_ping=True,
 )
+
+
+@event.listens_for(engine, "connect")
+def _set_sqlite_pragma(dbapi_connection, connection_record) -> None:
+    """SQLite 连接级优化: WAL(读写互不阻塞) + busy_timeout(锁冲突等待而非立即报错).
+
+    WAL 为库级持久设置, 此处保证每个新连接都带上 busy_timeout/synchronous;
+    盘后预热写缓存与 API 并发读写场景下可避免 'database is locked' 间歇失败.
+    """
+    cursor = dbapi_connection.cursor()
+    try:
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA busy_timeout=5000")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+    finally:
+        cursor.close()
 
 
 def init_db() -> None:

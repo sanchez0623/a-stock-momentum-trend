@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
+from app import db
 from app.api.deps import get_session
 from app.core.datasource import data_source_manager
 from app.core.position import position_manager
@@ -73,8 +76,22 @@ def _store_signal(session: Session, symbol: str, name: str, signal: Signal | Non
     ))
 
 
-async def _evaluate_one(symbol: str, session: Session) -> dict:
-    """评估单只票(不落库). 返回 {symbol, name, price, signal|None, error?}."""
+@contextmanager
+def _signal_session(session: Session | None) -> Iterator[Session]:
+    """单只评估复用调用方会话(事务一致); 批量并发评估不传则独立短会话(并发安全)."""
+    if session is not None:
+        yield session
+    else:
+        with db.session_scope() as s:
+            yield s
+
+
+async def _evaluate_one(symbol: str, session: Session | None = None) -> dict:
+    """评估单只票(有信号则落库). 返回 {symbol, name, price, signal|None, error?}.
+
+    批量并发评估时 session 传 None: 每只票用独立短会话, 避免多协程共享同一
+    Session 的并发写竞态(identity map / pending 状态交错属未定义行为)。
+    """
     try:
         df = await data_source_manager.get_kline(symbol, "daily", 120)
         if df is None or df.empty:
@@ -83,18 +100,21 @@ async def _evaluate_one(symbol: str, session: Session) -> dict:
         quotes = await data_source_manager.get_realtime_quote([symbol])
         if quotes:
             quote = quotes[0]
-        pos = position_manager.get_position(symbol, session)
-        pos_info = PositionInfo(symbol=symbol, cost=pos.cost, qty=pos.qty) if pos else None
-        signal = engine.evaluate(
-            symbol,
-            name=quote.name if quote else "",
-            kline_df=df,
-            position=pos_info,
-            quote_price=quote.price if quote else None,
-            quote_high=quote.high if quote else None,
-            quote_low=quote.low if quote else None,
-        )
-        _store_signal(session, symbol, quote.name if quote else "", signal)
+        with _signal_session(session) as s:
+            pos = position_manager.get_position(symbol, s)
+            pos_info = PositionInfo(symbol=symbol, cost=pos.cost, qty=pos.qty) if pos else None
+            signal = engine.evaluate(
+                symbol,
+                name=quote.name if quote else "",
+                kline_df=df,
+                position=pos_info,
+                quote_price=quote.price if quote else None,
+                quote_high=quote.high if quote else None,
+                quote_low=quote.low if quote else None,
+            )
+            _store_signal(s, symbol, quote.name if quote else "", signal)
+            # 独立短会话需自行提交(复用会话时亦幂等提交, 保证数据立即可见)
+            s.commit()
         return {
             "symbol": symbol,
             "name": quote.name if quote else "",
@@ -116,20 +136,27 @@ async def evaluate_symbol(symbol: str, session: Session = Depends(get_session)) 
 
 
 @router.post("/signals/evaluate-batch")
-async def evaluate_batch(body: EvaluateBatchBody, session: Session = Depends(get_session)) -> dict:
-    """批量评估多只(持仓一键分析): 并发取数, 信号落库, 返回每只的结果列表."""
-    results = await _evaluate_many(body.symbols, session)
-    session.commit()
+async def evaluate_batch(body: EvaluateBatchBody) -> dict:
+    """批量评估多只(持仓一键分析): 并发取数, 信号落库, 返回每只的结果列表.
+
+    每只票独立短会话落库, 不共享请求级 Session, 避免并发写竞态.
+    """
+    results = await _evaluate_many(body.symbols)
     return {"code": 0, "msg": "ok", "data": results}
 
 
-async def _evaluate_many(symbols: list[str], session: Session) -> list[dict]:
+async def _evaluate_many(symbols: list[str]) -> list[dict]:
+    """批量评估(持仓一键分析): 并发取数, 信号落库.
+
+    每只票使用独立短会话(_evaluate_one 内部分配), 多协程不共享 Session;
+    信号各自提交, 单票失败不影响其余.
+    """
     import asyncio
 
     sem = asyncio.Semaphore(5)  # 并发 5, 防止对数据源限流
 
     async def guarded(sym: str) -> dict:
         async with sem:
-            return await _evaluate_one(sym, session)
+            return await _evaluate_one(sym)
 
     return list(await asyncio.gather(*(guarded(s) for s in symbols)))
