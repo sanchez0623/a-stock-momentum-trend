@@ -70,8 +70,12 @@ async def run_screener(
 
 # ---------------------------------------------------------------- 分类映射
 @router.post("/screener/classification/refresh")
-async def refresh_classification() -> dict:
-    """刷新全量分类映射(申万 L1/L2/L3 + 行业/概念板块). 异步, 返回 task_id."""
+async def refresh_classification(source: str = Query("auto", pattern="^(auto|lixinger|akshare)$")) -> dict:
+    """刷新全量分类映射(申万 L1/L2/L3 + 行业/概念板块). 异步, 返回 task_id.
+
+    source: auto=理杏仁(申万2021)优先, 失败回落 akshare; lixinger=仅理杏仁;
+           akshare=仅原逻辑(legulegu 申万 + 东财板块).
+    """
     from app.core import classification as clf_mod
 
     task_id = scan_tasks.create("classification", 0)
@@ -80,7 +84,8 @@ async def refresh_classification() -> dict:
     async def _run() -> None:
         try:
             stats = await clf_mod.refresh_classification(
-                progress_cb=lambda msg, p: scan_tasks.progress(task_id, int(p * 100), 100)
+                progress_cb=lambda msg, p: scan_tasks.progress(task_id, int(p * 100), 100),
+                source=source,
             )
             scan_tasks.update(task_id, status="done", progress=100, result=stats)
         except Exception as exc:  # noqa: BLE001

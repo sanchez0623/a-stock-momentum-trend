@@ -204,4 +204,5 @@ export const DATA_SOURCE_LABELS: Record<string, string> = {
   tencent: '腾讯行情（稳定，实时快照）',
   eastmoney: '东方财富（数据全，有连接级风控）',
   akshare: 'AKShare（兜底，较慢）',
+  lixinger: '理杏仁（申万2021行业分级，分类刷新专用）',
 }

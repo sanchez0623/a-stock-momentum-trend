@@ -15,3 +15,7 @@ baostock>=0.8.8
 
 # === 可选数据源(申万行业分类/板块映射, classification.refresh_classification 依赖) ===
 akshare>=1.14
+
+# === AI 复盘两步链(langchain 未安装时自动降级旧单步路径) ===
+langchain-core>=1.0
+langchain-openai>=1.0

@@ -261,6 +261,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "max_tokens": 2000,
         "timeout_sec": 60,
         "enabled": False,
+        # 复盘记忆 RAG: 历史复盘 embedding 入库, 本次复盘检索相似经验注入两步链
+        "embedding": {
+            "enabled": False,
+            "base_url": "https://api.siliconflow.cn/v1",
+            "api_key": "",
+            "model": "BAAI/bge-m3",
+            "timeout_sec": 30,
+        },
     },
     "手续费": {
         "commission_rate": 0.00005,      # 佣金: 万 0.5
@@ -278,6 +286,10 @@ _ENV_MAP: dict[str, str] = {
     "LLM_BASE_URL": "llm.base_url",
     "LLM_API_KEY": "llm.api_key",
     "LLM_MODEL": "llm.model",
+    "EMBEDDING_BASE_URL": "llm.embedding.base_url",
+    "EMBEDDING_API_KEY": "llm.embedding.api_key",
+    "EMBEDDING_MODEL": "llm.embedding.model",
+    "EMBEDDING_ENABLED": "llm.embedding.enabled",
     "EASTMONEY_INTERVAL_SEC": "数据源.eastmoney.interval_sec",
     "EASTMONEY_MAX_WORKERS": "数据源.eastmoney.max_workers",
     "ENABLE_EASTMONEY_PATCH": "数据源.eastmoney.enable_patch",

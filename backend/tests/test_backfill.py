@@ -30,6 +30,19 @@ def test_fresh_date_recent_and_old():
     assert not backfill._fresh_date("bad-date")
 
 
+def test_is_deeply_insufficient():
+    """老股但缓存明显不足(源没给全) -> 重拉; 次新/接近目标 -> 已尽力."""
+    today = dt.date.today()
+    # 老股(首日 600 天前)只缓存 120 根 -> 源没给全, 需重拉
+    bars_old = _df(120, today.isoformat()).to_dict("records")
+    bars_old[0]["date"] = (today - dt.timedelta(days=600)).isoformat()
+    assert backfill._is_deeply_insufficient(bars_old, 260)
+    # 次新股 100 根(首日即上市日附近) -> 已尽力
+    assert not backfill._is_deeply_insufficient(_df(100, today.isoformat()).to_dict("records"), 260)
+    # 达成度 >= 90%(240 根) -> 接近目标, 已尽力
+    assert not backfill._is_deeply_insufficient(_df(240, today.isoformat()).to_dict("records"), 260)
+
+
 # ---------------------------------------------------------------- pending_symbols
 def test_filter_symbols_excludes_92():
     """92 开头(北交所新代码段)不参与补拉."""

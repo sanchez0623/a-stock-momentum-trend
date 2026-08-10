@@ -269,6 +269,17 @@ class AiReview(SQLModel, table=True):
     rule_result_json: str = Field(default="{}")
 
 
+class ReviewMemory(SQLModel, table=True):
+    """复盘记忆条目(RAG): 历史复盘的向量化文本, 供后续复盘检索注入."""
+
+    id: int | None = Field(default=None, primary_key=True)
+    review_id: int = Field(index=True)         # 关联 AiReview.id
+    time: str = Field(default_factory=_now, index=True)
+    text: str = Field(default="")              # 记忆条目文本(问题+建议+采纳结果+效果)
+    embedding_json: str = Field(default="[]")  # 向量(JSON 数组)
+    model: str = Field(default="")             # embedding 模型名
+
+
 class ConfigChange(SQLModel, table=True):
     """参数变更记录(复盘建议采纳 -> 写回配置), 支持一键回滚与效果追踪骨架."""
 

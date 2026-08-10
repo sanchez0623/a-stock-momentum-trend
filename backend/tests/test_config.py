@@ -53,6 +53,28 @@ def test_env_overrides(monkeypatch):
     assert cfg["数据源"]["proxy_pool"] == ["http://p1:1", "http://p2:2"]
 
 
+def test_env_overrides_embedding(monkeypatch):
+    """embedding 配置段 env 覆盖: 开关/地址/key/模型 (复盘记忆 RAG 依赖此开关)."""
+    cm = ConfigManager(data_dir="__tmp_config_test__")
+    monkeypatch.setenv("EMBEDDING_ENABLED", "1")
+    monkeypatch.setenv("EMBEDDING_BASE_URL", "https://api.siliconflow.cn/v1")
+    monkeypatch.setenv("EMBEDDING_API_KEY", "sk-embed")
+    monkeypatch.setenv("EMBEDDING_MODEL", "BAAI/bge-m3")
+    cfg = cm.get()
+    _apply_env_overrides(cfg)
+    emb = cfg["llm"]["embedding"]
+    assert emb["enabled"] is True
+    assert emb["base_url"] == "https://api.siliconflow.cn/v1"
+    assert emb["api_key"] == "sk-embed"
+    assert emb["model"] == "BAAI/bge-m3"
+
+
+def test_embedding_disabled_by_default():
+    """无 env 覆盖时 embedding 默认关闭(防误扣费)."""
+    cm = ConfigManager(data_dir="__tmp_config_test__")
+    assert cm.get()["llm"]["embedding"]["enabled"] is False
+
+
 def test_masked_hides_api_key(monkeypatch):
     cm = ConfigManager(data_dir="__tmp_config_test__")
     monkeypatch.setenv("LLM_API_KEY", "sk-secret")

@@ -46,8 +46,24 @@ def _fresh_date(date_str: str) -> bool:
         return False
 
 
+def _is_deeply_insufficient(bars: list[dict], target: int) -> bool:
+    """判定"短但新鲜"的缓存是否真的已尽力, 还是源没给全需重拉.
+
+    - 达成度 >= 90%: 接近目标, 不再折腾 -> 已尽力
+    - 首根日期距今 <= 一年(约 365 天): 真次新股, 上市时间就短 -> 已尽力
+    - 否则: 老股但缓存明显不足(如仅 80 根) -> 源没给全, 标记待补重拉
+    """
+    if len(bars) >= target * 0.9:
+        return False
+    try:
+        first = dt.date.fromisoformat(str(bars[0].get("date", ""))[:10])
+        return (dt.date.today() - first).days > 365
+    except (ValueError, TypeError):
+        return False  # 首日无法解析, 保守不重拉
+
+
 def _load_cache_status(target: int) -> dict[str, str]:
-    """读取全部日线缓存, 返回 symbol -> 状态: ok(达标或已尽力) / stale(陈旧) / missing(无)."""
+    """读取全部日线缓存, 返回 symbol -> 状态: ok(达标或已尽力) / stale(陈旧/源没给全) / missing(无)."""
     status: dict[str, str] = {}
     try:
         with Session(db.engine) as s:
@@ -69,7 +85,11 @@ def _load_cache_status(target: int) -> dict[str, str]:
         elif len(bars) >= target:
             status[str(sym)] = "ok"
         elif _fresh_date(bars[-1].get("date", "")):
-            status[str(sym)] = "ok"  # 历史短但数据新鲜(次新股/源只给这么多), 视为已尽力
+            # 数据新鲜但不足: 只有次新/接近目标才视为已尽力, 老股不足则重拉
+            if _is_deeply_insufficient(bars, target):
+                status[str(sym)] = "stale"
+            else:
+                status[str(sym)] = "ok"
         else:
             status[str(sym)] = "stale"
     return status
