@@ -106,6 +106,13 @@ class ReviewService:
             s.add(review)
             s.commit()
             s.refresh(review)
+        # 复盘记忆索引(embedding 未启用/调用失败均只记日志, 不影响主流程)
+        try:
+            from app.core.ai_review.memory import index_review
+
+            await index_review(review)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("复盘记忆索引跳过: %s", exc)
         return review
 
     @staticmethod
@@ -183,6 +190,49 @@ class ReviewService:
     @staticmethod
     async def _llm_review(trades: list[Any], signals: list[Any], issues: list[dict],
                           stats: dict, llm_cfg: dict) -> tuple[str, list[dict], str]:
+        """LLM 深度复盘: 优先 LangChain 两步链(行为归纳 -> 建议生成).
+
+        langchain 依赖缺失时降级旧单步路径(_llm_review_legacy);
+        LLM 调用/解析失败仍抛 LLMError, 由 run() 降级为纯规则诊断。
+        """
+        try:
+            from app.core.ai_review.chain import LangChainUnavailable, run_review_chain
+            from app.core.ai_review.memory import memory_context
+
+            try:
+                # 复盘记忆 RAG: 用当前问题+统计检索相似历史, 注入两步链 Step2 做效果归因
+                query = (
+                    "问题: " + "; ".join(str(i.get("title", "")) for i in issues)
+                    + f"; 胜率{stats.get('win_rate', 0)}%, 盈亏{stats.get('total_pnl', 0)}元"
+                )
+                memory_lines = await memory_context(query, k=3)
+                out, model = await run_review_chain(
+                    trades, signals, issues, stats, llm_cfg, memory_lines)
+            except LangChainUnavailable:
+                logger.info("langchain 未安装, AI 复盘降级为旧单步路径")
+                return await ReviewService._llm_review_legacy(trades, signals, issues, stats, llm_cfg)
+        except ImportError:  # chain 模块自身 import 失败(依赖缺失), 同样降级
+            return await ReviewService._llm_review_legacy(trades, signals, issues, stats, llm_cfg)
+
+        # 两步链输出 -> 现有 suggestions 结构(复用 sanitize_llm_patch 白名单护栏)
+        suggestions: list[dict[str, Any]] = []
+        for item in out.suggestions:
+            sg: dict[str, Any] = {"text": item.text, "status": "pending", "source": "llm"}
+            raw_patch = item.patch.model_dump() if item.patch is not None else None
+            patch = sanitize_llm_patch(raw_patch)
+            if patch is not None:
+                sg["patch"] = patch
+            elif raw_patch is not None:
+                # LLM 给了 patch 但字段越权/格式非法 -> 降级为纯文字, 并告知原因
+                sg["guard"] = "not_whitelisted"
+                sg["guard_msg"] = "AI 建议修改的参数不在可调白名单内, 已降级为纯文字建议"
+            suggestions.append(sg)
+        return out.analysis, suggestions, model
+
+    @staticmethod
+    async def _llm_review_legacy(trades: list[Any], signals: list[Any], issues: list[dict],
+                                 stats: dict, llm_cfg: dict) -> tuple[str, list[dict], str]:
+        """旧单步 prompt 路径(无 langchain 依赖时的降级, 行为与历史一致)."""
         client = build_client_from_config(llm_cfg)
         trade_lines = "\n".join(
             f"- {t.time} {t.symbol} {t.name} {'买入' if t.action == 'buy' else '卖出'} "

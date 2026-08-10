@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import numpy as np
+import pytest
+from app.core.ai_review import service as service_mod
+from app.core.ai_review.chain import BehaviorProfile, LangChainUnavailable, ReviewOutput, Suggestion
+from app.core.ai_review.llm import LLMError
 from app.core.ai_review.rules import diagnose
 from app.core.ai_review.service import ReviewService
 from app.models.models import AiReview, SignalRecord, Trade
@@ -226,3 +231,103 @@ def test_review_history_and_suggestion(tmp_engine):
     assert items[0]["status"] == "accepted"
     # 纯文字建议(无 patch): 只打标记, 不应改动任何配置
     assert info["applied"] is False
+
+
+# ---------------------------------------------------------------- LangChain 两步链
+def test_chain_review_output_parse():
+    """PydanticOutputParser 解析 ReviewOutput, discipline_score 越界收敛到 0-100."""
+    from langchain_core.output_parsers import PydanticOutputParser
+
+    parser = PydanticOutputParser(pydantic_object=ReviewOutput)
+    text = json.dumps({
+        "analysis": "追高明显, 止损执行及时",
+        "suggestions": [
+            {"text": "买入前看当日均价",
+             "patch": {"group": "动量", "key": "rsi_overbought", "to": 65}},
+            {"text": "严格执行止损"},
+        ],
+        "discipline_score": 150,
+    }, ensure_ascii=False)
+    out = parser.parse(text)
+    assert out.analysis
+    assert len(out.suggestions) == 2
+    assert out.suggestions[0].patch.key == "rsi_overbought"
+    assert out.suggestions[1].patch is None
+    assert out.discipline_score == 100  # 越界收敛
+
+
+def test_chain_behavior_profile_parse():
+    """Step1 输出模型: 行为特征归纳结构."""
+    profile = BehaviorProfile.model_validate({
+        "behavior_summary": "追高频繁, 止损果断",
+        "key_patterns": ["追高买入", "止损执行及时"],
+        "discipline_issues": [],
+    })
+    assert len(profile.key_patterns) == 2
+
+
+def test_llm_review_chain_conversion(monkeypatch):
+    """两步链输出 -> suggestions 结构; 白名单外 patch(风控分组)降级为纯文字."""
+    async def fake_run_chain(trades, signals, issues, stats, llm_cfg, memory_lines=""):
+        return ReviewOutput(
+            analysis="测试分析",
+            suggestions=[
+                Suggestion(text="调整ADX门槛",
+                           patch={"group": "趋势", "key": "adx_threshold", "to": 30}),
+                Suggestion(text="风控参数建议",
+                           patch={"group": "风控", "key": "stop_loss_pct", "to": 3.0}),
+                Suggestion(text="心态建议"),
+            ],
+            discipline_score=70,
+        ), "deepseek-chat"
+
+    monkeypatch.setattr("app.core.ai_review.chain.run_review_chain", fake_run_chain)
+    content, suggestions, model = asyncio.run(
+        service_mod.ReviewService._llm_review([], [], [], {}, {"api_key": "x"}))
+    assert content == "测试分析"
+    assert model == "deepseek-chat"
+    by_text = {s["text"]: s for s in suggestions}
+    # 白名单内 patch 保留
+    assert by_text["调整ADX门槛"]["patch"]["group"] == "趋势"
+    assert by_text["调整ADX门槛"]["patch"]["key"] == "adx_threshold"
+    # 风控分组(禁止) -> 降级纯文字并注明原因
+    assert by_text["风控参数建议"]["guard"] == "not_whitelisted"
+    assert "patch" not in by_text["风控参数建议"]
+    # 纯文字建议正常
+    assert by_text["心态建议"]["status"] == "pending"
+    assert "patch" not in by_text["心态建议"]
+
+
+def test_llm_review_fallback_legacy(monkeypatch):
+    """langchain 不可用(抛 LangChainUnavailable) -> 降级旧单步 prompt 路径."""
+    async def fake_run_chain(*args, **kwargs):
+        raise LangChainUnavailable("langchain 未安装")
+
+    class FakeClient:
+        model = "deepseek-chat"
+
+        async def chat(self, messages):
+            return json.dumps({
+                "analysis": "降级分析",
+                "suggestions": [{"text": "降级建议"}],
+                "discipline_score": 50,
+            }, ensure_ascii=False)
+
+    monkeypatch.setattr("app.core.ai_review.chain.run_review_chain", fake_run_chain)
+    monkeypatch.setattr(service_mod, "build_client_from_config", lambda cfg: FakeClient())
+    stats = {"closed": 0, "win_rate": 0.0, "total_pnl": 0.0}
+    content, suggestions, model = asyncio.run(
+        service_mod.ReviewService._llm_review([], [], [], stats, {"api_key": "x"}))
+    assert "降级分析" in content
+    assert suggestions and suggestions[0]["text"] == "降级建议"
+    assert model == "deepseek-chat"
+
+
+def test_llm_review_llm_error_propagates(monkeypatch):
+    """两步链 LLM 请求失败 -> 抛 LLMError, 由 run() 统一降级为纯规则诊断."""
+    async def boom(*args, **kwargs):
+        raise LLMError("模拟 LLM 不可用")
+
+    monkeypatch.setattr("app.core.ai_review.chain.run_review_chain", boom)
+    with pytest.raises(LLMError):
+        asyncio.run(service_mod.ReviewService._llm_review([], [], [], {}, {"api_key": "x"}))
