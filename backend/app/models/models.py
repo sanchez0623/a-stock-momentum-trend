@@ -151,6 +151,27 @@ class Position(SQLModel, table=True):
     updated_at: str = Field(default_factory=_now)
 
 
+class ScreenerHistory(SQLModel, table=True):
+    """选股扫描历史(结果落库, 供前端回看; 内存任务重启即清, 此表持久)."""
+
+    id: int | None = Field(default=None, primary_key=True)
+    time: str = Field(default_factory=_now, index=True)
+    market: str = Field(default="all", index=True)
+    board: str = Field(default="")          # 板块多值(逗号分隔)
+    industry: str = Field(default="")       # 行业多值(逗号分隔)
+    top_n: int = Field(default=30)
+    per_industry: int = Field(default=0)
+    industry_level: str = Field(default="sw_l1")
+    apply_gate: bool = Field(default=True)
+    universe: str = Field(default="")
+    apply_factors: bool = Field(default=True)
+    total: int = Field(default=0)            # 扫描股票总数
+    result_count: int = Field(default=0)     # 命中结果数
+    status: str = Field(default="done")
+    result_json: str = Field(default="[]")  # 结果列表 JSON(含 detail/reason/tags)
+    error: str = Field(default="")
+
+
 class SignalRecord(SQLModel, table=True):
     """信号记录."""
 

@@ -1,6 +1,6 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
 import { api } from '../api/client'
-import type { IndustryItem, ScreenerTask, UniverseStats } from '../api/client'
+import type { IndustryItem, ScreenerHistoryItem, ScreenerTask, UniverseStats } from '../api/client'
 import { Button, Card, EmptyState, ErrorBox, Loading, Tag, toast } from '../components/ui'
 import { cn } from '../components/ui'
 
@@ -25,6 +25,21 @@ const STAGE_COLOR: Record<string, string> = {
   overheat: '#ea580c',
   exhaust: '#16a34a',
 }
+
+// 结果表格的阶段筛选选项(含"无阶段": stage 缺失或为 none)
+const STAGE_FILTERS = [
+  { value: 'all', label: '全部' },
+  { value: 'launch', label: '启动期' },
+  { value: 'accelerate', label: '加速期' },
+  { value: 'overheat', label: '过热期' },
+  { value: 'exhaust', label: '衰竭期' },
+  { value: 'none', label: '无阶段' },
+] as const
+
+type StageFilter = (typeof STAGE_FILTERS)[number]['value']
+
+/** 结果行的阶段归组键: 缺失/空/none 统一归为 'none' */
+const stageKeyOf = (stage?: string) => (stage && stage !== 'none' ? stage : 'none')
 
 const FACTORS = ['趋势', '动量', '量能'] as const
 
@@ -79,6 +94,11 @@ export default function Screener() {
   const [running, setRunning] = useState(false)
   const [expanded, setExpanded] = useState<string | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  // 分析记录(持久化落库): 历史列表 + 当前回看中的记录 id
+  const [history, setHistory] = useState<ScreenerHistoryItem[]>([])
+  const [activeHistory, setActiveHistory] = useState<number | null>(null)
+  // 结果阶段筛选(全部/启动/加速/过热/衰竭/无阶段)
+  const [stageFilter, setStageFilter] = useState<StageFilter>('all')
 
   const stopPoll = () => {
     if (pollRef.current) {
@@ -87,9 +107,12 @@ export default function Screener() {
     }
   }
 
+  const refreshHistory = () => api.screenerHistory().then((d) => setHistory(d.items)).catch(() => {})
+
   useEffect(() => {
     api.screenerLatest().then((t) => { if (t && (t.status === 'done' || t.status === 'failed')) setTask(t) }).catch(() => {})
       .finally(() => setLoading(false))
+    refreshHistory()
     api.universeStats().then((s) => {
       setUniverseStats(s)
       if (Object.keys(s).length === 0) setUniverseNote('成分股缓存为空, 请先在后端刷新选股池(Swagger: POST /screener/universe/refresh)')
@@ -133,6 +156,8 @@ export default function Screener() {
           if (t.status === 'done' || t.status === 'failed') {
             stopPoll()
             setRunning(false)
+            setActiveHistory(null)
+            refreshHistory() // 新扫描落库后刷新历史列表
             if (t.status === 'failed') toast.error(t.error || '扫描失败')
           }
         } catch {
@@ -150,6 +175,74 @@ export default function Screener() {
   if (loading) return <Loading />
 
   const scanning = running || (task?.status === 'running' || task?.status === 'pending')
+
+  // 点击历史记录 -> 加载该次扫描结果(无需重新分析)
+  const loadHistory = async (id: number) => {
+    setActiveHistory(id)
+    try {
+      const h = await api.screenerHistoryDetail(id)
+      setTask({
+        id: `h${id}`,
+        status: h.status === 'failed' ? 'failed' : 'done',
+        market: h.market,
+        top_n: h.top_n,
+        total: h.total,
+        done: h.total,
+        progress: 100,
+        result: h.result ?? [],
+        error: h.error ?? '',
+      })
+      setExpanded(null)
+    } catch (e) {
+      toast.error(String((e as Error).message))
+    }
+  }
+
+  // 删除单条历史记录
+  const removeHistory = async (e: MouseEvent, id: number) => {
+    e.stopPropagation()
+    try {
+      await api.deleteScreenerHistory(id)
+      toast.success('记录已删除')
+      setHistory((prev) => prev.filter((h) => h.id !== id))
+      if (activeHistory === id) setActiveHistory(null)
+    } catch (err) {
+      toast.error(String((err as Error).message))
+    }
+  }
+
+  // 历史记录参数摘要(如: 沪深300成分 · 主板/科创板 · Top30)
+  const historySummary = (h: ScreenerHistoryItem) => {
+    const parts: string[] = []
+    if (h.universe) {
+      const u = universeStats?.[h.universe]
+      parts.push(u?.label ?? (h.universe === UNIVERSE_COMBO.value ? UNIVERSE_COMBO.label : h.universe))
+    }
+    if (h.board) parts.push(h.board.split(',').map((b) => BOARDS.find((x) => x.value === b)?.label ?? b).join('/'))
+    if (h.industry) parts.push(`${h.industry.split(',').length} 个行业`)
+    parts.push(`Top${h.top_n}`)
+    if (!h.apply_gate) parts.push('闸门关')
+    if (!h.apply_factors) parts.push('因子关')
+    return parts.join(' · ') || '全A'
+  }
+
+  // 各阶段命中数(筛选条上显示, 随结果/筛选自动更新)
+  const stageCounts = useMemo(() => {
+    const counts: Record<string, number> = { all: task?.result.length ?? 0 }
+    for (const r of task?.result ?? []) {
+      const k = stageKeyOf(r.stage)
+      counts[k] = (counts[k] ?? 0) + 1
+    }
+    return counts
+  }, [task])
+
+  // 按阶段筛选后的结果(历史回看与实时任务共用同一渲染)
+  const filteredResult = useMemo(() => {
+    const list = task?.result ?? []
+    if (!stageFilter || stageFilter === 'all') return list
+    return list.filter((r) => stageKeyOf(r.stage) === stageFilter)
+  }, [task, stageFilter])
+
 
   const selectedChips = [
     ...(universe ? [{ label: `股票池 ${universeStats?.[universe]?.label ?? (universe === UNIVERSE_COMBO.value ? UNIVERSE_COMBO.label : universe)}` }] : []),
@@ -350,6 +443,44 @@ export default function Screener() {
       </div>
       {task?.error && <div className="mt-2 text-xs text-orange-500">任务异常: {task.error}</div>}
 
+      {/* ---------- 分析记录(持久化, 点击回看) ---------- */}
+      <Card title={`分析记录(${history.length})`} className="mt-3">
+        {history.length === 0 ? (
+          <EmptyState>暂无历史记录。每次扫描完成后自动保存, 点击记录即可回看结果, 无需重新分析。</EmptyState>
+        ) : (
+          <div className="max-h-56 overflow-y-auto">
+            {history.map((h) => {
+              const active = activeHistory === h.id
+              return (
+                <div
+                  key={h.id}
+                  className={cn(
+                    'group flex cursor-pointer items-center justify-between gap-2 border-b border-divider py-2 text-[13px] last:border-b-0',
+                    active ? 'bg-[#fff5f5]' : 'hover:bg-[#fafbfc]',
+                  )}
+                  onClick={() => loadHistory(h.id)}
+                >
+                  <span className="flex min-w-0 items-center gap-2">
+                    <span className="shrink-0 font-semibold text-ink-secondary">{h.time.slice(5, 16)}</span>
+                    <span className="truncate text-ink-muted">{historySummary(h)}</span>
+                  </span>
+                  <span className="flex shrink-0 items-center gap-2">
+                    <span className="text-xs text-ink-faint">{h.result_count} 只</span>
+                    <button
+                      type="button"
+                      onClick={(e) => removeHistory(e, h.id)}
+                      className="text-[11px] text-ink-faint opacity-0 transition-opacity group-hover:opacity-100 hover:text-rise"
+                    >
+                      删除
+                    </button>
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </Card>
+
       {/* ---------- 结果 ---------- */}
       {task && task.status === 'done' && (
         <Card title={`排名 Top ${task.result.length}(日成交额 ≥ 5000万)`} className="mt-3">
@@ -357,11 +488,32 @@ export default function Screener() {
             <EmptyState>
               无结果。当前股票列表可能降级为自选池(东财列表接口风控期), 或均未达评分/流动性门槛。
             </EmptyState>
+          ) : filteredResult.length === 0 ? (
+            <EmptyState>该阶段筛选下无结果, 切换其他阶段查看。</EmptyState>
           ) : (
             <>
               <div className="mb-2 text-[11px] text-ink-faint">
                 点击任意一行可展开三因子拆解与风险提示。标签配色: <span className="text-rise">红=利多</span> ·{' '}
                 <span className="text-[#ea580c]">橙=需注意</span> · <span className="text-fall">绿=偏空</span>
+              </div>
+              {/* 阶段筛选条: 与结果同源, 历史回看同样生效 */}
+              <div className="mb-2 flex flex-wrap items-center gap-1.5">
+                <span className="text-[12px] text-ink-secondary">阶段筛选:</span>
+                {STAGE_FILTERS.map((f) => (
+                  <button
+                    key={f.value}
+                    type="button"
+                    onClick={() => setStageFilter(f.value)}
+                    className={cn(
+                      'rounded-full border px-2.5 py-1 text-[12px] transition-colors',
+                      stageFilter === f.value
+                        ? 'border-[#dc2626] bg-[#dc2626] text-white'
+                        : 'border-[#d0d3d9] hover:border-[#a0a5ad]',
+                    )}
+                  >
+                    {f.label}({stageCounts[f.value] ?? 0})
+                  </button>
+                ))}
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full border-collapse text-[13px]">
@@ -385,7 +537,7 @@ export default function Screener() {
                     </tr>
                   </thead>
                   <tbody>
-                    {task.result.map((r, i) => {
+                    {filteredResult.map((r, i) => {
                       const open = expanded === r.symbol
                       const tags = r.tags ?? []
                       const risks = r.risk ? r.risk.split('；').filter(Boolean) : []

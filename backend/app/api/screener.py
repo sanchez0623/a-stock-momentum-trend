@@ -36,6 +36,11 @@ async def run_screener(
     """触发扫描(异步, 返回 task_id). 支持 market + 板块多值 + 行业多值 + 每行业限配 + 闸门 + 选股池预筛 + 因子."""
     task_id = scan_tasks.create(market, top_n)
     scan_tasks.update(task_id, status="running")
+    params = {
+        "market": market, "board": board, "industry": industry, "top_n": top_n,
+        "per_industry": per_industry, "industry_level": industry_level,
+        "apply_gate": apply_gate, "universe": universe, "apply_factors": apply_factors,
+    }
 
     async def _run() -> None:
         try:
@@ -52,6 +57,10 @@ async def run_screener(
                 progress_cb=lambda done, total: scan_tasks.progress(task_id, done, total),
             )
             scan_tasks.update(task_id, status="done", progress=100, result=result)
+            # 扫描完成 -> 结果持久化到历史表(前端可回看, 内存任务重启即清)
+            from app.core.screener.history import save_scan_history
+
+            save_scan_history(scan_tasks.get(task_id) or {}, params)
         except Exception as exc:  # noqa: BLE001
             scan_tasks.update(task_id, status="failed", error=str(exc))
 
@@ -268,6 +277,36 @@ async def screener_latest() -> dict:
     if task is None:
         return {"code": 0, "msg": "ok", "data": None}
     return {"code": 0, "msg": "ok", "data": task}
+
+
+# ---------------------------------------------------------------- 扫描历史(持久化回看)
+@router.get("/screener/history")
+async def screener_history_list(limit: int = Query(50, ge=1, le=200)) -> dict:
+    """选股扫描历史列表(不含结果 JSON, 点击某条再取详情)."""
+    from app.core.screener.history import list_scan_history
+
+    return {"code": 0, "msg": "ok", "data": {"items": list_scan_history(limit)}}
+
+
+@router.get("/screener/history/{history_id}")
+async def screener_history_detail(history_id: int) -> dict:
+    """历史详情(含完整结果列表, 供前端回看)."""
+    from app.core.screener.history import get_scan_history
+
+    item = get_scan_history(history_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    return {"code": 0, "msg": "ok", "data": item}
+
+
+@router.delete("/screener/history/{history_id}")
+async def screener_history_delete(history_id: int) -> dict:
+    """删除单条扫描历史."""
+    from app.core.screener.history import delete_scan_history
+
+    if not delete_scan_history(history_id):
+        raise HTTPException(status_code=404, detail="记录不存在")
+    return {"code": 0, "msg": "ok", "data": {"id": history_id}}
 
 
 # ---------------------------------------------------------------- 自选股
