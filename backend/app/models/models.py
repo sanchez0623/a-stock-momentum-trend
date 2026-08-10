@@ -172,6 +172,17 @@ class ScreenerHistory(SQLModel, table=True):
     error: str = Field(default="")
 
 
+class ScreenerPreset(SQLModel, table=True):
+    """选股条件组合预设(指数池 + 板块 + 行业, 一键复用)."""
+
+    id: int | None = Field(default=None, primary_key=True)
+    name: str = Field(default="", index=True)
+    universe: str = Field(default="")      # 逗号分隔多值
+    board: str = Field(default="")         # 板块多值(逗号分隔)
+    industry: str = Field(default="")      # 行业多值(逗号分隔)
+    created_at: str = Field(default_factory=_now)
+
+
 class SignalRecord(SQLModel, table=True):
     """信号记录."""
 

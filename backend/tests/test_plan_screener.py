@@ -215,6 +215,45 @@ def test_filter_by_industry_sw_levels_and_fallback(tmp_engine):
     assert StockScreener._filter_by_industry(pool, [], class_map) == pool
 
 
+# ---------------------------------------------------------------- 条件组合预设 + universe 多值
+
+def test_universe_multi_value_parse():
+    """universe 多值: 逗号分隔解析/去重/组合 key 兼容/全A 短路."""
+    from app.core.universe import parse_universe, universe_label
+
+    assert parse_universe("hs300,zz500") == ["hs300", "zz500"]
+    assert parse_universe("hs300,hs300,sz50") == ["hs300", "sz50"]  # 去重保序
+    assert parse_universe("hs300+zz500") == ["hs300", "zz500"]      # 预置组合 key 兼容
+    assert parse_universe("all") == []
+    assert parse_universe("hs300,all") == []                          # 含 all 即全A
+    assert parse_universe("hs300,unknown") == ["hs300"]              # 未知名忽略
+    assert universe_label("hs300,zz500") == "沪深300+中证500"
+    assert universe_label("all") == "全A"
+
+
+def test_screener_preset_roundtrip(tmp_engine):
+    """预设: 保存 -> 列表 -> 同名覆盖 -> 删除 全链路."""
+    from app.core.screener.presets import delete_preset, list_presets, save_preset
+
+    pid = save_preset("成长池", "hs300,zz500", "star", "半导体,数字芯片设计")
+    items = list_presets()
+    assert len(items) == 1
+    assert items[0]["name"] == "成长池"
+    assert items[0]["universe"] == "hs300,zz500"
+    assert items[0]["industry"] == "半导体,数字芯片设计"
+
+    # 同名保存 = 覆盖(不新增)
+    pid2 = save_preset("成长池", "sz50", "main", "银行")
+    assert pid2 == pid
+    items = list_presets()
+    assert len(items) == 1
+    assert items[0]["universe"] == "sz50"
+
+    assert delete_preset(pid) is True
+    assert list_presets() == []
+    assert delete_preset(pid) is False
+
+
 # ---------------------------------------------------------------- 选股器评分
 def test_score_indicators_uptrend(kline_df):
     from app.core.indicators import compute_all

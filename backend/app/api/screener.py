@@ -318,6 +318,43 @@ async def screener_history_delete(history_id: int) -> dict:
     return {"code": 0, "msg": "ok", "data": {"id": history_id}}
 
 
+# ---------------------------------------------------------------- 条件组合预设(一键复用)
+class PresetBody(BaseModel):
+    name: str
+    universe: str = ""
+    board: str = ""
+    industry: str = ""
+
+
+@router.get("/screener/presets")
+async def screener_presets_list(limit: int = Query(50, ge=1, le=200)) -> dict:
+    """条件组合预设列表."""
+    from app.core.screener.presets import list_presets
+
+    return {"code": 0, "msg": "ok", "data": {"items": list_presets(limit)}}
+
+
+@router.post("/screener/presets")
+async def screener_presets_save(body: PresetBody) -> dict:
+    """保存预设(同名覆盖)."""
+    from app.core.screener.presets import save_preset
+
+    if not body.name.strip():
+        raise HTTPException(status_code=400, detail="预设名不能为空")
+    pid = save_preset(body.name, body.universe, body.board, body.industry)
+    return {"code": 0, "msg": "ok", "data": {"id": pid}}
+
+
+@router.delete("/screener/presets/{preset_id}")
+async def screener_presets_delete(preset_id: int) -> dict:
+    """删除单条预设."""
+    from app.core.screener.presets import delete_preset
+
+    if not delete_preset(preset_id):
+        raise HTTPException(status_code=404, detail="预设不存在")
+    return {"code": 0, "msg": "ok", "data": {"id": preset_id}}
+
+
 # ---------------------------------------------------------------- 自选股
 @router.get("/watchlist")
 async def watchlist(session: Session = Depends(get_session)) -> dict:

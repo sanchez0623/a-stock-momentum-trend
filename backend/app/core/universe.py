@@ -51,12 +51,25 @@ INDEX_LABELS = {"hs300": "沪深300", "zz500": "中证500", "sz50": "上证50"}
 
 # ---------------------------------------------------------------- 纯函数
 def parse_universe(name: str | None) -> list[str]:
-    """universe 名称 -> 指数 key 列表. 未知名称按 all 处理(不预筛)."""
-    key = (name or "all").strip().lower()
-    if key not in UNIVERSE_ALIASES:
-        logger.warning("未知选股池 '%s', 按全A处理(可选: %s)", name, list(UNIVERSE_ALIASES))
+    """universe 名称 -> 指数 key 列表. 支持逗号分隔多值(如 "hs300,zz500"); 未知名称按 all 处理."""
+    names = [x.strip().lower() for x in (name or "all").split(",") if x.strip()]
+    if not names or "all" in names:
         return []
-    return UNIVERSE_ALIASES[key]
+    keys: list[str] = []
+    for n in names:
+        if n not in UNIVERSE_ALIASES:
+            logger.warning("未知选股池 '%s', 忽略(可选: %s)", n, list(UNIVERSE_ALIASES))
+            continue
+        keys.extend(UNIVERSE_ALIASES[n])
+    return list(dict.fromkeys(keys))  # 去重保序
+
+
+def universe_label(name: str | None) -> str:
+    """universe 配置值 -> 展示名(多值用 + 连接, 如 "hs300,zz500" -> "沪深300+中证500")."""
+    names = [x.strip().lower() for x in (name or "all").split(",") if x.strip()]
+    if not names or "all" in names:
+        return "全A"
+    return "+".join(UNIVERSE_LABELS.get(n, n) for n in names)
 
 
 def apply_universe(pool: list[tuple[str, str, str]], allowed: set[str]) -> list[tuple[str, str, str]]:
@@ -166,7 +179,7 @@ async def ensure_universe(universe: str, max_age_days: int = 7) -> tuple[set[str
         await refresh_universe(keys)
         syms, oldest = load_universe_symbols(keys)
 
-    label = UNIVERSE_LABELS.get((universe or "all").lower(), universe)
+    label = universe_label(universe)
     if not syms:
         return set(), f"{label}成分股不可用(baostock 未就绪), 已降级为全A"
     return syms, f"{label} {len(syms)} 只(更新于 {oldest[:10]})"

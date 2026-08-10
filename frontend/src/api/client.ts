@@ -106,6 +106,10 @@ export const api = {
   screenerIndustries: () => request<{ items: IndustryItem[]; total: number }>('/screener/industries'),
   /** 申万三级行业树(一级->二级->三级, 每级带股票数), 供选股页树形多选 */
   screenerIndustryTree: () => request<{ items: IndustryNode[]; total: number }>('/screener/industries/tree'),
+  screenerPresets: () => request<{ items: ScreenerPreset[] }>('/screener/presets'),
+  saveScreenerPreset: (p: { name: string; universe?: string; board?: string; industry?: string }) =>
+    request<{ id: number }>('/screener/presets', { method: 'POST', body: JSON.stringify(p) }),
+  deleteScreenerPreset: (id: number) => request<{ id: number }>(`/screener/presets/${id}`, { method: 'DELETE' }),
 
   // ---------------------------------------------------------------- 回测中心(方案C: 阶段分桶)
   backtestFactor: (body: { symbols?: string[] | null; hold_days?: number[]; min_bars?: number; cost?: boolean }) =>
@@ -373,6 +377,16 @@ export interface IndustryNode {
   name: string
   count: number
   children?: IndustryNode[]
+}
+
+/** 选股条件组合预设(指数池+板块+行业) */
+export interface ScreenerPreset {
+  id: number
+  name: string
+  universe: string
+  board: string
+  industry: string
+  created_at: string
 }
 
 /** 选股扫描历史(列表项不含结果, 点击后再取详情) */

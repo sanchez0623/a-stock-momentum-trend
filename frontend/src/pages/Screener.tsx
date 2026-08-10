@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
 import { api } from '../api/client'
-import type { IndustryNode, ScreenerHistoryItem, ScreenerTask, UniverseStats } from '../api/client'
+import type { IndustryNode, ScreenerHistoryItem, ScreenerPreset, ScreenerTask, UniverseStats } from '../api/client'
 import { Button, Card, EmptyState, ErrorBox, Loading, Tag, toast } from '../components/ui'
 import { cn } from '../components/ui'
 
@@ -71,17 +71,21 @@ export default function Screener() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
-  // ① 股票池(默认上证50: 全A串行扫描小时级, sz50 秒级; 与后端配置默认一致)
-  const [universe, setUniverse] = useState('sz50')
+  // 股票条件: 指数池(多选, 空=全A) + 板块 + 申万行业; 默认上证50(全A串行扫描小时级, sz50 秒级)
+  const [universeSel, setUniverseSel] = useState<string[]>(['sz50'])
   const [universeStats, setUniverseStats] = useState<UniverseStats | null>(null)
   const [universeNote, setUniverseNote] = useState('')
-
-  // ② 过滤条件
   const [boards, setBoards] = useState<string[]>([])
   const [industries, setIndustries] = useState<string[]>([])
   const [industryTree, setIndustryTree] = useState<IndustryNode[]>([])
   const [industryNote, setIndustryNote] = useState('')
   const [expandedInds, setExpandedInds] = useState<Set<string>>(new Set()) // 树形展开的节点名
+
+  // 条件组合预设(一键复用)
+  const [presets, setPresets] = useState<ScreenerPreset[]>([])
+  const [presetName, setPresetName] = useState('')
+  const [presetInputOpen, setPresetInputOpen] = useState(false)
+  const [savingPreset, setSavingPreset] = useState(false)
 
   // ③ 扫描参数
   const [showAdvanced, setShowAdvanced] = useState(false)
@@ -108,6 +112,7 @@ export default function Screener() {
   }
 
   const refreshHistory = () => api.screenerHistory().then((d) => setHistory(d.items)).catch(() => {})
+  const refreshPresets = () => api.screenerPresets().then((d) => setPresets(d.items)).catch(() => {})
 
   useEffect(() => {
     api.screenerLatest().then((t) => { if (t && (t.status === 'done' || t.status === 'failed')) setTask(t) }).catch(() => {})
@@ -121,8 +126,72 @@ export default function Screener() {
       setIndustryTree(r.items ?? [])
       if (!r.items?.length) setIndustryNote('行业数据为空, 需先刷新申万分类映射(设置->数据源或 Swagger: POST /screener/classification/refresh)')
     }).catch(() => setIndustryNote('行业树读取失败'))
+    refreshPresets()
     return stopPoll
   }, [])
+
+  // 指数池多选: 点"全部A股"清空选择(空=全A); 点指数加入/移除
+  const toggleUniverse = (key: string) => {
+    if (key === 'all') {
+      setUniverseSel([])
+      return
+    }
+    setUniverseSel((prev) => (prev.includes(key) ? prev.filter((x) => x !== key) : [...prev, key]))
+  }
+
+  // 指数池 chip 展示名(含预置组合 key 兼容)
+  const universeLabelOf = (key: string) => {
+    const u = universeStats?.[key]
+    if (u?.label) return u.label
+    if (key === UNIVERSE_COMBO.value) return UNIVERSE_COMBO.label
+    return key
+  }
+
+  // 保存当前条件为预设
+  const savePreset = async () => {
+    const name = presetName.trim()
+    if (!name) {
+      toast.error('请输入预设名称')
+      return
+    }
+    setSavingPreset(true)
+    try {
+      await api.saveScreenerPreset({
+        name,
+        universe: universeSel.join(',') || undefined,
+        board: boards.join(',') || undefined,
+        industry: industries.join(',') || undefined,
+      })
+      toast.success(`预设「${name}」已保存`)
+      setPresetName('')
+      setPresetInputOpen(false)
+      refreshPresets()
+    } catch (e) {
+      toast.error(String((e as Error).message))
+    } finally {
+      setSavingPreset(false)
+    }
+  }
+
+  // 应用预设: 一键填充条件(同名覆盖)
+  const applyPreset = (p: ScreenerPreset) => {
+    setUniverseSel((p.universe || '').split(',').filter(Boolean))
+    setBoards((p.board || '').split(',').filter(Boolean))
+    setIndustries((p.industry || '').split(',').filter(Boolean))
+    toast.success(`已应用预设「${p.name}」`)
+  }
+
+  // 删除预设
+  const removePreset = async (e: MouseEvent, id: number) => {
+    e.stopPropagation()
+    try {
+      await api.deleteScreenerPreset(id)
+      toast.success('预设已删除')
+      setPresets((prev) => prev.filter((p) => p.id !== id))
+    } catch (err) {
+      toast.error(String((err as Error).message))
+    }
+  }
 
   const toggleBoard = (b: string) =>
     setBoards((prev) => (prev.includes(b) ? prev.filter((x) => x !== b) : [...prev, b]))
@@ -146,7 +215,7 @@ export default function Screener() {
         'all', topN,
         boards.join(',') || undefined,
         industries.join(',') || undefined,
-        universe || undefined,
+        universeSel.join(',') || undefined,
         { perIndustry, industryLevel, applyGate, applyFactors },
       )
       toast.info('扫描已启动, 完成后自动刷新结果')
@@ -230,12 +299,11 @@ export default function Screener() {
     }
   }
 
-  // 历史记录参数摘要(如: 沪深300成分 · 主板/科创板 · Top30)
+  // 历史记录参数摘要(如: 沪深300+中证500成分 · 主板/科创板 · Top30)
   const historySummary = (h: ScreenerHistoryItem) => {
     const parts: string[] = []
     if (h.universe) {
-      const u = universeStats?.[h.universe]
-      parts.push(u?.label ?? (h.universe === UNIVERSE_COMBO.value ? UNIVERSE_COMBO.label : h.universe))
+      parts.push(h.universe.split(',').map((u) => universeLabelOf(u)).join('+'))
     }
     if (h.board) parts.push(h.board.split(',').map((b) => BOARDS.find((x) => x.value === b)?.label ?? b).join('/'))
     if (h.industry) parts.push(`${h.industry.split(',').length} 个行业`)
@@ -245,27 +313,62 @@ export default function Screener() {
     return parts.join(' · ') || '全A'
   }
 
-
-  const selectedChips = [
-    ...(universe ? [{ label: `股票池 ${universeStats?.[universe]?.label ?? (universe === UNIVERSE_COMBO.value ? UNIVERSE_COMBO.label : universe)}` }] : []),
-    ...boards.map((b) => ({ label: BOARDS.find((x) => x.value === b)?.label ?? b })),
-    ...industries.map((n) => ({ label: n })),
+  // 已应用条件 chips(带类型, 便于单独删除)
+  const conditionChips = [
+    ...universeSel.map((u) => ({ key: `u-${u}`, type: 'universe' as const, label: universeLabelOf(u) })),
+    ...boards.map((b) => ({ key: `b-${b}`, type: 'board' as const, label: BOARDS.find((x) => x.value === b)?.label ?? b })),
+    ...industries.map((n) => ({ key: `i-${n}`, type: 'industry' as const, label: n })),
   ]
+
+  const removeCondition = (type: 'universe' | 'board' | 'industry', value: string) => {
+    if (type === 'universe') setUniverseSel((prev) => prev.filter((x) => x !== value))
+    if (type === 'board') setBoards((prev) => prev.filter((x) => x !== value))
+    if (type === 'industry') setIndustries((prev) => prev.filter((x) => x !== value))
+  }
+
+  const clearConditions = () => {
+    setUniverseSel([])
+    setBoards([])
+    setIndustries([])
+  }
 
   return (
     <div>
       <h1 className="mb-4 text-[20px] font-semibold">选股</h1>
       {error && <ErrorBox message={error} />}
 
-      {/* ---------- ① 股票池 ---------- */}
-      <Card title="① 股票池 · 从哪批股票里选">
-        <div className="flex flex-wrap gap-2">
+      {/* ---------- 股票条件(统一过滤器: 指数池+板块+行业) ---------- */}
+      <Card className="mt-3">
+        {/* 已应用条件 chips(带 × 可单独删除) */}
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-[13px] font-medium">股票条件</span>
+          {conditionChips.length === 0 ? (
+            <span className="text-[11px] text-ink-faint">未选条件(扫描全A)</span>
+          ) : (
+            <>
+              <span className="text-[11px] text-ink-faint">已应用 {conditionChips.length} 个:</span>
+              {conditionChips.map((c) => (
+                <span key={c.key} className="flex items-center gap-1 rounded-full bg-[#eef2f7] px-2.5 py-0.5 text-[12px] text-[#185fa5]">
+                  {c.label}
+                  <button type="button" onClick={() => removeCondition(c.type, c.key.slice(2))} className="text-[#64748b] hover:text-[#185fa5]">×</button>
+                </span>
+              ))}
+              <button type="button" onClick={clearConditions} className="text-[11px] text-ink-faint hover:text-rise">清空全部</button>
+            </>
+          )}
+        </div>
+
+        <div className="my-3 border-t border-divider" />
+
+        {/* 指数池(多选, 空=全A) */}
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-[13px] text-ink-secondary">指数池(多选)</span>
           <button
             type="button"
-            onClick={() => setUniverse('')}
+            onClick={() => toggleUniverse('all')}
             className={cn(
               'rounded-full border px-3 py-1.5 text-[13px] transition-colors',
-              universe === '' ? 'border-[#dc2626] bg-[#dc2626] text-white' : 'border-[#d0d3d9] hover:border-[#a0a5ad]',
+              universeSel.length === 0 ? 'border-[#dc2626] bg-[#dc2626] text-white' : 'border-[#d0d3d9] hover:border-[#a0a5ad]',
             )}
           >
             全部A股
@@ -274,10 +377,10 @@ export default function Screener() {
             <button
               key={key}
               type="button"
-              onClick={() => setUniverse(key)}
+              onClick={() => toggleUniverse(key)}
               className={cn(
                 'rounded-full border px-3 py-1.5 text-[13px] transition-colors',
-                universe === key ? 'border-[#dc2626] bg-[#dc2626] text-white' : 'border-[#d0d3d9] hover:border-[#a0a5ad]',
+                universeSel.includes(key) ? 'border-[#dc2626] bg-[#dc2626] text-white' : 'border-[#d0d3d9] hover:border-[#a0a5ad]',
               )}
             >
               {v.label}成分 · {v.count}只
@@ -286,10 +389,10 @@ export default function Screener() {
           {universeStats && UNIVERSE_COMBO.needs.every((k) => universeStats[k]?.count > 0) && (
             <button
               type="button"
-              onClick={() => setUniverse(UNIVERSE_COMBO.value)}
+              onClick={() => toggleUniverse(UNIVERSE_COMBO.value)}
               className={cn(
                 'rounded-full border px-3 py-1.5 text-[13px] transition-colors',
-                universe === UNIVERSE_COMBO.value ? 'border-[#dc2626] bg-[#dc2626] text-white' : 'border-[#d0d3d9] hover:border-[#a0a5ad]',
+                universeSel.includes(UNIVERSE_COMBO.value) ? 'border-[#dc2626] bg-[#dc2626] text-white' : 'border-[#d0d3d9] hover:border-[#a0a5ad]',
               )}
             >
               {UNIVERSE_COMBO.label}
@@ -297,10 +400,10 @@ export default function Screener() {
           )}
         </div>
         {universeNote && <p className="mt-2 text-[11px] text-[#ea580c]">{universeNote}</p>}
-      </Card>
 
-      {/* ---------- ② 过滤条件 ---------- */}
-      <Card title="② 过滤条件 · 池内缩小范围(可组合)" className="mt-3">
+        <div className="my-3 border-t border-divider" />
+
+        {/* 上市板块(多选) */}
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-[13px] text-ink-secondary">上市板块</span>
           {BOARDS.map((b) => (
@@ -351,6 +454,58 @@ export default function Screener() {
                 </span>
               ))}
             </div>
+          )}
+        </div>
+
+        <div className="mt-2 text-[11px] text-ink-faint">
+          条件逻辑: 组内任一命中(OR), 组间全部满足(AND)。例如 指数池[沪深300或中证500] 且 板块[科创板] 且 行业[半导体]。
+        </div>
+
+        <div className="my-3 border-t border-divider" />
+
+        {/* 条件预设(一键复用) */}
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-[13px] text-ink-secondary">条件预设</span>
+          {presetInputOpen ? (
+            <span className="flex items-center gap-1.5">
+              <input
+                value={presetName}
+                onChange={(e) => setPresetName(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && savePreset()}
+                placeholder="预设名称"
+                className="w-[130px] rounded border border-[#d0d3d9] px-2 py-1 text-[12px]"
+              />
+              <Button onClick={savePreset} disabled={savingPreset} className="h-7 px-2 text-xs">{savingPreset ? '保存中' : '保存'}</Button>
+              <button
+                type="button"
+                onClick={() => { setPresetInputOpen(false); setPresetName('') }}
+                className="text-[11px] text-ink-faint hover:text-ink"
+              >
+                取消
+              </button>
+            </span>
+          ) : (
+            <Button kind="ghost" onClick={() => setPresetInputOpen(true)} className="h-7 px-2 text-xs">保存当前条件</Button>
+          )}
+          {presets.map((p) => (
+            <span
+              key={p.id}
+              className="group flex cursor-pointer items-center gap-1 rounded-full border border-[#d0d3d9] px-2.5 py-0.5 text-[12px] transition-colors hover:border-[#185fa5] hover:text-[#185fa5]"
+              onClick={() => applyPreset(p)}
+              title={`指数:${p.universe || '全A'} · 板块:${p.board || '不限'} · 行业:${p.industry || '不限'}`}
+            >
+              {p.name}
+              <button
+                type="button"
+                onClick={(e) => removePreset(e, p.id)}
+                className="text-[#64748b] opacity-0 transition-opacity group-hover:opacity-100 hover:text-rise"
+              >
+                ×
+              </button>
+            </span>
+          ))}
+          {presets.length === 0 && !presetInputOpen && (
+            <span className="text-[11px] text-ink-faint">保存常用条件组合, 一键复用</span>
           )}
         </div>
       </Card>
@@ -426,13 +581,8 @@ export default function Screener() {
           {scanning ? '扫描中...' : '开始扫描'}
         </Button>
         {task && <span className="text-xs text-ink-muted">最近任务: {task.status} · {task.done}/{task.total} · {task.progress}%</span>}
-        {selectedChips.length > 0 && (
-          <span className="flex flex-wrap items-center gap-1.5 text-[11px] text-ink-faint">
-            已选:
-            {selectedChips.map((c, i) => (
-              <span key={`${c.label}-${i}`} className="rounded bg-[#f1f3f5] px-2 py-0.5 text-[#185fa5]">{c.label}</span>
-            ))}
-          </span>
+        {conditionChips.length > 0 && (
+          <span className="text-xs text-ink-faint">已应用 {conditionChips.length} 个条件</span>
         )}
       </div>
       {task?.error && <div className="mt-2 text-xs text-orange-500">任务异常: {task.error}</div>}
