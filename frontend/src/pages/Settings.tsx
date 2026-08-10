@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 import { api } from '../api/client'
 import { CONFIG_GROUPS, DATA_SOURCE_LABELS } from '../const/configSchema'
@@ -327,24 +328,33 @@ function DataSourcePanel({ ds, onChange }: {
 /* ------------------------------------------------------------------ 主页面 */
 
 export default function Settings() {
-  const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
   const [original, setOriginal] = useState<AnyRec | null>(null)
   const [draft, setDraft] = useState<AnyRec | null>(null)
-  const [defaults, setDefaults] = useState<AnyRec | null>(null)
   const [active, setActive] = useState(CONFIG_GROUPS[0].key)
 
+  // 配置加载: useQuery 管理; draft/original 为本地编辑态, 仅首次填充
+  const { data: cfgData, isLoading, error: cfgQueryError } = useQuery({
+    queryKey: ['config'],
+    queryFn: api.config,
+  })
+  const { data: defaults } = useQuery({
+    queryKey: ['config-defaults'],
+    queryFn: api.configDefaults,
+    retry: false,
+  })
+  const initializedRef = useRef(false)
   useEffect(() => {
-    Promise.all([api.config(), api.configDefaults().catch(() => null)])
-      .then(([cfg, def]) => {
-        setOriginal(cfg as AnyRec)
-        setDraft(clone(cfg) as AnyRec)
-        if (def) setDefaults(def as AnyRec)
-      })
-      .catch((e) => setError(String((e as Error).message || e)))
-      .finally(() => setLoading(false))
-  }, [])
+    if (cfgData && !initializedRef.current) {
+      initializedRef.current = true
+      setOriginal(cfgData as AnyRec)
+      setDraft(clone(cfgData) as AnyRec)
+    }
+  }, [cfgData])
+  useEffect(() => {
+    if (cfgQueryError) setError(String((cfgQueryError as Error).message || cfgQueryError))
+  }, [cfgQueryError])
 
   const dirty = useMemo(() => {
     const s = new Set<string>()
@@ -417,7 +427,7 @@ export default function Settings() {
     toast.info(`已载入「${label}」默认值，保存后生效`)
   }
 
-  if (loading) return <Loading />
+  if (isLoading) return <Loading />
   if (!draft) return <ErrorBox message={error || '配置加载失败'} />
 
   const group = CONFIG_GROUPS.find((g) => g.key === active) ?? CONFIG_GROUPS[0]

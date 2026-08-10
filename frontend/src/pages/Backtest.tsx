@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react'
-import { api, type BacktestFactorReport, type BacktestHoldStats, type BacktestStrategyReport } from '../api/client'
+import { useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { api, type BacktestFactorReport, type BacktestHoldStats } from '../api/client'
 import { Button, Card, ErrorBox, Loading } from '../components/ui'
 import { EquityChart } from '../components/charts/EquityChart'
 
@@ -49,51 +50,32 @@ function StatCard({ label, value, sub, color }: { label: string; value: string; 
 
 // ---------------------------------------------------------------- 策略回测标签
 function StrategyTab() {
-  const [running, setRunning] = useState(false)
-  const [progress, setProgress] = useState(0)
-  const [report, setReport] = useState<BacktestStrategyReport | null>(null)
+  const [taskId, setTaskId] = useState<string | null>(null)
   const [error, setError] = useState('')
   const [showTrades, setShowTrades] = useState(false)
-  const timer = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  const poll = (taskId: string) => {
-    if (timer.current) clearInterval(timer.current)
-    timer.current = setInterval(async () => {
-      try {
-        const st = await api.backtestTask(taskId)
-        setProgress(st.progress)
-        if (st.status === 'done') {
-          if (timer.current) clearInterval(timer.current)
-          setRunning(false)
-          setReport(st.result)
-        } else if (st.status === 'error') {
-          if (timer.current) clearInterval(timer.current)
-          setRunning(false)
-          setError(st.error || '回测失败')
-        }
-      } catch (e) {
-        if (timer.current) clearInterval(timer.current)
-        setRunning(false)
-        setError(String((e as Error).message || e))
-      }
-    }, 2000)
-  }
+  // 任务轮询: 触发后每 2s 拉取进度, 终态(done/error)自动停止
+  const { data: task } = useQuery({
+    queryKey: ['backtest-task', taskId ?? 'none'],
+    queryFn: () => api.backtestTask(taskId!),
+    enabled: taskId !== null,
+    refetchInterval: (query) => (query.state.data?.status === 'running' ? 2000 : false),
+  })
+  const running = taskId !== null && task?.status !== 'done' && task?.status !== 'error'
+  const progress = task?.progress ?? 0
+  const report = task?.status === 'done' ? task.result : null
+  const err = error || (task?.status === 'error' ? task.error || '回测失败' : '')
 
   const run = async () => {
-    setRunning(true)
     setError('')
-    setReport(null)
-    setProgress(0)
+    setTaskId(null)
     try {
       const { task_id } = await api.backtestStrategy({ initial_capital: 1_000_000 })
-      poll(task_id)
+      setTaskId(task_id)
     } catch (e) {
-      setRunning(false)
       setError(String((e as Error).message || e))
     }
   }
-
-  useEffect(() => () => { if (timer.current) clearInterval(timer.current) }, [])
 
   const meta = report?.meta
   const stats = report?.stats
@@ -116,7 +98,7 @@ function StrategyTab() {
             <div className="h-full bg-link transition-all" style={{ width: `${progress}%` }} />
           </div>
         )}
-        {error && <div className="mt-3"><ErrorBox message={error} /></div>}
+        {err && <div className="mt-3"><ErrorBox message={err} /></div>}
       </Card>
 
       {running && !report && (
@@ -124,7 +106,6 @@ function StrategyTab() {
           <Loading text="正在逐日回放信号循环与组合撮合…" />
         </Card>
       )}
-
       {report && meta && stats && (
         <>
           <div className="mb-3 grid grid-cols-2 gap-2 md:grid-cols-4">

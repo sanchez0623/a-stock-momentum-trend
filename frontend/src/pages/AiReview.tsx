@@ -1,9 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
-import type {
-  AiReviewConfig, AiReviewRecord, AiReviewTask, AiReviewSuggestion,
-  ConfigChange, TuningPolicy,
-} from '../api/client'
+import type { AiReviewRecord, AiReviewSuggestion } from '../api/client'
 import { Button, Card, EmptyState, ErrorBox, Field, ListRow, Loading, Tag, inputStyle, toast } from '../components/ui'
 
 const LEVEL_META: Record<string, { label: string; color: string }> = {
@@ -38,76 +36,73 @@ function diffPct(from: number | null | undefined, to: number): string | null {
 }
 
 export default function AiReview() {
-  const [loading, setLoading] = useState(true)
+  const queryClient = useQueryClient()
   const [error, setError] = useState('')
 
   // 配置
-  const [cfg, setCfg] = useState<AiReviewConfig | null>(null)
+  const { data: cfg } = useQuery({
+    queryKey: ['ai-review', 'config'],
+    queryFn: api.aiReviewConfig,
+  })
   const [cfgForm, setCfgForm] = useState({ base_url: '', api_key: '', model: '', enabled: false })
   const [cfgSaved, setCfgSaved] = useState('')
+  // cfg 到达后同步表单(保存后 invalidate 重取亦同步, 与原 loadConfig 行为一致)
+  useEffect(() => {
+    if (cfg) setCfgForm({ base_url: cfg.base_url || '', api_key: '', model: cfg.model || '', enabled: cfg.enabled })
+  }, [cfg])
 
   // 触发
   const [scope, setScope] = useState('week')
-  const [task, setTask] = useState<AiReviewTask | null>(null)
-  const [running, setRunning] = useState(false)
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const [taskId, setTaskId] = useState<string | null>(null)
 
   // 历史
-  const [history, setHistory] = useState<AiReviewRecord[]>([])
+  const { data: history = [], isLoading } = useQuery({
+    queryKey: ['ai-review', 'history'],
+    queryFn: api.aiReviewHistory,
+  })
   const [current, setCurrent] = useState<AiReviewRecord | null>(null)
 
   // 闭环: 变更记录 + 护栏策略
-  const [changes, setChanges] = useState<ConfigChange[]>([])
-  const [policy, setPolicy] = useState<TuningPolicy | null>(null)
+  const { data: changes = [] } = useQuery({
+    queryKey: ['ai-review', 'changes'],
+    queryFn: api.aiReviewChanges,
+  })
+  const { data: policy } = useQuery({
+    queryKey: ['ai-review', 'policy'],
+    queryFn: api.aiReviewTuningPolicy,
+  })
   const [reverting, setReverting] = useState<number | null>(null)
 
-  const loadConfig = () => api.aiReviewConfig().then((c) => {
-    setCfg(c)
-    setCfgForm({ base_url: c.base_url || '', api_key: '', model: c.model || '', enabled: c.enabled })
-  }).catch((e) => setError(String(e.message || e)))
+  // 复盘任务: 触发后每 2s 轮询, 终态(done/failed)自动停止
+  const { data: task } = useQuery({
+    queryKey: ['ai-review', 'task', taskId ?? 'none'],
+    queryFn: () => api.aiReviewResult(taskId!),
+    enabled: taskId !== null,
+    refetchInterval: (query) => (query.state.data?.status === 'running' ? 2000 : false),
+  })
+  const running = taskId !== null && task?.status !== 'done' && task?.status !== 'failed'
 
-  const loadChanges = () => api.aiReviewChanges().then(setChanges).catch(() => {})
-  const loadPolicy = () => api.aiReviewTuningPolicy().then(setPolicy).catch(() => {})
-
+  // 任务终态副作用: 完成后刷新历史/变更并提示
   useEffect(() => {
-    Promise.all([
-      api.aiReviewHistory().then(setHistory).catch(() => {}),
-      loadConfig(),
-      loadChanges(),
-      loadPolicy(),
-    ]).finally(() => setLoading(false))
-    return () => { if (pollRef.current) clearInterval(pollRef.current) }
-  }, [])
-
-  const stopPoll = () => {
-    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
-  }
+    if (task?.status === 'done') {
+      setCurrent(task.review ?? null)
+      queryClient.invalidateQueries({ queryKey: ['ai-review', 'history'] })
+      queryClient.invalidateQueries({ queryKey: ['ai-review', 'changes'] })
+      toast.success('复盘完成')
+    } else if (task?.status === 'failed') {
+      setError(task.error || '复盘失败')
+      toast.error(task.error || '复盘失败')
+    }
+  }, [task?.status])
 
   const run = async () => {
-    setRunning(true)
     setError('')
+    setTaskId(null)
     try {
       const { task_id } = await api.aiReviewRun(scope)
-      stopPoll()
-      pollRef.current = setInterval(async () => {
-        try {
-          const t = await api.aiReviewResult(task_id)
-          setTask(t)
-          if (t.status === 'done') {
-            stopPoll(); setRunning(false)
-            setCurrent(t.review ?? null)
-            setHistory(await api.aiReviewHistory())
-            await loadChanges()
-            toast.success('复盘完成')
-          } else if (t.status === 'failed') {
-            stopPoll(); setRunning(false)
-            setError(t.error || '复盘失败')
-            toast.error(t.error || '复盘失败')
-          }
-        } catch { stopPoll(); setRunning(false) }
-      }, 2000)
+      setTaskId(task_id)
     } catch (e) {
-      setError(String((e as Error).message)); setRunning(false)
+      setError(String((e as Error).message))
       toast.error(String((e as Error).message))
     }
   }
@@ -124,7 +119,7 @@ export default function AiReview() {
       setCfgSaved('已保存')
       setCfgForm((f) => ({ ...f, api_key: '' }))
       toast.success('LLM 配置已保存')
-      await loadConfig()
+      queryClient.invalidateQueries({ queryKey: ['ai-review', 'config'] })
     } catch (e) {
       setError(String((e as Error).message))
       toast.error(String((e as Error).message))
@@ -136,10 +131,10 @@ export default function AiReview() {
     try {
       const r = await api.aiReviewSuggestion(current.id, index, status)
       setCurrent({ ...current, suggestions: r.suggestions } as AiReviewRecord)
-      setHistory(await api.aiReviewHistory())
+      queryClient.invalidateQueries({ queryKey: ['ai-review', 'history'] })
       if (r.applied?.applied) {
         toast.success(r.applied.message || '已应用参数调整')
-        await loadChanges()
+        queryClient.invalidateQueries({ queryKey: ['ai-review', 'changes'] })
       } else if (status === 'accepted') {
         toast.info(r.applied?.message || '已标记采纳')
       }
@@ -154,7 +149,7 @@ export default function AiReview() {
     try {
       await api.aiReviewRevert(changeId)
       toast.success('已撤销该参数调整')
-      await loadChanges()
+      queryClient.invalidateQueries({ queryKey: ['ai-review', 'changes'] })
     } catch (e) {
       toast.error(String((e as Error).message))
     } finally {
@@ -162,7 +157,7 @@ export default function AiReview() {
     }
   }
 
-  if (loading) return <Loading />
+  if (isLoading) return <Loading />
 
   const issues = current?.rule_result?.issues ?? []
   const stats = current?.rule_result?.stats ?? {}

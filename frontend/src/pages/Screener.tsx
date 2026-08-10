@@ -1,7 +1,8 @@
-import { Fragment, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
+import { Fragment, useEffect, useMemo, useState, type MouseEvent } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../api/client'
-import type { IndustryNode, ScreenerHistoryItem, ScreenerPreset, ScreenerTask, UniverseStats } from '../api/client'
+import type { IndustryNode, ScreenerHistoryItem, ScreenerPreset, ScreenerTask } from '../api/client'
 import { Button, Card, ConfirmDialog, EmptyState, ErrorBox, Loading, Tag, toast } from '../components/ui'
 import { cn } from '../components/ui'
 
@@ -69,22 +70,18 @@ const LEVEL_OPTIONS = [
 
 export default function Screener() {
   const navigate = useNavigate()
-  const [task, setTask] = useState<ScreenerTask | null>(null)
-  const [loading, setLoading] = useState(true)
+  const queryClient = useQueryClient()
   const [error, setError] = useState('')
 
   // 股票条件: 指数池(多选, 空=全A) + 板块 + 申万行业; 默认上证50(全A串行扫描小时级, sz50 秒级)
   const [universeSel, setUniverseSel] = useState<string[]>(['sz50'])
-  const [universeStats, setUniverseStats] = useState<UniverseStats | null>(null)
   const [universeNote, setUniverseNote] = useState('')
   const [boards, setBoards] = useState<string[]>([])
   const [industries, setIndustries] = useState<string[]>([])
-  const [industryTree, setIndustryTree] = useState<IndustryNode[]>([])
   const [industryNote, setIndustryNote] = useState('')
   const [expandedInds, setExpandedInds] = useState<Set<string>>(new Set()) // 树形展开的节点名
 
   // 条件组合预设(一键复用)
-  const [presets, setPresets] = useState<ScreenerPreset[]>([])
   const [presetName, setPresetName] = useState('')
   const [presetInputOpen, setPresetInputOpen] = useState(false)
   const [savingPreset, setSavingPreset] = useState(false)
@@ -97,42 +94,80 @@ export default function Screener() {
   const [applyGate, setApplyGate] = useState(true)
   const [applyFactors, setApplyFactors] = useState(true)
 
-  const [running, setRunning] = useState(false)
   const [expanded, setExpanded] = useState<string | null>(null)
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   // 分析记录(持久化落库): 历史列表 + 当前回看中的记录 id
-  const [history, setHistory] = useState<ScreenerHistoryItem[]>([])
   const [activeHistory, setActiveHistory] = useState<number | null>(null)
   // 结果阶段筛选(全部/启动/加速/过热/衰竭/无阶段)
   const [stageFilter, setStageFilter] = useState<StageFilter>('all')
   // 删除二次确认(项目规则): 待删除的目标
   const [confirmDel, setConfirmDel] = useState<{ type: 'history' | 'preset'; id: number } | null>(null)
 
-  const stopPoll = () => {
-    if (pollRef.current) {
-      clearInterval(pollRef.current)
-      pollRef.current = null
-    }
-  }
+  // ---- 静态数据(挂载加载, 操作后 invalidate 刷新) ----
+  const { data: latestTask, isLoading } = useQuery({
+    queryKey: ['screener', 'latest'],
+    queryFn: api.screenerLatest,
+  })
+  const { data: history = [] } = useQuery({
+    queryKey: ['screener', 'history'],
+    queryFn: api.screenerHistory,
+    select: (d) => d.items,
+  })
+  const { data: universeStats, error: uniQueryError } = useQuery({
+    queryKey: ['screener', 'universe-stats'],
+    queryFn: api.universeStats,
+  })
+  const { data: industryTree = [] } = useQuery({
+    queryKey: ['screener', 'industry-tree'],
+    queryFn: api.screenerIndustryTree,
+    select: (d) => d.items,
+  })
+  const { data: presets = [] } = useQuery({
+    queryKey: ['screener', 'presets'],
+    queryFn: api.screenerPresets,
+    select: (d) => d.items,
+  })
 
-  const refreshHistory = () => api.screenerHistory().then((d) => setHistory(d.items)).catch(() => {})
-  const refreshPresets = () => api.screenerPresets().then((d) => setPresets(d.items)).catch(() => {})
+  // ---- 实时扫描任务: 触发后每 3s 轮询, 终态自动停止 ----
+  const [taskId, setTaskId] = useState<string | null>(null)
+  const { data: liveTask } = useQuery({
+    queryKey: ['screener-task', taskId ?? 'none'],
+    queryFn: () => api.screenerResult(taskId!),
+    enabled: taskId !== null,
+    refetchInterval: (q) => (q.state.data?.status === 'running' || q.state.data?.status === 'pending' ? 3000 : false),
+  })
+  // 历史回看: 独立 state 覆盖渲染(不干扰实时任务轮询)
+  const [historyTask, setHistoryTask] = useState<ScreenerTask | null>(null)
+  const task = historyTask ?? liveTask ??
+    (latestTask && (latestTask.status === 'done' || latestTask.status === 'failed') ? latestTask : null)
+  const running = taskId !== null && (liveTask === undefined || liveTask.status === 'running' || liveTask.status === 'pending')
 
+  // 任务终态副作用: 刷新历史列表 + 回到实时结果
   useEffect(() => {
-    api.screenerLatest().then((t) => { if (t && (t.status === 'done' || t.status === 'failed')) setTask(t) }).catch(() => {})
-      .finally(() => setLoading(false))
-    refreshHistory()
-    api.universeStats().then((s) => {
-      setUniverseStats(s)
-      if (Object.keys(s).length === 0) setUniverseNote('成分股缓存为空, 请先在后端刷新选股池(Swagger: POST /screener/universe/refresh)')
-    }).catch(() => setUniverseNote('选股池状态读取失败'))
-    api.screenerIndustryTree().then((r) => {
-      setIndustryTree(r.items ?? [])
-      if (!r.items?.length) setIndustryNote('行业数据为空, 需先刷新申万分类映射(设置->数据源或 Swagger: POST /screener/classification/refresh)')
-    }).catch(() => setIndustryNote('行业树读取失败'))
-    refreshPresets()
-    return stopPoll
-  }, [])
+    if (liveTask?.status === 'done' || liveTask?.status === 'failed') {
+      setActiveHistory(null)
+      setHistoryTask(null)
+      queryClient.invalidateQueries({ queryKey: ['screener', 'history'] })
+      if (liveTask.status === 'failed') toast.error(liveTask.error || '扫描失败')
+    }
+  }, [liveTask?.status])
+
+  // 选股池/行业树状态提示(数据到达后派生)
+  useEffect(() => {
+    if (universeStats && Object.keys(universeStats).length === 0) {
+      setUniverseNote('成分股缓存为空, 请先在后端刷新选股池(Swagger: POST /screener/universe/refresh)')
+    }
+  }, [universeStats])
+  useEffect(() => {
+    if (uniQueryError) setUniverseNote('选股池状态读取失败')
+  }, [uniQueryError])
+  useEffect(() => {
+    if (industryTree.length === 0) {
+      setIndustryNote('行业数据为空, 需先刷新申万分类映射(设置->数据源或 Swagger: POST /screener/classification/refresh)')
+    }
+  }, [industryTree])
+
+  const refreshHistory = () => queryClient.invalidateQueries({ queryKey: ['screener', 'history'] })
+  const refreshPresets = () => queryClient.invalidateQueries({ queryKey: ['screener', 'presets'] })
 
   // 指数池多选: 点"全部A股"清空选择(空=全A); 点指数加入/移除
   const toggleUniverse = (key: string) => {
@@ -199,12 +234,12 @@ export default function Screener() {
       if (type === 'history') {
         await api.deleteScreenerHistory(id)
         toast.success('记录已删除')
-        setHistory((prev) => prev.filter((h) => h.id !== id))
+        refreshHistory()
         if (activeHistory === id) setActiveHistory(null)
       } else {
         await api.deleteScreenerPreset(id)
         toast.success('预设已删除')
-        setPresets((prev) => prev.filter((p) => p.id !== id))
+        refreshPresets()
       }
     } catch (err) {
       toast.error(String((err as Error).message))
@@ -228,7 +263,6 @@ export default function Screener() {
     })
 
   const run = async () => {
-    setRunning(true)
     setError('')
     try {
       const { task_id } = await api.screenerRun(
@@ -240,27 +274,11 @@ export default function Screener() {
         { perIndustry, industryLevel, applyGate, applyFactors },
       )
       toast.info('扫描已启动, 完成后自动刷新结果')
-      stopPoll()
-      pollRef.current = setInterval(async () => {
-        try {
-          const t = await api.screenerResult(task_id)
-          setTask(t)
-          if (t.status === 'done' || t.status === 'failed') {
-            stopPoll()
-            setRunning(false)
-            setActiveHistory(null)
-            refreshHistory() // 新扫描落库后刷新历史列表
-            if (t.status === 'failed') toast.error(t.error || '扫描失败')
-          }
-        } catch {
-          stopPoll()
-          setRunning(false)
-        }
-      }, 3000)
+      setHistoryTask(null)
+      setTaskId(task_id)
     } catch (e) {
       setError(String((e as Error).message))
       toast.error(String((e as Error).message))
-      setRunning(false)
     }
   }
 
@@ -281,7 +299,7 @@ export default function Screener() {
     return list.filter((r) => stageKeyOf(r.stage) === stageFilter)
   }, [task, stageFilter])
 
-  if (loading) return <Loading />
+  if (isLoading) return <Loading />
 
   const scanning = running || (task?.status === 'running' || task?.status === 'pending')
 
@@ -290,7 +308,7 @@ export default function Screener() {
     setActiveHistory(id)
     try {
       const h = await api.screenerHistoryDetail(id)
-      setTask({
+      setHistoryTask({
         id: `h${id}`,
         status: h.status === 'failed' ? 'failed' : 'done',
         market: h.market,
