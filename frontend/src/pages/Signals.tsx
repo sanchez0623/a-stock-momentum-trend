@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react'
+import { createPortal } from 'react-dom'
+import { motion } from 'framer-motion'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../api/client'
 import type { PositionItem, Signal, SignalRecord } from '../api/client'
@@ -26,6 +28,7 @@ export default function Signals() {
   const [busy, setBusy] = useState(false) // 单个评估 / 批量分析 共用
   const [results, setResults] = useState<ResultItem[] | null>(null)
   const [positions, setPositions] = useState<PositionItem[]>([])
+  const [confirm, setConfirm] = useState<{ symbol: string; name: string } | null>(null) // 生成计划前先确认是否跳转
 
   const refresh = () => api.signals(undefined, 30).then(setRecords).catch((e) => setError(String(e.message || e)))
 
@@ -73,8 +76,12 @@ export default function Signals() {
     }
   }
 
-  // 有信号 -> 生成交易计划并跳转「交易计划」页(打通流程)
-  const generatePlan = async (symbol: string, nm: string) => {
+  // 点击「生成计划」: 先弹确认框询问是否跳转, 确认后再后台生成
+  const askGenerate = (symbol: string, nm: string) => setConfirm({ symbol, name: nm })
+
+  // 后台生成交易计划; goPlans=true 生成成功后跳转「交易计划」页, 否则留在本页
+  const doGenerate = async (symbol: string, nm: string, goPlans: boolean) => {
+    setConfirm(null)
     setBusy(true)
     setError('')
     try {
@@ -85,8 +92,13 @@ export default function Signals() {
         toast.info('当前无信号, 暂不生成计划')
         return
       }
-      toast.success(`已生成 ${symbol} 的交易计划, 已跳转`)
-      navigate('/plans')
+      if (goPlans) {
+        toast.success(`已生成 ${symbol} 的交易计划, 已跳转`)
+        navigate('/plans')
+      } else {
+        toast.success(`已生成 ${symbol} 的交易计划`)
+        setBusy(false)
+      }
     } catch (e) {
       setError(String((e as Error).message))
       toast.error(String((e as Error).message))
@@ -163,7 +175,7 @@ export default function Signals() {
         ) : results.length === 0 ? (
           <EmptyState>无结果。</EmptyState>
         ) : (
-          results.map((r) => <ResultRow key={r.symbol} r={r} onGeneratePlan={generatePlan} busy={busy} />)
+          results.map((r) => <ResultRow key={r.symbol} r={r} onGeneratePlan={askGenerate} busy={busy} />)
         )}
       </Card>
 
@@ -190,7 +202,50 @@ export default function Signals() {
           })
         )}
       </Card>
+
+      {/* 生成计划确认框: 询问是否跳转「交易计划」页 */}
+      {confirm && (
+        <ConfirmDialog
+          symbol={confirm.symbol}
+          name={confirm.name}
+          onJump={() => doGenerate(confirm.symbol, confirm.name, true)}
+          onStay={() => doGenerate(confirm.symbol, confirm.name, false)}
+          onCancel={() => setConfirm(null)}
+        />
+      )}
     </div>
+  )
+}
+
+// 生成计划确认框: 「是」生成后跳转「交易计划」页, 「否」仅后台生成留在本页, 「取消」不生成
+function ConfirmDialog({ symbol, name, onJump, onStay, onCancel }: {
+  symbol: string
+  name: string
+  onJump: () => void
+  onStay: () => void
+  onCancel: () => void
+}) {
+  return createPortal(
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onCancel}>
+      <motion.div
+        initial={{ opacity: 0, scale: 0.95 }}
+        animate={{ opacity: 1, scale: 1 }}
+        transition={{ duration: 0.15 }}
+        className="w-full max-w-sm rounded-lg border border-line bg-white p-4 shadow-cardHover"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="mb-1 text-[15px] font-semibold text-ink">生成交易计划</div>
+        <p className="mb-4 text-[13px] leading-relaxed text-ink-secondary">
+          将为 {symbol}{name ? ` ${name}` : ''} 生成交易计划, 是否跳转到「交易计划」页查看?
+        </p>
+        <div className="flex justify-end gap-2">
+          <Button kind="ghost" onClick={onCancel}>取消</Button>
+          <Button kind="ghost" onClick={onStay}>否, 留在本页</Button>
+          <Button kind="primary" onClick={onJump}>是, 生成并跳转</Button>
+        </div>
+      </motion.div>
+    </div>,
+    document.body,
   )
 }
 
