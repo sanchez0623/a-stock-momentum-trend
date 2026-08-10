@@ -4,6 +4,11 @@
 # 本地项目记忆(不入库)
 .workbuddy/
 
+# 临时诊断文件(排查截图/外部文档快照)
+backend/_lix_doc.html
+screener-verify.png
+screener_diag_1.png
+
 # 数据(不入库)
 data/
 backend/data/*
