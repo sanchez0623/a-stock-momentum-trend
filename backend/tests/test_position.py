@@ -115,7 +115,7 @@ def test_opened_at_recorded_and_stable_on_add(tmp_engine):
 def test_account_start_capital_edit_and_default(tmp_engine):
     """启动资金可修改并持久化; 后端不再返回已废弃的 remaining_capital.
 
-    可用资金/总权益改为前端派生(= 启动资金 - 持仓市值), 此处仅校验
+    可用资金/总权益由前端派生(含已实现盈亏 realized_pnl), 此处仅校验
     后端资金账户以 start_capital 为唯一真值源。
     """
     acc = account_manager.get(None)
@@ -154,7 +154,7 @@ def test_pyramid_plan_stage(tmp_engine):
 def test_pyramid_plan_stage_after_add(tmp_engine):
     """已加一档后, 下一档应为第3档(20%), 不再误报第1档."""
     pm.open_or_add("300750", "宁德时代", 100, 100.0, "首仓", None)
-    pm.open_or_add("300750", "宁德时代", 60, 100.0, "加仓", None)
+    pm.open_or_add("300750", "宁德时代", 100, 100.0, "加仓", None)
     plan = pm.pyramid_plan("300750", None)
     assert plan["used_stage"] == 1
     assert plan["next_stage_index"] == 2
@@ -164,8 +164,8 @@ def test_pyramid_plan_stage_after_add(tmp_engine):
 def test_pyramid_stage_not_bumped_on_same_day_double_count(tmp_engine):
     """同日多笔买入(分批建仓)应各算一档, 但仍由显式字段维护, 而非按笔数倒推误判."""
     pm.open_or_add("300750", "宁德时代", 100, 100.0, "首仓", None)
-    pm.open_or_add("300750", "宁德时代", 50, 100.0, "加仓", None)
-    pm.open_or_add("300750", "宁德时代", 30, 100.0, "加仓", None)
+    pm.open_or_add("300750", "宁德时代", 100, 100.0, "加仓", None)
+    pm.open_or_add("300750", "宁德时代", 100, 100.0, "加仓", None)
     pos = pm.get_position("300750", None)
     assert pos.pyramid_stage == 2  # 首仓 + 两次加仓 = 已用2档
     plan = pm.pyramid_plan("300750", None)
@@ -201,3 +201,30 @@ def test_portfolio_summary(tmp_engine):
     assert summary["cost_raw_value"] == pytest.approx(30000.0)
     assert summary["cost_value"] == pytest.approx(30000.0 + fees, abs=0.02)
     assert len(summary["positions"]) == 2
+    # 仅买入未卖出 -> 已实现盈亏为 0
+    assert summary["realized_pnl"] == 0.0
+
+
+def test_portfolio_realized_pnl_accumulates_sells(tmp_engine):
+    """历史卖出净额(已扣双边手续费)应累计进 realized_pnl, 供总权益 = 启动资金 + 已实现 + 浮动."""
+    pm.open_or_add("300750", "宁德时代", 100, 100.0, "首仓", None)
+    _backdate("300750")
+    pnl1 = pm.reduce("300750", 100, 120.0, "减仓", None)
+    pm.open_or_add("600519", "贵州茅台", 100, 100.0, "首仓", None)
+    _backdate("600519")
+    pnl2 = pm.close("600519", 90.0, "清仓", None)
+    summary = pm.portfolio({}, None)
+    assert summary["realized_pnl"] == pytest.approx(pnl1 + pnl2, abs=0.01)
+
+
+def test_open_or_add_rejects_non_compliant_buy_qty(tmp_engine):
+    """买入申报数量须符合板块规则(与交易计划同一套): 科创板≥200, 主板100整数倍."""
+    with pytest.raises(PositionManagerError, match="买入申报数量"):
+        pm.open_or_add("688146", "中船特气", 180, 300.0, "首仓", None)  # 科创板 <200
+    with pytest.raises(PositionManagerError, match="买入申报数量"):
+        pm.open_or_add("000001", "平安银行", 150, 10.0, "首仓", None)  # 主板非100倍数
+    # 合规数量不受影响: 科创板 1 股递增(≥200), 主板 100 整数倍
+    pos = pm.open_or_add("688146", "中船特气", 421, 300.0, "首仓", None)
+    assert pos.qty == 421
+    pos = pm.open_or_add("000001", "平安银行", 200, 10.0, "首仓", None)
+    assert pos.qty == 200

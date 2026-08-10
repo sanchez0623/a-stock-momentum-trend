@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from app import db
 from app.core.plan.generator import PlanGenerator
 from app.core.screener.engine import score_indicators
@@ -63,7 +65,7 @@ def test_plan_buy_add_shows_third_leg_after_one_add(tmp_engine):
     from app.core.position import position_manager
 
     position_manager.open_or_add("300750", "宁德时代", 100, 100.0, "首仓", None)
-    position_manager.open_or_add("300750", "宁德时代", 60, 100.0, "加仓", None)
+    position_manager.open_or_add("300750", "宁德时代", 100, 100.0, "加仓", None)
     plan = gen.generate("300750", "宁德时代", _signal(), portfolio={"total_pct": 65.0})
     assert plan["action"] == "buy_add"
     assert "第 3 档" in plan["content"]
@@ -104,6 +106,51 @@ def test_plan_generate_buy_first(tmp_engine):
     assert "首仓买入" in plan["content"]
 
 
+def test_plan_star_board_buy_add_qty_rounded_to_lot(tmp_engine):
+    """复现 bug: 科创板加仓建议不得出现 <200 股的违规数量(如 180 股), 须按板块规则取整."""
+    from app.core.position import position_manager
+
+    position_manager.open_or_add("688146", "中船特气", 421, 305.91, "首仓", None)
+    sig = Signal(type="BUY_ADD", symbol="688146", name="中船特气", direction="buy",
+                 strength=51.0, reason="回踩20日线企稳", price=326.90)
+    plan = gen.generate("688146", "中船特气", sig,
+                        portfolio={"total_pct": 40.0, "available_capital": 179796.0})
+    content = plan["content"]
+    m = re.search(r"约加 (\d+) 股", content)
+    assert m, f"计划应给出具体加仓股数: {content}"
+    assert int(m.group(1)) >= 200, f"科创板加仓须≥200股, 实际建议: {content}"
+    assert "科创板单笔申报≥200股" in content
+
+
+def test_plan_star_board_buy_add_insufficient_amount(tmp_engine):
+    """反推金额不足以买 200 股时, 应提示不足最小申报单位而非给出违规股数."""
+    from app.core.position import position_manager
+
+    position_manager.open_or_add("688146", "中船特气", 200, 300.0, "首仓", None)
+    sig = Signal(type="BUY_ADD", symbol="688146", name="中船特气", direction="buy",
+                 strength=60.0, reason="回踩20日线企稳", price=310.0)
+    # 2 档目标仓位较小 -> 反推金额不足 200 股
+    plan = gen.generate("688146", "中船特气", sig,
+                        portfolio={"total_pct": 10.0, "available_capital": 200000.0})
+    content = plan["content"]
+    assert "约加 0 股" not in content
+    assert "不足最小申报单位" in content
+
+
+def test_plan_sell_reduce_shows_compliant_qty_range(tmp_engine):
+    """SELL_REDUCE 计划应给出合规的具体减仓股数区间, 并提示碎股一次性清仓规则."""
+    from app.core.position import position_manager
+
+    position_manager.open_or_add("688146", "中船特气", 421, 300.0, "首仓", None)
+    _backdate("688146")  # 解除 T+1 锁定
+    sig = Signal(type="SELL_REDUCE", symbol="688146", name="中船特气", direction="sell",
+                 strength=70.0, reason="冲高回落减仓", price=326.90)
+    plan = gen.generate("688146", "中船特气", sig, portfolio={"total_pct": 40.0})
+    content = plan["content"]
+    assert "建议减 140 ~ 210 股" in content
+    assert "减后剩余不足 200 股" in content
+
+
 # ---------------------------------------------------------------- 选股器评分
 def test_score_indicators_uptrend(kline_df):
     from app.core.indicators import compute_all
@@ -132,3 +179,38 @@ def test_score_indicators_downtrend_ranks_low():
     score = score_indicators(ind)
     # 下跌趋势: 动量/量能低分, 总分明显低于上涨行情(ADX 只测强度不测方向, 趋势分可高)
     assert score["total"] < 50
+
+
+# ---------------------------------------------------------------- 选股扫描历史
+
+def test_screener_history_roundtrip(tmp_engine):
+    """扫描历史: 保存 -> 列表(不含结果) -> 详情(含结果) -> 删除 全链路."""
+    from app.core.screener.history import (
+        delete_scan_history, get_scan_history, list_scan_history, save_scan_history,
+    )
+
+    hid = save_scan_history(
+        {"status": "done", "total": 120, "result": [
+            {"symbol": "600000", "name": "浦发银行", "total": 62.5, "detail": {"趋势": "多头"}},
+            {"symbol": "688146", "name": "中船特气", "total": 58.0},
+        ]},
+        {"market": "all", "top_n": 30, "board": "main,star", "universe": "hs300",
+         "per_industry": 5, "apply_gate": True, "apply_factors": True},
+    )
+    items = list_scan_history()
+    assert len(items) == 1
+    row = items[0]
+    assert row["result_count"] == 2
+    assert row["universe"] == "hs300"
+    assert row["board"] == "main,star"
+    assert "result" not in row  # 列表不携带大 JSON
+
+    detail = get_scan_history(hid)
+    assert detail is not None
+    assert len(detail["result"]) == 2
+    assert detail["result"][0]["detail"]["趋势"] == "多头"
+    assert detail["status"] == "done"
+
+    assert delete_scan_history(hid) is True
+    assert get_scan_history(hid) is None
+    assert delete_scan_history(hid) is False  # 重复删除返回 False

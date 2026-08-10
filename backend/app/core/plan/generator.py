@@ -8,6 +8,7 @@ from typing import Any
 import pandas as pd
 
 from app.core.config import config_manager
+from app.core.lot_rules import board_note, min_buy_unit, round_buy_qty, sell_qty
 from app.core.modes import ModeDecision, mode_for_ind
 from app.core.position import position_manager
 from app.core.risk import risk_manager
@@ -59,10 +60,10 @@ class PlanGenerator:
         signal_desc = f"{signal.type}(强度{signal.strength:.0f}) — {signal.reason}"
 
         if signal.type == "BUY_FIRST":
-            action, advice = "buy_first", self._advice_buy_first(price, mode)
+            action, advice = "buy_first", self._advice_buy_first(price, mode, symbol)
             stop_line = "—"
         elif signal.type == "BUY_ADD":
-            action, advice = "buy_add", self._advice_buy_add(pos, portfolio, mode)
+            action, advice = "buy_add", self._advice_buy_add(pos, portfolio, mode, symbol)
             stop_line = f"{pos.cost * (1 - stop_pct / 100):.2f}(成本下移{stop_pct:.0f}%)"
         elif signal.type in ("SELL_REDUCE", "SELL_STOP", "T_SELL"):
             if t_locked:
@@ -73,7 +74,7 @@ class PlanGenerator:
                 )
                 stop_line = "—"
             elif signal.type == "SELL_REDUCE":
-                action, advice = "sell_reduce", "按信号减仓: 建议减 1/3 ~ 1/2 仓位"
+                action, advice = "sell_reduce", self._advice_sell_reduce(pos, symbol)
                 stop_line = "—"
             elif signal.type == "SELL_STOP":
                 action, advice = "sell_stop", "立即止损清仓, 不犹豫不补仓"
@@ -141,14 +142,20 @@ class PlanGenerator:
         return f"已持仓 {pos.qty} 股, 成本 {pos.cost:.2f}, 浮盈 {pnl_pct:+.1f}%"
 
     @staticmethod
-    def _advice_buy_first(price: float, mode: ModeDecision | None = None) -> str:
-        """首仓建议: 取当前模式金字塔比例的第 1 档(如强攻/回踩=50%, 震荡=70%)."""
+    def _advice_buy_first(price: float, mode: ModeDecision | None = None, symbol: str = "") -> str:
+        """首仓建议: 取当前模式金字塔比例的第 1 档(如强攻/回踩=50%, 震荡=70%).
+
+        symbol 给定(非空)时附加板块最小申报单位提示(科创板≥200股等).
+        """
         ratios = (mode.mode["pyramid_ratios"] if mode else [0.5, 0.3, 0.2])
         first = ratios[0] if ratios else 0.5
-        return f"首仓买入: 金字塔第一档 {first * 100:.0f}% 目标仓位, 触发价 {price:.2f} 附近"
+        text = f"首仓买入: 金字塔第一档 {first * 100:.0f}% 目标仓位, 触发价 {price:.2f} 附近"
+        note = board_note(symbol)
+        return f"{text}({note})" if note else text
 
     @staticmethod
-    def _advice_buy_add(pos: Any, portfolio: dict[str, Any] | None = None, mode: ModeDecision | None = None) -> str:
+    def _advice_buy_add(pos: Any, portfolio: dict[str, Any] | None = None,
+                        mode: ModeDecision | None = None, symbol: str = "") -> str:
         """金字塔加仓建议(当前模式的金字塔比例).
 
         pos.pyramid_stage = 已完成档位(0=仅首仓). 已持仓状态下 BUY_ADD 应建议「下一档」,
@@ -157,6 +164,7 @@ class PlanGenerator:
 
         另做 Q4 资金感知: 当 portfolio 携带 available_capital 时, 反推该股目标总仓位市值,
         估算本次加仓所需金额并与可用资金比较, 给出「足够/超出」提示.
+        symbol 给定(非空)时, 股数按板块申报规则取整并附板块提示(科创板≥200股等).
         """
         ratios = (mode.mode["pyramid_ratios"] if mode else [0.5, 0.3, 0.2])
         max_stages = int((mode.mode.get("max_stages") if mode else 3) or 3)
@@ -166,17 +174,25 @@ class PlanGenerator:
         next_idx = stage + 1  # 下一档加仓索引(首仓 ratios[0] 已占用)
         if next_idx < effective_max:
             advice = f"金字塔加仓: 第 {next_idx + 1} 档, 建议 {ratios[next_idx] * 100:.0f}% 目标仓位"
-            capital_note = PlanGenerator._capital_aware_add_note(pos, ratios, next_idx, portfolio)
+            capital_note = PlanGenerator._capital_aware_add_note(pos, ratios, next_idx, portfolio, symbol)
             if capital_note:
                 advice += "; " + capital_note
+            note = board_note(symbol)
+            if note:
+                advice += f"; {note}"
             return advice
         return "金字塔档位已用尽, 暂不加仓"
 
     @staticmethod
     def _capital_aware_add_note(
-        pos: Any, ratios: list[float], next_idx: int, portfolio: dict[str, Any] | None
+        pos: Any, ratios: list[float], next_idx: int, portfolio: dict[str, Any] | None,
+        symbol: str = "",
     ) -> str:
-        """Q4: 估算本次加仓金额并与可用资金比较(无可用资金信息时返回空串)."""
+        """Q4: 估算本次加仓金额并与可用资金比较(无可用资金信息时返回空串).
+
+        symbol 给定(非空)时, 股数按板块申报规则取整(科创板≥200/北交所≥100/主板100整数倍),
+        金额按取整后股数重算 —— 避免计划中出现 180 股这类无法成交的违规建议.
+        """
         if not portfolio:
             return ""
         avail = portfolio.get("available_capital")
@@ -193,11 +209,36 @@ class PlanGenerator:
         target_total = current_capital / completed_ratio
         add_capital = target_total * ratios[next_idx]
         add_qty = int(add_capital / price)
+        if symbol:
+            add_qty = round_buy_qty(add_qty, symbol)  # 按板块申报规则取整
         if add_qty <= 0:
+            if symbol:
+                return f"本次加仓金额不足最小申报单位({min_buy_unit(symbol)}股)"
             return ""
+        add_capital = add_qty * price  # 金额按合规股数重算
         if add_capital <= avail:
             return f"约加 {add_qty} 股(¥{add_capital:,.0f}), 可用资金 ¥{avail:,.0f} 充足"
         return (
             f"约加 {add_qty} 股(¥{add_capital:,.0f}), 超出可用资金 ¥{avail:,.0f}, "
             "请按资金上限缩减本次加仓"
+        )
+
+    @staticmethod
+    def _advice_sell_reduce(pos: Any, symbol: str) -> str:
+        """减仓建议: 给出 1/3~1/2 的具体股数, 并遵守卖出碎股规则.
+
+        卖出可申报任意数量, 但减仓后剩余持仓不足最小申报单位(碎股)时须一次性清仓.
+        """
+        if pos is None or pos.qty <= 0:
+            return "按信号减仓: 建议减 1/3 ~ 1/2 仓位"
+        min_unit = min_buy_unit(symbol)
+        lo = sell_qty(pos.qty // 3, pos.qty, symbol)
+        hi = sell_qty(pos.qty // 2, pos.qty, symbol)
+        if lo <= 0:
+            return "按信号减仓: 持仓过小, 建议直接清仓"
+        if lo == hi == pos.qty:
+            return f"按信号减仓: 减后剩余不足最小申报单位({min_unit}股), 建议一次性清仓"
+        return (
+            f"按信号减仓: 建议减 {lo} ~ {hi} 股(约 1/3~1/2 仓位), "
+            f"减后剩余不足 {min_unit} 股时建议一次性清仓"
         )

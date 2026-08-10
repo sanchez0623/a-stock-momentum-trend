@@ -31,6 +31,11 @@ from app.core.config import config_manager
 from app.core.datasource import kline_store
 from app.core.fees import compute_trade_fee
 from app.core.indicators import compute_all
+from app.core.lot_rules import (
+    min_buy_unit as _min_unit,
+    round_buy_qty as _round_buy_qty,
+    sell_qty as _sell_qty,
+)
 from app.core.signals.engine import PositionInfo, Signal, SignalEngine
 
 logger = logging.getLogger(__name__)
@@ -64,38 +69,9 @@ def _limit_pct(symbol: str) -> float:
 
 
 # ---------------------------------------------------------------- 申报数量规则(交易所合规)
-# 科创板(688/689): 买入 ≥200 股, 1 股递增
-# 北交所(43/83/87/88/92): 买入 ≥100 股, 1 股递增
-# 主板/创业板(其余): 买入 ≥100 股, 100 股整数倍
-# 卖出: 任意数量可申报, 但卖出后剩余持仓不足最小单位(碎股)时必须一次性全部卖出
-_STAR_PREFIX = ("688", "689")
-_BJ_PREFIX = ("43", "83", "87", "88", "92")
-
-
-def _min_unit(symbol: str) -> int:
-    """最小申报单位(股)."""
-    return 200 if symbol.startswith(_STAR_PREFIX) else 100
-
-
-def _round_buy_qty(raw: int, symbol: str) -> int:
-    """买入数量按板块规则取整: 科创板/北交所 1 股递增(≥下限), 其余 100 整数倍. 不足下限返回 0."""
-    if symbol.startswith(_STAR_PREFIX):
-        return raw if raw >= 200 else 0
-    if symbol.startswith(_BJ_PREFIX):
-        return raw if raw >= 100 else 0
-    qty = raw // 100 * 100
-    return qty if qty >= 100 else 0
-
-
-def _sell_qty(qty: int, pos_qty: int, symbol: str) -> int:
-    """卖出数量合规: 卖出后剩余不足最小单位(碎股)时一次性全部卖出."""
-    if qty <= 0 or pos_qty <= 0:
-        return 0
-    qty = min(qty, pos_qty)
-    remain = pos_qty - qty
-    if 0 < remain < _min_unit(symbol):
-        return pos_qty  # 碎股必须清仓
-    return qty
+# 科创板(688/689): 买入 ≥200 股, 1 股递增; 北交所(43/83/87/88/92): 买入 ≥100 股, 1 股递增;
+# 主板/创业板: 买入 ≥100 股, 100 股整数倍; 卖出后剩余不足最小单位(碎股)须一次性全部卖出。
+# 规则统一收敛在 app.core.lot_rules(回测/计划/录入共用), 此处仅做别名导入保持内部调用不变.
 
 
 @dataclass

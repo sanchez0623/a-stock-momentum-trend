@@ -17,6 +17,7 @@ from sqlmodel import Session, select
 from app import db
 from app.core.config import config_manager
 from app.core.logger import trade_logger
+from app.core.lot_rules import round_buy_qty
 from app.models.models import Position, Trade
 
 
@@ -67,6 +68,12 @@ class PositionManager:
         """
         if qty <= 0 or price <= 0:
             raise PositionManagerError("数量与价格必须为正")
+        # A 股买入申报数量合规(与交易计划/回测同一套规则): 科创板≥200, 北交所≥100, 主板100整数倍
+        if round_buy_qty(qty, symbol) != qty:
+            raise PositionManagerError(
+                f"{symbol} 买入申报数量 {qty} 不合规: 科创板须≥200股(1股递增), "
+                "北交所须≥100股(1股递增), 主板/创业板须为100的整数倍"
+            )
         with _session(session) as s:
             pos = self.get_position(symbol, s)
             first_open = pos is None
@@ -245,6 +252,9 @@ class PositionManager:
 
         cost 为含费摊薄成本, 因此 unrealized_pnl 已扣掉买入手续费(与券商 APP 一致);
         另返回 fee_cost = 摊在当前持仓上的买入费用, 便于前端说明口径.
+
+        realized_pnl 为历史卖出净额合计(trade.pnl, 已扣双边手续费),
+        供前端算总权益 = 启动资金 + 已实现盈亏 + 浮动盈亏.
         """
         positions = self.list_positions(session)
         market_value = 0.0
@@ -274,6 +284,11 @@ class PositionManager:
                 "unrealized_pnl": round(pnl, 2),
                 "unrealized_pct": round(pnl / cv * 100, 2) if cv else 0.0,
             })
+        # 已实现盈亏: 历史卖出净额合计(trade.pnl 已扣双边手续费), 供前端总权益计算
+        realized = 0.0
+        with _session(session) as s:
+            for t in s.exec(select(Trade).where(Trade.action == "sell")).all():
+                realized += t.pnl or 0.0
         return {
             "positions": items,
             "market_value": round(market_value, 2),
@@ -281,5 +296,6 @@ class PositionManager:
             "cost_raw_value": round(cost_raw_value, 2),
             "fee_cost": round(fee_cost_total, 2),
             "unrealized_pnl": round(unrealized, 2),
+            "realized_pnl": round(realized, 2),
             "unrealized_pct": round(unrealized / cost_value * 100, 2) if cost_value else 0.0,
         }
