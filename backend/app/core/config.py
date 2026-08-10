@@ -270,6 +270,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "timeout_sec": 30,
         },
     },
+    # 盘后 AI 日报: 定时生成「当日回顾 + 明日行动清单」, 全只读, 不产生配置变更
+    "日报": {
+        "enabled": True,
+        "hour": 16,
+        "minute": 30,
+        "push_webhook": "",  # 企业微信机器人 URL, 留空仅站内通知
+    },
     "手续费": {
         "commission_rate": 0.00005,      # 佣金: 万 0.5
         "commission_min": 5.0,           # 单笔最低佣金(元), 不足按 5 元收
@@ -342,10 +349,14 @@ def _migrate_config(cfg: dict[str, Any]) -> None:
 
 
 def _apply_env_overrides(cfg: dict[str, Any]) -> None:
-    """把环境变量覆盖写入配置(就地修改)."""
+    """把环境变量覆盖写入配置(就地修改).
+
+    空字符串视为未设置(不覆盖): 防止 .env 里留空的变量(如 LLM_API_KEY=)
+    在启动时把 DB 中页面保存的 Key 抹掉。
+    """
     for env_name, path in _ENV_MAP.items():
         val = os.getenv(env_name)
-        if val is None:
+        if val is None or val == "":
             continue
         parts = path.split(".")
         node = cfg
@@ -364,8 +375,9 @@ def _apply_env_overrides(cfg: dict[str, Any]) -> None:
     enabled = cfg["数据源"]["enabled"]
     for name in ("mootdx", "tencent", "baostock", "eastmoney", "akshare", "lixinger"):
         flag = os.getenv(f"ENABLE_{name.upper()}")
-        if flag is not None:
-            enabled[name] = flag.lower() in ("1", "true", "yes", "on")
+        if flag is None or flag == "":
+            continue
+        enabled[name] = flag.lower() in ("1", "true", "yes", "on")
     # 代理池
     proxy = os.getenv("PROXY_POOL")
     if proxy:

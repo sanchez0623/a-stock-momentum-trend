@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api, type BacktestFactorReport, type BacktestHoldStats } from '../api/client'
-import { Button, Card, ErrorBox, Loading } from '../components/ui'
+import { Button, Card, ErrorBox, Loading, PageHeader, Table, Td, Th, cn } from '../components/ui'
 import { EquityChart } from '../components/charts/EquityChart'
 
 // 阶段展示顺序(按风险递增)与配色: 红=利多/橙=需注意/绿=偏空
@@ -26,7 +26,7 @@ function fmt(v: number, suffix = '') {
 function HoldCell({ s }: { s: BacktestHoldStats }) {
   const color = s.expectancy > 0 ? '#dc2626' : s.expectancy < 0 ? '#16a34a' : '#334155'
   return (
-    <td className="px-3 py-2 align-top">
+    <Td>
       <div className="text-[15px] font-bold" style={{ color }}>
         胜率 {s.win_rate.toFixed(1)}%
       </div>
@@ -34,7 +34,7 @@ function HoldCell({ s }: { s: BacktestHoldStats }) {
         均值 {fmt(s.avg, '%')} · 中位 {fmt(s.median, '%')}
       </div>
       <div className="text-[11px] text-ink-faint">样本 {s.n}</div>
-    </td>
+    </Td>
   )
 }
 
@@ -138,34 +138,34 @@ function StrategyTab() {
               </button>
             </div>
             {showTrades && (
-              <table className="w-full border-collapse text-[12px]">
+              <Table className="text-[12px]">
                 <thead>
-                  <tr className="text-left text-ink-muted">
-                    <th className="px-3 py-1.5">日期</th>
-                    <th className="px-3 py-1.5">代码</th>
-                    <th className="px-3 py-1.5">动作</th>
-                    <th className="px-3 py-1.5 text-right">价格</th>
-                    <th className="px-3 py-1.5 text-right">数量</th>
-                    <th className="px-3 py-1.5 text-right">盈亏</th>
-                    <th className="px-3 py-1.5">信号理由</th>
+                  <tr>
+                    <Th>日期</Th>
+                    <Th>代码</Th>
+                    <Th>动作</Th>
+                    <Th right>价格</Th>
+                    <Th right>数量</Th>
+                    <Th right>盈亏</Th>
+                    <Th>信号理由</Th>
                   </tr>
                 </thead>
                 <tbody>
                   {report.trades.slice(-60).reverse().map((t, i) => (
                     <tr key={i} className="border-t border-divider">
-                      <td className="px-3 py-1.5 whitespace-nowrap">{t.date}</td>
-                      <td className="px-3 py-1.5 font-semibold">{t.symbol}</td>
-                      <td className="px-3 py-1.5">{ACTION_LABEL[t.action] ?? t.action}</td>
-                      <td className="px-3 py-1.5 text-right">{t.price.toFixed(2)}</td>
-                      <td className="px-3 py-1.5 text-right">{t.qty}</td>
-                      <td className="px-3 py-1.5 text-right" style={{ color: t.pnl > 0 ? '#dc2626' : t.pnl < 0 ? '#16a34a' : undefined }}>
+                      <Td className="whitespace-nowrap">{t.date}</Td>
+                      <Td className="font-semibold">{t.symbol}</Td>
+                      <Td>{ACTION_LABEL[t.action] ?? t.action}</Td>
+                      <Td right>{t.price.toFixed(2)}</Td>
+                      <Td right>{t.qty}</Td>
+                      <Td right style={{ color: t.pnl > 0 ? '#dc2626' : t.pnl < 0 ? '#16a34a' : undefined }}>
                         {t.pnl === 0 ? '-' : fmt(t.pnl)}
-                      </td>
-                      <td className="px-3 py-1.5 text-ink-faint">{t.reason}</td>
+                      </Td>
+                      <Td className="text-ink-faint">{t.reason}</Td>
                     </tr>
                   ))}
                 </tbody>
-              </table>
+              </Table>
             )}
           </Card>
         </>
@@ -251,12 +251,12 @@ function FactorTab() {
           </Card>
 
           <Card className="overflow-x-auto p-2">
-            <table className="w-full border-collapse text-[13px]">
+            <Table>
               <thead>
-                <tr className="text-left text-ink-muted">
-                  <th className="px-3 py-2">阶段</th>
+                <tr>
+                  <Th>阶段</Th>
                   {report.meta.hold_days.map((h) => (
-                    <th key={h} className="px-3 py-2 text-right">{HOLD_LABELS[`hold_${h}`] ?? `${h}日`}持有</th>
+                    <Th key={h} right>{HOLD_LABELS[`hold_${h}`] ?? `${h}日`}持有</Th>
                   ))}
                 </tr>
               </thead>
@@ -265,18 +265,18 @@ function FactorTab() {
                   const m = STAGE_META[k] ?? { label: k, color: '#64748b' }
                   return (
                     <tr key={k} className="border-t border-divider">
-                      <td className="px-3 py-2">
+                      <Td>
                         <div className="text-[14px] font-semibold" style={{ color: m.color }}>{info.label}</div>
-                      </td>
+                      </Td>
                       {report.meta.hold_days.map((h) => {
                         const s = info.holds[`hold_${h}`]
-                        return s ? <HoldCell key={h} s={s} /> : <td key={h} className="px-3 py-2 text-ink-faint">-</td>
+                        return s ? <HoldCell key={h} s={s} /> : <Td key={h} className="text-ink-faint">-</Td>
                       })}
                     </tr>
                   )
                 })}
               </tbody>
-            </table>
+            </Table>
           </Card>
 
           <Card className="mt-4 p-3 text-[12px] leading-relaxed text-ink-muted">
@@ -301,16 +301,18 @@ export default function Backtest() {
   const [tab, setTab] = useState<'factor' | 'strategy'>('strategy')
 
   return (
-    <div className="mx-auto max-w-5xl">
-      <div className="mb-4">
-        <h1 className="text-[20px] font-semibold">回测中心</h1>
-        <p className="mt-1 text-[13px] leading-relaxed text-ink-muted">
-          两种回测口径：<b className="text-ink">策略回测</b>（真实交易循环：建仓/加仓/止盈/止损/做T + 风控，推荐）与
-          <b className="text-ink">阶段分桶</b>（各阶段买入持有 N 日的胜率/期望统计）。
-        </p>
-      </div>
+    <div>
+      <PageHeader
+        title="回测中心"
+        subtitle={
+          <>
+            两种回测口径：<b className="text-ink">策略回测</b>（真实交易循环：建仓/加仓/止盈/止损/做T + 风控，推荐）与
+            <b className="text-ink">阶段分桶</b>（各阶段买入持有 N 日的胜率/期望统计）。
+          </>
+        }
+      />
 
-      <div className="mb-3 flex gap-1.5">
+      <div className="mb-3 flex flex-wrap gap-1.5">
         {([
           ['strategy', '策略回测（真实循环）'],
           ['factor', '阶段分桶（胜率统计）'],
@@ -318,9 +320,12 @@ export default function Backtest() {
           <button
             key={k}
             onClick={() => setTab(k)}
-            className={`rounded px-3 py-1.5 text-[13px] ${
-              tab === k ? 'bg-link text-white' : 'text-ink hover:bg-divider'
-            }`}
+            className={cn(
+              'rounded-full px-3 py-1.5 text-[13px] transition-colors',
+              tab === k
+                ? 'bg-link text-white'
+                : 'border border-line bg-white text-ink hover:border-link hover:text-link',
+            )}
           >
             {label}
           </button>

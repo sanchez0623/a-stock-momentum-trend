@@ -70,22 +70,31 @@ class ReviewOutput(BaseModel):
 
 
 # ---------------------------------------------------------------- LLM 构建
+# 推理模型(先输出大段思考过程再出正文)的特征名: 正文预算不足会被截断为空
+REASONING_MODEL_HINTS = ("flash", "reasoner", "r1", "o1", "o3", "thinking", "pro")
+
+
 def build_chain_llm(llm_cfg: dict[str, Any]) -> ChatOpenAI:
     """从 config 的 llm 配置段构建 LangChain ChatOpenAI(兼容 OpenAI 协议).
 
     与 llm.LLMClient 同一套 base_url/model 推断逻辑(空地址默认 DeepSeek).
+    推理模型(如 deepseek-v4-flash)的 max_tokens 预算含思考过程, 按配置 2000
+    会被思考吃光导致正文为空, 故自动提升下限(用户已指示至少 8192).
     """
     base_url = (llm_cfg.get("base_url") or DEEPSEEK_BASE)
     model = llm_cfg.get("model") or DEFAULT_MODEL
     if not base_url or base_url == "https://api.openai.com/v1":
         base_url = DEEPSEEK_BASE
         model = model if model not in ("gpt-4o-mini",) else DEFAULT_MODEL
+    max_tokens = int(llm_cfg.get("max_tokens", 8192))
+    if any(h in model.lower() for h in REASONING_MODEL_HINTS):
+        max_tokens = max(max_tokens, 8192)
     return ChatOpenAI(
         model=model,
         base_url=base_url,
         api_key=llm_cfg.get("api_key", ""),
         temperature=float(llm_cfg.get("temperature", 0.3)),
-        max_tokens=int(llm_cfg.get("max_tokens", 2000)),
+        max_tokens=max_tokens,
         timeout=float(llm_cfg.get("timeout_sec", 60)),
         max_retries=1,
     )
@@ -112,8 +121,10 @@ async def _call_parsed(system: str, user: str, llm: ChatOpenAI,
     for attempt in range(retries + 1):
         prompt = _build_prompt(system, user)
         try:
-            resp = await llm.ainvoke(prompt)
+            # langchain 1.x: ainvoke 不接受 ChatPromptTemplate, 需先 format 为消息列表
+            resp = await llm.ainvoke(prompt.format_messages())
         except Exception as exc:  # noqa: BLE001 - langchain 各类网络/鉴权异常
+            logger.warning("LLM 调用异常", exc_info=True, extra={"component": "llm_chain"})
             raise LLMError(f"LLM 请求失败: {exc}") from exc
         text = resp.content if hasattr(resp, "content") else str(resp)
         try:

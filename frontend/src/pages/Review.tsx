@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { colorByPct } from '../const/colors'
-import { Card, ChartContainer, ErrorBox, Loading, SIGNAL_META, StatCard } from '../components/ui'
+import { Card, ChartContainer, ErrorBox, Loading, PageHeader, SIGNAL_META, StatCard } from '../components/ui'
 import { EquityChart } from '../components/charts/EquityChart'
 
 export default function Review() {
@@ -35,8 +35,7 @@ export default function Review() {
 
   return (
     <div>
-      <h1 className="mb-1 text-[20px] font-semibold">历史回顾</h1>
-      <div className="mb-4 text-xs text-ink-muted">基于已平仓成交(卖出)记录统计</div>
+      <PageHeader title="历史回顾" subtitle="基于已平仓成交(卖出)记录统计" />
 
       {/* 健康度 + 关键指标 */}
       <div className="mb-4 flex flex-col gap-4 lg:flex-row lg:items-center">

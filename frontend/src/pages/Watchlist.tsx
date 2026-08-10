@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
 import type { AccountInfo, PositionItem, Quote } from '../api/client'
 import { colorByPct, fmtPct } from '../const/colors'
-import { Button, Card, ConfirmDialog, EmptyState, ErrorBox, Field, ListRow, Loading, Tag, inputStyle, toast } from '../components/ui'
+import { Button, Card, ConfirmDialog, EmptyState, ErrorBox, Field, ListRow, Loading, PageHeader, Tag, inputStyle, toast } from '../components/ui'
 import SymbolInput from '../components/SymbolInput'
 
 /** "YYYY-MM-DD HH:MM:SS" -> datetime-local 值 "YYYY-MM-DDTHH:MM" */
@@ -129,7 +129,7 @@ export default function Watchlist() {
 
   return (
     <div>
-      <h1 className="mb-4 text-[20px] font-semibold">自选与持仓</h1>
+      <PageHeader title="自选与持仓" />
       {err && <ErrorBox message={err} />}
 
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-[2fr_1fr]">
@@ -269,7 +269,7 @@ function PosRow({ p, onChanged }: { p: PositionItem; onChanged: () => void }) {
   }
 
   return (
-    <ListRow className="py-2.5">
+    <ListRow className="flex-wrap py-2.5">
       <span className="font-semibold">{p.symbol} <span className="font-normal text-ink-muted">{p.name}</span></span>
       <span
         className="text-ink-secondary"
@@ -286,7 +286,7 @@ function PosRow({ p, onChanged }: { p: PositionItem; onChanged: () => void }) {
           {p.unrealized_pnl >= 0 ? '+' : ''}{p.unrealized_pnl.toLocaleString('zh-CN', { maximumFractionDigits: 0 })} 元
         </span>
       </span>
-      <div className="col-span-full mt-1 flex items-center gap-2 text-[11px] text-ink-faint">
+      <div className="mt-1 flex w-full items-center gap-2 text-[11px] text-ink-faint">
         <span>持仓时间:</span>
         {editing ? (
           <>
@@ -393,7 +393,7 @@ function AccountCard({
             <span className="text-ink-secondary">持仓市值</span>
             <span className="font-semibold">{fmtMoney(marketValue)}</span>
           </div>
-          <div className="flex items-center justify-between border-t border-[#eee] pt-2 text-[13px] font-semibold">
+          <div className="flex items-center justify-between border-t border-line pt-2 text-[13px] font-semibold">
             <span>总权益</span>
             <span>{totalEquity != null ? fmtMoney(totalEquity) : '—'}</span>
           </div>

@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../api/client'
 import type { IndustryNode, ScreenerHistoryItem, ScreenerPreset, ScreenerTask } from '../api/client'
-import { Button, Card, ConfirmDialog, EmptyState, ErrorBox, Loading, Tag, toast } from '../components/ui'
+import { Button, Card, ConfirmDialog, EmptyState, ErrorBox, Loading, PageHeader, Table, Td, Th, Tag, inputStyle, toast } from '../components/ui'
 import { cn } from '../components/ui'
 
 // 理由标签配色: 遵循 A 股惯例, 利多=红 / 偏空=绿 / 需注意=橙 / 中性=灰
@@ -366,7 +366,7 @@ export default function Screener() {
 
   return (
     <div>
-      <h1 className="mb-4 text-[20px] font-semibold">选股</h1>
+      <PageHeader title="选股" />
       {error && <ErrorBox message={error} />}
 
       {/* ---------- 股票条件(统一过滤器: 指数池+板块+行业) ---------- */}
@@ -515,9 +515,9 @@ export default function Screener() {
                 onChange={(e) => setPresetName(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && savePreset()}
                 placeholder="预设名称"
-                className="w-[130px] rounded border border-[#d0d3d9] px-2 py-1 text-[12px]"
+                style={{ ...inputStyle, width: 130 }}
               />
-              <Button onClick={savePreset} disabled={savingPreset} className="h-7 px-2 text-xs">{savingPreset ? '保存中' : '保存'}</Button>
+              <Button onClick={savePreset} disabled={savingPreset} style={{ padding: '4px 10px', fontSize: 12 }} className="h-7">{savingPreset ? '保存中' : '保存'}</Button>
               <button
                 type="button"
                 onClick={() => { setPresetInputOpen(false); setPresetName('') }}
@@ -527,7 +527,7 @@ export default function Screener() {
               </button>
             </span>
           ) : (
-            <Button kind="ghost" onClick={() => setPresetInputOpen(true)} className="h-7 px-2 text-xs">保存当前条件</Button>
+            <Button kind="ghost" onClick={() => setPresetInputOpen(true)} style={{ padding: '4px 10px', fontSize: 12 }} className="h-7">保存当前条件</Button>
           )}
           {presets.map((p) => (
             <span
@@ -570,7 +570,7 @@ export default function Screener() {
                 type="number" min={5} max={200}
                 value={topN}
                 onChange={(e) => setTopN(Number(e.target.value) || 30)}
-                className="w-[70px] rounded border border-[#d0d3d9] px-2 py-1.5 text-[13px]"
+                style={{ ...inputStyle, width: 70 }}
               />
             </label>
             <label className="flex items-center gap-2 text-[13px]">
@@ -578,7 +578,7 @@ export default function Screener() {
               <select
                 value={perIndustry}
                 onChange={(e) => setPerIndustry(Number(e.target.value))}
-                className="rounded border border-[#d0d3d9] px-2 py-1.5 text-[13px]"
+                style={{ ...inputStyle, width: 'auto' }}
               >
                 {CAP_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
@@ -588,7 +588,7 @@ export default function Screener() {
               <select
                 value={industryLevel}
                 onChange={(e) => setIndustryLevel(e.target.value)}
-                className="rounded border border-[#d0d3d9] px-2 py-1.5 text-[13px]"
+                style={{ ...inputStyle, width: 'auto' }}
               >
                 {LEVEL_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
@@ -708,84 +708,83 @@ export default function Screener() {
                   </button>
                 ))}
               </div>
-              <div className="overflow-x-auto">
-                <table className="w-full border-collapse text-[13px]">
-                  <thead>
-                    <tr className="text-left text-ink-muted">
-                      <th className="px-1.5 py-2">#</th>
-                      <th className="px-1.5 py-2">代码</th>
-                      <th className="px-1.5 py-2">名称</th>
-                      <th className="px-1.5 py-2 text-right">总分</th>
-                      <th className="px-1.5 py-2">阶段</th>
-                      <th className="px-1.5 py-2 text-right">趋势</th>
-                      <th className="px-1.5 py-2 text-right">动量</th>
-                      <th className="px-1.5 py-2 text-right">量能</th>
-                      <th className="px-1.5 py-2 text-right">现价</th>
-                      <th className="px-1.5 py-2 text-right">ADX</th>
-                      <th className="px-1.5 py-2 text-right">RSI</th>
-                      <th className="px-1.5 py-2 text-right">量比</th>
-                      <th className="px-1.5 py-2 text-right">额(亿)</th>
-                      <th className="px-1.5 py-2">关注度</th>
-                      <th className="px-1.5 py-2" />
-                      <th className="px-1.5 py-2" />
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredResult.map((r, i) => {
-                      const open = expanded === r.symbol
-                      const tags = r.tags ?? []
-                      const risks = r.risk ? r.risk.split('；').filter(Boolean) : []
-                      return (
-                        <Fragment key={r.symbol}>
-                          <tr
-                            className="cursor-pointer border-t border-divider hover:bg-[#fafbfc]"
-                            onClick={() => setExpanded(open ? null : r.symbol)}
-                          >
-                            <td className="px-1.5 py-2 text-ink-faint">{i + 1}</td>
-                            <td className="px-1.5 py-2 font-semibold">{r.symbol}</td>
-                            <td className="px-1.5 py-2">{r.name || '-'}</td>
-                            <td className={cn('px-1.5 py-2 text-right font-bold', r.total >= 60 ? 'text-rise' : 'text-ink')}>{r.total.toFixed(1)}</td>
-                            <td className="px-1.5 py-2">
-                              {r.stage && r.stage !== 'none' ? (
-                                <span className={cn('text-[12px] font-medium', STAGE_COLOR[r.stage] ?? 'text-ink-muted')}>
-                                  {STAGE_LABEL[r.stage] ?? r.stage}
-                                </span>
-                              ) : (
-                                <span className="text-ink-faint">-</span>
-                              )}
-                            </td>
-                            <td className="px-1.5 py-2 text-right">{r.trend_score.toFixed(1)}</td>
-                            <td className="px-1.5 py-2 text-right">{r.momentum_score.toFixed(1)}</td>
-                            <td className="px-1.5 py-2 text-right">{r.volume_score.toFixed(1)}</td>
-                            <td className="px-1.5 py-2 text-right">{r.close.toFixed(2)}</td>
-                            <td className="px-1.5 py-2 text-right">{r.adx.toFixed(1)}</td>
-                            <td className={cn('px-1.5 py-2 text-right', r.rsi > 80 ? 'text-[#ea580c]' : r.rsi < 40 ? 'text-fall' : '')}>
-                              {r.rsi?.toFixed(0) ?? '-'}
-                            </td>
-                            <td className="px-1.5 py-2 text-right">{r.volume_ratio.toFixed(2)}</td>
-                            <td className="px-1.5 py-2 text-right text-ink-muted">{r.amount_avg?.toFixed(1) ?? '-'}</td>
-                            <td className="px-1.5 py-2">
-                              <Tag color={r.attention === '强烈关注' ? '#dc2626' : r.attention === '重点观察' ? '#ea580c' : '#64748b'}>{r.attention}</Tag>
-                            </td>
-                            {/* 快速进入信号流程: 跳转信号中心并自动评估该票 */}
-                            <td className="px-1.5 py-2 text-center">
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  navigate(`/signals?symbol=${r.symbol}&name=${encodeURIComponent(r.name || '')}`)
-                                }}
-                                className="cursor-pointer border-none bg-transparent text-[12px] text-link hover:underline"
-                              >
-                                看信号
-                              </button>
-                            </td>
-                            <td className="px-1.5 py-2 text-center text-[10px] text-ink-faint">{open ? '▲' : '▼'}</td>
-                          </tr>
+              <Table>
+                <thead>
+                  <tr>
+                    <Th>#</Th>
+                    <Th>代码</Th>
+                    <Th>名称</Th>
+                    <Th right>总分</Th>
+                    <Th>阶段</Th>
+                    <Th right>趋势</Th>
+                    <Th right>动量</Th>
+                    <Th right>量能</Th>
+                    <Th right>现价</Th>
+                    <Th right>ADX</Th>
+                    <Th right>RSI</Th>
+                    <Th right>量比</Th>
+                    <Th right>额(亿)</Th>
+                    <Th>关注度</Th>
+                    <Th />
+                    <Th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredResult.map((r, i) => {
+                    const open = expanded === r.symbol
+                    const tags = r.tags ?? []
+                    const risks = r.risk ? r.risk.split('；').filter(Boolean) : []
+                    return (
+                      <Fragment key={r.symbol}>
+                        <tr
+                          className="cursor-pointer border-t border-divider hover:bg-[#fafbfc]"
+                          onClick={() => setExpanded(open ? null : r.symbol)}
+                        >
+                          <Td className="text-ink-faint">{i + 1}</Td>
+                          <Td className="font-semibold">{r.symbol}</Td>
+                          <Td>{r.name || '-'}</Td>
+                          <Td right className={cn('font-bold', r.total >= 60 ? 'text-rise' : 'text-ink')}>{r.total.toFixed(1)}</Td>
+                          <Td>
+                            {r.stage && r.stage !== 'none' ? (
+                              <span className={cn('text-[12px] font-medium', STAGE_COLOR[r.stage] ?? 'text-ink-muted')}>
+                                {STAGE_LABEL[r.stage] ?? r.stage}
+                              </span>
+                            ) : (
+                              <span className="text-ink-faint">-</span>
+                            )}
+                          </Td>
+                          <Td right>{r.trend_score.toFixed(1)}</Td>
+                          <Td right>{r.momentum_score.toFixed(1)}</Td>
+                          <Td right>{r.volume_score.toFixed(1)}</Td>
+                          <Td right>{r.close.toFixed(2)}</Td>
+                          <Td right>{r.adx.toFixed(1)}</Td>
+                          <Td right className={cn(r.rsi > 80 ? 'text-[#ea580c]' : r.rsi < 40 ? 'text-fall' : '')}>
+                            {r.rsi?.toFixed(0) ?? '-'}
+                          </Td>
+                          <Td right>{r.volume_ratio.toFixed(2)}</Td>
+                          <Td right className="text-ink-muted">{r.amount_avg?.toFixed(1) ?? '-'}</Td>
+                          <Td>
+                            <Tag color={r.attention === '强烈关注' ? '#dc2626' : r.attention === '重点观察' ? '#ea580c' : '#64748b'}>{r.attention}</Tag>
+                          </Td>
+                          {/* 快速进入信号流程: 跳转信号中心并自动评估该票 */}
+                          <Td className="text-center">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                navigate(`/signals?symbol=${r.symbol}&name=${encodeURIComponent(r.name || '')}`)
+                              }}
+                              className="cursor-pointer border-none bg-transparent text-[12px] text-link hover:underline"
+                            >
+                              看信号
+                            </button>
+                          </Td>
+                          <Td className="text-center text-[10px] text-ink-faint">{open ? '▲' : '▼'}</Td>
+                        </tr>
 
-                          {/* 理由行: 标签常驻, 展开后追加三因子拆解与风险 */}
-                          <tr className={cn(open ? 'bg-[#fafbfc]' : '')}>
-                            <td colSpan={14} className="px-1.5 pb-2 align-top">
+                        {/* 理由行: 标签常驻, 展开后追加三因子拆解与风险 */}
+                        <tr className={cn(open ? 'bg-[#fafbfc]' : '')}>
+                          <Td colSpan={14} className="pb-2">
                               {tags.length === 0 && !r.reason ? (
                                 <span className="text-[11px] text-ink-faint">本条结果由旧版本生成，重新扫描即可显示选股理由</span>
                               ) : (
@@ -834,14 +833,13 @@ export default function Screener() {
                                   </div>
                                 </div>
                               )}
-                            </td>
+                            </Td>
                           </tr>
                         </Fragment>
                       )
                     })}
                   </tbody>
-                </table>
-              </div>
+                </Table>
             </>
           )}
         </Card>

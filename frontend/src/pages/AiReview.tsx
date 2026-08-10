@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
 import type { AiReviewRecord, AiReviewSuggestion } from '../api/client'
-import { Button, Card, EmptyState, ErrorBox, Field, ListRow, Loading, Tag, inputStyle, toast } from '../components/ui'
+import { Button, Card, EmptyState, ErrorBox, Field, ListRow, Loading, PageHeader, Tag, inputStyle, toast } from '../components/ui'
 
 const LEVEL_META: Record<string, { label: string; color: string }> = {
   high: { label: '严重', color: '#dc2626' },
@@ -166,7 +166,7 @@ export default function AiReview() {
 
   return (
     <div>
-      <h1 className="mb-4 text-[20px] font-semibold">AI 复盘</h1>
+      <PageHeader title="AI 复盘" />
       {error && <ErrorBox message={error} />}
 
       {/* 触发复盘 */}
@@ -268,7 +268,7 @@ export default function AiReview() {
                 </div>
                 {c.status === 'active' ? (
                   <Button kind="ghost" onClick={() => revertChange(c.id)} disabled={reverting === c.id}
-                    style={{ padding: '4px 10px', fontSize: 12 }}>
+                    style={{ padding: '4px 10px', fontSize: 12 }} className="h-7">
                     {reverting === c.id ? '撤销中...' : '撤销'}
                   </Button>
                 ) : (
@@ -338,7 +338,7 @@ export default function AiReview() {
                 {r.rule_result?.issues?.length ? <Tag color="#ea580c">规则问题 {r.rule_result.issues.length}</Tag> : null}
                 {r.suggestions?.some((s) => s.change_id != null) ? <Tag color="#16a34a">已调参</Tag> : null}
               </span>
-              <Button kind="ghost" onClick={() => setCurrent(r)} style={{ padding: '4px 10px', fontSize: 12 }}>查看</Button>
+              <Button kind="ghost" onClick={() => setCurrent(r)} style={{ padding: '4px 10px', fontSize: 12 }} className="h-7">查看</Button>
             </ListRow>
           ))
         )}
@@ -373,10 +373,10 @@ function SuggestionRow({
         {sg.status === 'pending' && (
           <span className="flex shrink-0 gap-1.5">
             <Button kind="primary" onClick={() => onAccept(index, 'accepted')}
-              disabled={!canAccept} style={{ padding: '4px 10px', fontSize: 12 }}>
+              disabled={!canAccept} style={{ padding: '4px 10px', fontSize: 12 }} className="h-7">
               采纳
             </Button>
-            <Button kind="ghost" onClick={() => onReject(index, 'rejected')} style={{ padding: '4px 10px', fontSize: 12 }}>忽略</Button>
+            <Button kind="ghost" onClick={() => onReject(index, 'rejected')} style={{ padding: '4px 10px', fontSize: 12 }} className="h-7">忽略</Button>
           </span>
         )}
         {sg.status === 'accepted' && <Tag color="#16a34a">已采纳{alreadyApplied ? ' · 已生效' : ''}</Tag>}

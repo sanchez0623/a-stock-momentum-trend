@@ -159,6 +159,16 @@ export const api = {
     request<ConfigChange>('/ai-review/changes/' + changeId + '/revert', { method: 'POST' }),
   // 调参护栏策略(供前端展示边界)
   aiReviewTuningPolicy: () => request<TuningPolicy>('/ai-review/tuning-policy'),
+
+  // ---------------------------------------------------------------- 盘后 AI 日报 + 站内通知
+  /** 手动生成今日日报(验证用, 不等到 16:30 定时任务) */
+  reportDailyRun: () => request<DailyReportRecord>('/report/daily/run', { method: 'POST' }),
+  reportDaily: (date?: string) => {
+    const q = date ? `?date=${date}` : ''
+    return request<DailyReportRecord | null>(`/report/daily${q}`)
+  },
+  notifications: (limit = 20) => request<NotificationItem[]>(`/notifications?limit=${limit}`),
+  notificationRead: (id: number) => request<NotificationItem>(`/notifications/${id}/read`, { method: 'POST' }),
 }
 
 export interface Quote {
@@ -654,4 +664,36 @@ export interface AiReviewConfig {
   has_key: boolean
   model: string
   enabled: boolean
+}
+
+// ---------------------------------------------------------------- 盘后 AI 日报类型
+/** 日报内容: LLM 结构化输出; 规则模板降级时 text 兜底 */
+export interface DailyReportContent {
+  market_summary: string
+  trade_summary: string
+  holdings_review: string[]
+  signals_today: string[]
+  tomorrow_watch: string[]
+  risk_notes: string[]
+  discipline_score: number
+  text: string
+}
+
+export interface DailyReportRecord {
+  id: number
+  date: string
+  /** ok = LLM 生成 / degraded = 规则模板降级 */
+  status: string
+  model: string
+  created_at: string
+  content: DailyReportContent
+}
+
+export interface NotificationItem {
+  id: number
+  time: string
+  category: string
+  title: string
+  content: string
+  read: boolean
 }

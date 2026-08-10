@@ -53,6 +53,22 @@ async def _after_close_warmup() -> None:
     logger.info("盘后 K 线预热完成: 成功 %d/%d", done, len(symbols))
 
 
+async def _after_close_daily_report() -> None:
+    """盘后日报: 当日回顾 + 明日行动清单(全只读). 开关在配置「日报.enabled」."""
+    from app.core.config import config_manager
+
+    cfg = config_manager.get().get("日报", {})
+    if not cfg.get("enabled", True):
+        return
+    from app.core.report.service import report_service
+
+    try:
+        report = await report_service.generate()
+        logger.info("盘后日报已生成: %s (status=%s)", report.date, report.status)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("盘后日报生成失败: %s", exc)
+
+
 def setup_jobs() -> None:
     if scheduler.get_job("after_close_warmup") is None:
         scheduler.add_job(
@@ -62,6 +78,17 @@ def setup_jobs() -> None:
             hour=16,
             minute=0,
             id="after_close_warmup",
+            coalesce=True,
+            max_instances=1,
+        )
+    if scheduler.get_job("daily_report") is None:
+        scheduler.add_job(
+            _after_close_daily_report,
+            "cron",
+            day_of_week="mon-fri",
+            hour=16,
+            minute=30,
+            id="daily_report",
             coalesce=True,
             max_instances=1,
         )

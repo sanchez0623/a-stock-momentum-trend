@@ -5,7 +5,7 @@ import { motion } from 'framer-motion'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { api } from '../api/client'
 import type { Signal } from '../api/client'
-import { Button, Card, ErrorBox, EmptyState, FormRow, ListRow, Loading, Tag, inputStyle, toast } from '../components/ui'
+import { Button, Card, ErrorBox, EmptyState, FormRow, ListRow, Loading, PageHeader, Tag, inputStyle, toast } from '../components/ui'
 import { SIGNAL_META } from '../components/ui'
 import { fmtPct } from '../const/colors'
 import SymbolInput from '../components/SymbolInput'
@@ -124,7 +124,7 @@ export default function Signals() {
 
   return (
     <div>
-      <h1 className="mb-4 text-[20px] font-semibold">信号中心</h1>
+      <PageHeader title="信号中心" />
       {err && <ErrorBox message={err} />}
 
       {/* 操作区: 两条输入通道(持仓快捷入口 / 代码手动输入), 共用 FormRow 对齐 */}
@@ -135,7 +135,7 @@ export default function Signals() {
               label="从持仓选择"
               hint="选中后自动填入代码并分析"
               action={
-                <Button kind="ghost" className="h-9 shrink-0" onClick={analyzeAll} disabled={busy}>
+                <Button kind="ghost" className="shrink-0" onClick={analyzeAll} disabled={busy}>
                   {busy ? '分析中...' : `一键分析全部持仓(${positions.length})`}
                 </Button>
               }
@@ -143,7 +143,7 @@ export default function Signals() {
               <select
                 value=""
                 onChange={(e) => { if (e.target.value) analyzePosition(e.target.value) }}
-                className="h-9 w-full rounded border border-[#d9d9d9] bg-white px-2.5 text-[13px] outline-none transition-colors"
+                style={inputStyle}
               >
                 <option value="">-- 选择持仓 --</option>
                 {positions.map((p) => (
@@ -166,7 +166,7 @@ export default function Signals() {
             </>
           }
           action={
-            <Button className="h-9 w-20 shrink-0" onClick={() => evaluate()} disabled={busy || !symbol.trim()}>
+            <Button className="w-20 shrink-0" onClick={() => evaluate()} disabled={busy || !symbol.trim()}>
               {busy ? '分析中...' : '评估'}
             </Button>
           }
@@ -283,7 +283,7 @@ function ResultRow({ r, onGeneratePlan, busy }: { r: ResultItem; onGeneratePlan:
           <span className="flex shrink-0 items-center gap-2">
             <Tag color={meta!.color}>{meta!.label}</Tag>
             <b className={sig.strength >= 70 ? 'text-rise' : 'text-ink-secondary'}>{sig.strength.toFixed(0)}</b>
-            <Button kind="primary" onClick={() => onGeneratePlan(r.symbol, r.name)} disabled={busy} className="h-7 px-3 text-xs">
+            <Button kind="primary" onClick={() => onGeneratePlan(r.symbol, r.name)} disabled={busy} style={{ padding: '4px 10px', fontSize: 12 }} className="h-7">
               {busy ? '生成中...' : '生成计划'}
             </Button>
           </span>

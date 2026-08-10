@@ -11,6 +11,10 @@ backend/data/*
 *.db
 *.csv
 
+# 日志(结构化 JSON Lines)
+backend/logs/
+logs/
+
 # Python
 __pycache__/
 *.pyc

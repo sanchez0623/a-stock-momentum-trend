@@ -280,6 +280,28 @@ class ReviewMemory(SQLModel, table=True):
     model: str = Field(default="")             # embedding 模型名
 
 
+class DailyReport(SQLModel, table=True):
+    """盘后 AI 交易日报(只读: 当日回顾 + 明日行动清单, 不产生配置变更)."""
+
+    id: int | None = Field(default=None, primary_key=True)
+    date: str = Field(default="", unique=True, index=True)  # 交易日 YYYY-MM-DD
+    content_json: str = Field(default="{}")                 # 结构化内容(含降级模板文本)
+    model: str = Field(default="")
+    status: str = Field(default="ok")                       # ok / degraded / failed
+    created_at: str = Field(default_factory=_now)
+
+
+class Notification(SQLModel, table=True):
+    """站内通知(日报/信号/风控提醒)."""
+
+    id: int | None = Field(default=None, primary_key=True)
+    time: str = Field(default_factory=_now, index=True)
+    category: str = Field(default="report")  # report / signal / risk
+    title: str = Field(default="")
+    content: str = Field(default="")
+    read: bool = Field(default=False)
+
+
 class ConfigChange(SQLModel, table=True):
     """参数变更记录(复盘建议采纳 -> 写回配置), 支持一键回滚与效果追踪骨架."""
 

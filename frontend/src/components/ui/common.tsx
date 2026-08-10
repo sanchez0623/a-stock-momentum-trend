@@ -16,7 +16,7 @@ export function ListRow({ children, className }: { children: ReactNode; classNam
 }
 
 // 表单操作行: 标签(hint 次级说明) + 控件 + 操作按钮, 统一底对齐
-// 约定: 控件与操作按钮高度一致(h-9 = 36px), 保证视觉对齐
+// 约定: 控件(inputStyle 约 33px)与操作按钮默认高度一致, 保证视觉对齐
 export function FormRow({ label, hint, children, action, className }: {
   label: ReactNode
   hint?: ReactNode

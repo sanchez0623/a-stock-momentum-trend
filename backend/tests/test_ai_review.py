@@ -331,3 +331,16 @@ def test_llm_review_llm_error_propagates(monkeypatch):
     monkeypatch.setattr("app.core.ai_review.chain.run_review_chain", boom)
     with pytest.raises(LLMError):
         asyncio.run(service_mod.ReviewService._llm_review([], [], [], {}, {"api_key": "x"}))
+
+
+def test_build_chain_llm_reasoning_model_budget():
+    """推理模型(deepseek-v4-flash)自动提升 max_tokens 下限, 普通模型保持配置值."""
+    from app.core.ai_review.chain import build_chain_llm
+
+    llm = build_chain_llm({"api_key": "x", "model": "deepseek-v4-flash", "max_tokens": 2000})
+    assert llm.max_tokens >= 8192
+    llm2 = build_chain_llm({"api_key": "x", "model": "deepseek-chat", "max_tokens": 2000})
+    assert llm2.max_tokens == 2000
+    # 用户显式配置更大的预算时不被压低
+    llm3 = build_chain_llm({"api_key": "x", "model": "deepseek-v4-flash", "max_tokens": 16000})
+    assert llm3.max_tokens == 16000

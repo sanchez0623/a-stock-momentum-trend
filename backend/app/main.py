@@ -23,6 +23,7 @@ from app.api import backtest as backtest_api
 from app.api import plans as plans_api
 from app.api import positions as positions_api
 from app.api import quote as quote_api
+from app.api import report as report_api
 from app.api import risk as risk_api
 from app.api import screener as screener_api
 from app.api import signals as signals_api
@@ -31,10 +32,6 @@ from app.api import trades_stats as trades_stats_api
 from app.core.config import config_manager
 from app.core.datasource import build_sources, data_source_manager
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
-)
 logger = logging.getLogger("app")
 
 
@@ -50,6 +47,21 @@ def _sanitize_proxy_env() -> None:
 async def init_app() -> None:
     """业务初始化(供 uvicorn lifespan 与 CLI 复用)."""
     _sanitize_proxy_env()
+    from app.core.logger.setup import setup_logging
+
+    setup_logging()
+    # 环境探测: 明确运行进程的 Python 与 langchain 状态(排查依赖缺失用)
+    import sys
+
+    try:
+        import langchain_core
+
+        lc_ver = langchain_core.__version__
+    except ImportError:
+        lc_ver = "<未安装>"
+    logger.info("Python 环境: executable=%s prefix=%s langchain-core=%s",
+                sys.executable, sys.prefix, lc_ver)
+    logger.info("sys.path: %s", sys.path[:15])
     db.init_db()
     config_manager.attach_db(db.session_scope)
     config_manager.load_from_db()
@@ -92,6 +104,7 @@ app.include_router(signals_api.router)
 app.include_router(plans_api.router)
 app.include_router(positions_api.router)
 app.include_router(risk_api.router)
+app.include_router(report_api.router)
 app.include_router(screener_api.router)
 app.include_router(trades_stats_api.router)
 app.include_router(ai_review_api.router)

@@ -75,6 +75,28 @@ def test_embedding_disabled_by_default():
     assert cm.get()["llm"]["embedding"]["enabled"] is False
 
 
+def test_env_empty_string_not_override(monkeypatch):
+    """env 空字符串视为未设置, 不覆盖已有配置(.env 留空变量不抹掉 DB 的 Key)."""
+    cm = ConfigManager(data_dir="__tmp_config_test__")
+    cfg = cm.get()
+    cfg["llm"]["api_key"] = "sk-db-key"  # 模拟 DB 已保存的页面配置
+    monkeypatch.setenv("LLM_API_KEY", "")  # .env 里留空的典型场景
+    monkeypatch.setenv("ENABLE_MOOTDX", "")
+    _apply_env_overrides(cfg)
+    assert cfg["llm"]["api_key"] == "sk-db-key"  # 空值不覆盖
+    assert cfg["数据源"]["enabled"]["mootdx"] is True  # 空开关不关闭
+
+
+def test_env_value_still_overrides(monkeypatch):
+    """非空 env 仍然覆盖(env > DB 的优先级不变)."""
+    cm = ConfigManager(data_dir="__tmp_config_test__")
+    cfg = cm.get()
+    cfg["llm"]["api_key"] = "sk-db-key"
+    monkeypatch.setenv("LLM_API_KEY", "sk-env-key")
+    _apply_env_overrides(cfg)
+    assert cfg["llm"]["api_key"] == "sk-env-key"
+
+
 def test_masked_hides_api_key(monkeypatch):
     cm = ConfigManager(data_dir="__tmp_config_test__")
     monkeypatch.setenv("LLM_API_KEY", "sk-secret")

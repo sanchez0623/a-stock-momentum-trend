@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { colorByPct, fmtPct } from '../const/colors'
-import { Button, Card, ErrorBox, EmptyState, Field, Loading, inputStyle, toast } from '../components/ui'
+import { Button, Card, ErrorBox, EmptyState, Field, Loading, PageHeader, Table, Td, Th, inputStyle, toast } from '../components/ui'
 import { cn } from '../components/ui'
 
 export default function Trades() {
@@ -60,12 +60,12 @@ export default function Trades() {
 
   return (
     <div>
-      <h1 className="mb-4 text-[20px] font-semibold">交易日志</h1>
+      <PageHeader title="交易日志" />
       {err && <ErrorBox message={err} />}
 
       <div className="mb-4 flex items-center gap-3">
         <input style={{ ...inputStyle, width: 120 }} value={filterSymbol} onChange={(e) => setFilterSymbol(e.target.value)} placeholder="代码筛选" />
-        <select style={inputStyle} value={filterAction} onChange={(e) => setFilterAction(e.target.value)} className="w-28">
+        <select style={{ ...inputStyle, width: 112 }} value={filterAction} onChange={(e) => setFilterAction(e.target.value)}>
           <option value="">全部方向</option>
           <option value="buy">买入</option>
           <option value="sell">卖出</option>
@@ -80,40 +80,40 @@ export default function Trades() {
           {trades.length === 0 ? (
             <EmptyState>暂无成交。到「自选与持仓」页录入持仓后,卖出会在此留痕。</EmptyState>
           ) : (
-            <table className="w-full border-collapse text-[13px]">
+            <Table>
               <thead>
-                <tr className="text-left text-ink-muted">
-                  <th className="px-2 py-1.5 font-medium">时间</th>
-                  <th className="px-2 py-1.5 font-medium">代码</th>
-                  <th className="px-2 py-1.5 font-medium">方向</th>
-                  <th className="px-2 py-1.5 text-right font-medium">价格</th>
-                  <th className="px-2 py-1.5 text-right font-medium">数量</th>
-                  <th className="px-2 py-1.5 text-right font-medium">手续费</th>
-                  <th className="px-2 py-1.5 text-right font-medium">盈亏(净)</th>
-                  <th className="px-2 py-1.5 font-medium">原因</th>
+                <tr>
+                  <Th>时间</Th>
+                  <Th>代码</Th>
+                  <Th>方向</Th>
+                  <Th right>价格</Th>
+                  <Th right>数量</Th>
+                  <Th right>手续费</Th>
+                  <Th right>盈亏(净)</Th>
+                  <Th>原因</Th>
                 </tr>
               </thead>
               <tbody>
                 {trades.map((t) => (
                   <tr key={t.id} className="border-t border-divider">
-                    <td className="px-2 py-[7px]">{t.time.slice(5, 16)}</td>
-                    <td className="px-2 py-[7px]">{t.symbol} <span className="text-ink-faint">{t.name}</span></td>
-                    <td className="px-2 py-[7px]">
+                    <Td>{t.time.slice(5, 16)}</Td>
+                    <Td>{t.symbol} <span className="text-ink-faint">{t.name}</span></Td>
+                    <Td>
                       <span className={cn('font-semibold', t.action === 'buy' ? 'text-rise' : 'text-fall')}>
                         {t.action === 'buy' ? '买入' : '卖出'}
                       </span>
-                    </td>
-                    <td className="px-2 py-[7px] text-right">{t.price.toFixed(2)}</td>
-                    <td className="px-2 py-[7px] text-right">{t.qty}</td>
-                    <td className="px-2 py-[7px] text-right text-ink-muted">{t.fee.toFixed(2)}</td>
-                    <td className={cn('px-2 py-[7px] text-right font-semibold', colorByPct(t.pnl))}>
+                    </Td>
+                    <Td right>{t.price.toFixed(2)}</Td>
+                    <Td right>{t.qty}</Td>
+                    <Td right className="text-ink-muted">{t.fee.toFixed(2)}</Td>
+                    <Td right className={cn('font-semibold', colorByPct(t.pnl))}>
                       {t.action === 'sell' ? (t.pnl >= 0 ? '+' : '') + t.pnl.toFixed(0) : '-'}
-                    </td>
-                    <td className="px-2 py-[7px] text-ink-muted">{t.reason || '-'}</td>
+                    </Td>
+                    <Td className="text-ink-muted">{t.reason || '-'}</Td>
                   </tr>
                 ))}
               </tbody>
-            </table>
+            </Table>
           )}
         </Card>
 

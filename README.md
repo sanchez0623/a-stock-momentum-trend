@@ -40,25 +40,41 @@ docker compose up -d --build
 # 打开 http://localhost:8002
 ```
 
-### ② 本地开发
+### ② 本地开发(统一使用 `backend/.venv`, 勿混用多环境)
 
 ```bash
-# 后端(需 Python 3.11+)
+# 0) 首次: 创建后端虚拟环境(全项目只维护这一个; 已存在则跳过)
 cd backend
+python -m venv .venv
+
+# 1) 安装依赖(核心 + 开发 + 可选数据源)
 pip install -r requirements.txt -r requirements-dev.txt
 pip install -e ".[optional]"        # 可选: mootdx / akshare 数据源
-uvicorn app.main:app --reload --port 8002
 
-# 前端(需 Node 18+)
+# 2) 启动后端(在 backend 目录下, 端口 8002) —— 二选一
+# 方式 A(推荐): 激活 venv 后直接敲, 每个新终端窗口激活一次
+.venv\Scripts\Activate.ps1         # Windows PowerShell(CMD: .venv\Scripts\activate.bat)
+source .venv/bin/activate           # Linux / macOS
+uvicorn app.main:app --reload --port 8002
+# 方式 B(不激活): 显式指定 venv 的 Python(注意 PowerShell 需 .\ 前缀)
+.venv\Scripts\python.exe -m uvicorn app.main:app --reload --port 8002
+
+# 3) 前端(另开终端, 需 Node 18+)
 cd frontend
 npm install
 npm run dev                         # http://localhost:5175
 ```
 
+> ⚠️ **环境一致性(重要)**: 全项目**只使用 `backend/.venv` 一个虚拟环境**。
+> - 不要用系统 Python 直接运行项目, 也不要在项目根目录保留第二个 `.venv`(历史遗留, 依赖不完整会导致 AI 功能静默降级为规则模板)。
+> - 依赖变更后只需在 `backend/.venv` 里 `pip install -r requirements.txt`。
+> - 日志输出: `backend/logs/app.log`(JSON Lines, 按天轮转保留 14 天, 可用 `LOG_DIR`/`LOG_LEVEL` 调整)。
+
 ### ③ 终端面板(前端不可用时的兜底)
 
 ```bash
-cd backend && python -m cli.panel
+cd backend
+.venv\Scripts\python.exe -m cli.panel
 ```
 
 ## 界面预览
@@ -89,7 +105,8 @@ cd backend && python -m cli.panel
 
 ## 配置说明
 
-- 环境变量:见 `.env.example`(LLM key / Embedding / 理杏仁 token / 数据源开关 / 东财风控 / TZ)
+- 环境变量:见 `.env.example`(LLM key / Embedding / 理杏仁 token / 数据源开关 / 东财风控 / 日志 / TZ)
+- 日志:`backend/logs/app.log`(JSON Lines,按天轮转保留 14 天),`LOG_DIR`/`LOG_LEVEL` 可调;LLM 降级原因带完整异常堆栈
 - 全局参数:启动后在 Web 端「设置」页修改(趋势/动量/量能/风控/仓位/做T/交易模式/评分权重/择时闸门/行业限配/基本面/业绩事件/趋势阶段),热生效
 - AI 调参:复盘建议可一键采纳(仅白名单数值参数,经三道闸门校验),变更记录可回滚
 - 配置读取优先级:**env > 数据库配置 > 默认值**

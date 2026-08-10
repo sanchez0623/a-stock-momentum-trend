@@ -142,8 +142,8 @@ def test_chain_injects_memory(monkeypatch):
     class FakeLLM:
         model_name = "fake-model"
 
-        async def ainvoke(self, prompt):
-            user = prompt.messages[-1].content
+        async def ainvoke(self, messages):
+            user = messages[-1].content
             captured.append(user)
             step1 = json.dumps({"behavior_summary": "追高", "key_patterns": ["追高"],
                                 "discipline_issues": []}, ensure_ascii=False)
@@ -172,8 +172,8 @@ def test_chain_without_memory(monkeypatch):
     class FakeLLM:
         model_name = "fake-model"
 
-        async def ainvoke(self, prompt):
-            captured.append(prompt.messages[-1].content)
+        async def ainvoke(self, messages):
+            captured.append(messages[-1].content)
             step1 = json.dumps({"behavior_summary": "b", "key_patterns": [],
                                 "discipline_issues": []}, ensure_ascii=False)
             step2 = json.dumps({"analysis": "a", "suggestions": [{"text": "s"}],

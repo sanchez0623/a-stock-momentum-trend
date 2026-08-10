@@ -88,7 +88,10 @@ class ReviewService:
                 content, llm_suggestions, model = await self._llm_review(
                     trades, signals, issues, stats, llm_cfg)
             except LLMError as exc:
-                logger.warning("LLM 复盘失败, 降级为纯规则诊断: %s", exc)
+                logger.warning("LLM 复盘失败, 降级为纯规则诊断: %s", exc, exc_info=True,
+                               extra={"component": "ai_review",
+                                      "llm_model": llm_cfg.get("model"),
+                                      "llm_timeout_sec": llm_cfg.get("timeout_sec")})
                 content = f"⚠️ LLM 调用失败(已降级为纯规则诊断): {exc}"
         else:
             content = "未启用 LLM(可在「AI 复盘」页配置 DeepSeek Key), 本次仅规则诊断。"

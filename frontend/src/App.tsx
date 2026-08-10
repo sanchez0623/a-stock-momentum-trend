@@ -75,7 +75,8 @@ function AppShell() {
   return (
     <div className="flex min-h-screen flex-col font-sans text-ink md:flex-row">
       <Sidebar />
-      <main className="min-w-0 flex-1 p-4 md:p-6">
+      {/* 主内容区: 统一最大宽度并在宽屏居中, 各页视觉对齐 */}
+      <main className="mx-auto min-w-0 w-full max-w-[1440px] flex-1 p-4 md:p-6">
         <Suspense fallback={<PageSkeleton />}>
           <AnimatePresence mode="wait">
             <PageTransition key={location.pathname}>

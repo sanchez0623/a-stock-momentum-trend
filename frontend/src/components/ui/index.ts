@@ -1,6 +1,8 @@
 // UI 组件统一出口: 保持 `from '../components/ui'` 导入路径不变(目录 index 解析)
 export { Card } from './Card'
 export { Button } from './Button'
+export { PageHeader } from './PageHeader'
+export { Table, Th, Td } from './Table'
 export { Tag, SIGNAL_META } from './Tag'
 export { Field, inputStyle } from './Field'
 export { Loading } from './Loading'

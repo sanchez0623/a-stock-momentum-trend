@@ -4,7 +4,7 @@ import type { ReactNode } from 'react'
 import { api } from '../api/client'
 import { CONFIG_GROUPS, DATA_SOURCE_LABELS } from '../const/configSchema'
 import type { FieldMeta } from '../const/configSchema'
-import { Button, Card, ErrorBox, Field, Loading, Tag, cn, inputStyle, toast } from '../components/ui'
+import { Button, Card, ErrorBox, Field, Loading, PageHeader, Tag, cn, inputStyle, toast } from '../components/ui'
 
 // 配置树为任意 JSON(no-explicit-any 已在 eslint 配置中关闭), 此处放宽类型
 // 注意: 注释勿以 "eslint" 开头, 会被当作 inline directive 解析报错
@@ -265,9 +265,9 @@ function DataSourcePanel({ ds, onChange }: {
             </label>
             {i === 0 && enabled[name] && <Tag color="#16a34a">主用</Tag>}
             <span className="flex shrink-0 gap-1">
-              <Button kind="ghost" onClick={() => move(i, -1)} disabled={i === 0} style={{ padding: '2px 8px', fontSize: 12 }}>↑</Button>
-              <Button kind="ghost" onClick={() => move(i, 1)} disabled={i === priority.length - 1} style={{ padding: '2px 8px', fontSize: 12 }}>↓</Button>
-              <Button kind="ghost" onClick={() => test(name)} disabled={testing === name} style={{ padding: '2px 8px', fontSize: 12 }}>
+              <Button kind="ghost" onClick={() => move(i, -1)} disabled={i === 0} style={{ padding: '2px 8px', fontSize: 12 }} className="h-6">↑</Button>
+              <Button kind="ghost" onClick={() => move(i, 1)} disabled={i === priority.length - 1} style={{ padding: '2px 8px', fontSize: 12 }} className="h-6">↓</Button>
+              <Button kind="ghost" onClick={() => test(name)} disabled={testing === name} style={{ padding: '2px 8px', fontSize: 12 }} className="h-6">
                 {testing === name ? '测试中' : '测试'}
               </Button>
             </span>
@@ -491,12 +491,10 @@ export default function Settings() {
 
   return (
     <div>
-      <div className="mb-4 flex flex-wrap items-baseline gap-3">
-        <h1 className="text-[20px] font-semibold">设置</h1>
-        <span className="text-xs text-ink-muted">
-          所有参数保存后热生效，无需重启；直接影响下一轮选股、信号与计划。
-        </span>
-      </div>
+      <PageHeader
+        title="设置"
+        subtitle="所有参数保存后热生效，无需重启；直接影响下一轮选股、信号与计划。"
+      />
       {error && <ErrorBox message={error} />}
 
       {/* 分组切换 */}
@@ -524,7 +522,7 @@ export default function Settings() {
 
       <Card
         title={group.label}
-        extra={<Button kind="ghost" onClick={restoreGroupDefault} style={{ padding: '4px 10px', fontSize: 12 }}>恢复默认</Button>}
+        extra={<Button kind="ghost" onClick={restoreGroupDefault} style={{ padding: '4px 10px', fontSize: 12 }} className="h-7">恢复默认</Button>}
       >
         <div className="mb-3 text-xs leading-relaxed text-ink-muted">{group.desc}</div>
 

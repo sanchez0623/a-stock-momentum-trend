@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
-import { Button, Card, ErrorBox, EmptyState, Field, Loading, toast } from '../components/ui'
+import { Button, Card, ErrorBox, EmptyState, Field, Loading, PageHeader, toast } from '../components/ui'
 import SymbolInput from '../components/SymbolInput'
 
 export default function Plans() {
@@ -55,7 +55,7 @@ export default function Plans() {
 
   return (
     <div>
-      <h1 className="mb-4 text-[20px] font-semibold">交易计划</h1>
+      <PageHeader title="交易计划" />
       {err && <ErrorBox message={err} />}
 
       <Card title="生成计划(需先有信号, 持仓票评估效果更佳)">
