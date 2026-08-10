@@ -21,7 +21,8 @@ from app.models.models import RiskState
 
 
 def _now() -> str:
-    return dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # 强制东八区(与 models._now 一致, 不依赖进程时区)
+    return dt.datetime.now(dt.timezone(dt.timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S")
 
 
 @contextmanager

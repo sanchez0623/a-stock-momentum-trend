@@ -76,3 +76,15 @@ def test_listener_notified():
 def test_default_config_structure():
     for group in ("趋势", "动量", "量能", "风控", "仓位", "做T", "评分权重", "数据源", "llm"):
         assert group in DEFAULT_CONFIG
+
+
+def test_now_is_beijing_time():
+    """所有落库时间戳强制东八区(不依赖进程时区): 与 UTC 相差约 8 小时."""
+    import datetime as dt
+
+    from app.models.models import _now
+
+    parsed = dt.datetime.strptime(_now(), "%Y-%m-%d %H:%M:%S")
+    utc = dt.datetime.now(dt.UTC).replace(tzinfo=None)
+    diff_h = (parsed - utc).total_seconds() / 3600
+    assert 7.5 <= diff_h <= 8.5, f"_now() 应为东八区, 实际与 UTC 差 {diff_h:.2f}h"

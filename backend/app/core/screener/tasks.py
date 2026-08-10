@@ -26,7 +26,7 @@ class ScanTaskManager:
                 "progress": 0,
                 "result": [],
                 "error": "",
-                "created_at": dt.datetime.now().strftime("%H:%M:%S"),
+                "created_at": dt.datetime.now(dt.timezone(dt.timedelta(hours=8))).strftime("%H:%M:%S"),
             }
         return task_id
 

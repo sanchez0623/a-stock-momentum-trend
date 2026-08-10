@@ -114,7 +114,7 @@ async def update_position(symbol: str, body: UpdatePositionTimeBody,
     if pos is None:
         raise HTTPException(status_code=404, detail="无持仓")
     pos.opened_at = body.opened_at
-    pos.updated_at = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    pos.updated_at = _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S")
     session.add(pos)
     session.commit()
     return {"code": 0, "msg": "ok", "data": pos.model_dump()}

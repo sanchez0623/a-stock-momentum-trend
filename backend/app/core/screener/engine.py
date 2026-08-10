@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 import pandas as pd
@@ -767,7 +767,7 @@ class StockScreener:
 
         # ---- 汇总本次扫描的闸门/限配结果, 供 GET /api/screener/last-scan-summary 读取 ----
         self.last_scan_summary = {
-            "scanned_at": datetime.now().isoformat(timespec="seconds"),
+            "scanned_at": datetime.now(timezone(timedelta(hours=8))).isoformat(timespec="seconds"),
             "requested_top_n": top_n,
             "effective_top_n": effective_top_n,
             "final_count": len(results),

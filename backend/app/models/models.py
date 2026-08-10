@@ -8,7 +8,8 @@ from sqlmodel import Field, SQLModel
 
 
 def _now() -> str:
-    return dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # 强制东八区(不依赖进程时区): 容器/环境 TZ 可能为 UTC, 历史曾写入非东八区时间
+    return dt.datetime.now(dt.timezone(dt.timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S")
 
 
 # ---------------------------------------------------------------- 基础

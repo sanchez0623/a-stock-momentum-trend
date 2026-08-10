@@ -137,7 +137,7 @@ async def backfill_history(
         "done": 0,
         "insufficient": [],
         "failed": [],
-        "started_at": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "started_at": dt.datetime.now(dt.timezone(dt.timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S"),
     }
     if total == 0:
         logger.info("backfill: 无可补股票(全市场 %d 只均已达标或已尽力)", len(universe))
@@ -185,7 +185,7 @@ async def backfill_history(
         if i + concurrency < total:
             await asyncio.sleep(BATCH_SLEEP)
 
-    stats["finished_at"] = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    stats["finished_at"] = dt.datetime.now(dt.timezone(dt.timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S")
     logger.info("backfill 完成: 成功 %d/%d, 失败 %d, 异常原因: %s",
                 done, total, len(stats["failed"]),
                 "; ".join(sorted({e for _, e in stats["failed"][:10]})))
