@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { api } from '../api/client'
 import type { AccountInfo, Portfolio, PositionItem, Quote, WatchlistItem } from '../api/client'
 import { colorByPct, fmtPct } from '../const/colors'
-import { Button, Card, EmptyState, ErrorBox, Field, ListRow, Loading, Tag, inputStyle, toast } from '../components/ui'
+import { Button, Card, ConfirmDialog, EmptyState, ErrorBox, Field, ListRow, Loading, Tag, inputStyle, toast } from '../components/ui'
 import SymbolInput from '../components/SymbolInput'
 
 /** "YYYY-MM-DD HH:MM:SS" -> datetime-local 值 "YYYY-MM-DDTHH:MM" */
@@ -39,6 +39,8 @@ export default function Watchlist() {
   const [posName, setPosName] = useState('')
   const [posQty, setPosQty] = useState('100')
   const [posPrice, setPosPrice] = useState('')
+  // 删除二次确认(项目规则): 待移除的自选代码
+  const [confirmDel, setConfirmDel] = useState<string | null>(null)
 
   const refresh = () =>
     Promise.all([
@@ -82,12 +84,17 @@ export default function Watchlist() {
     }
   }
 
-  const removeWatch = async (symbol: string) => {
+  const removeWatch = (symbol: string) => setConfirmDel(symbol)
+
+  const doRemoveWatch = async () => {
+    if (!confirmDel) return
     try {
-      await api.removeWatch(symbol)
-      toast.info(`已移除 ${symbol}`)
+      await api.removeWatch(confirmDel)
+      toast.info(`已移除 ${confirmDel}`)
+      setConfirmDel(null)
       refresh()
     } catch (e) {
+      setError(String((e as Error).message))
       toast.error(String((e as Error).message))
     }
   }
@@ -198,6 +205,16 @@ export default function Watchlist() {
           />
         </div>
       </div>
+
+      {/* 删除二次确认(项目规则) */}
+      {confirmDel && (
+        <ConfirmDialog
+          title="移除自选股"
+          message={`确定将 ${confirmDel} 从自选移除？`}
+          onConfirm={doRemoveWatch}
+          onCancel={() => setConfirmDel(null)}
+        />
+      )}
     </div>
   )
 }

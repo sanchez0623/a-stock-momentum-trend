@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
 import { api } from '../api/client'
 import type { IndustryNode, ScreenerHistoryItem, ScreenerPreset, ScreenerTask, UniverseStats } from '../api/client'
-import { Button, Card, EmptyState, ErrorBox, Loading, Tag, toast } from '../components/ui'
+import { Button, Card, ConfirmDialog, EmptyState, ErrorBox, Loading, Tag, toast } from '../components/ui'
 import { cn } from '../components/ui'
 
 // 理由标签配色: 遵循 A 股惯例, 利多=红 / 偏空=绿 / 需注意=橙 / 中性=灰
@@ -103,6 +103,8 @@ export default function Screener() {
   const [activeHistory, setActiveHistory] = useState<number | null>(null)
   // 结果阶段筛选(全部/启动/加速/过热/衰竭/无阶段)
   const [stageFilter, setStageFilter] = useState<StageFilter>('all')
+  // 删除二次确认(项目规则): 待删除的目标
+  const [confirmDel, setConfirmDel] = useState<{ type: 'history' | 'preset'; id: number } | null>(null)
 
   const stopPoll = () => {
     if (pollRef.current) {
@@ -181,15 +183,31 @@ export default function Screener() {
     toast.success(`已应用预设「${p.name}」`)
   }
 
-  // 删除预设
-  const removePreset = async (e: MouseEvent, id: number) => {
+  // 删除预设(二次确认)
+  const removePreset = (e: MouseEvent, id: number) => {
     e.stopPropagation()
+    setConfirmDel({ type: 'preset', id })
+  }
+
+  // 确认删除(分析记录/条件预设 共用)
+  const doDelete = async () => {
+    if (!confirmDel) return
+    const { type, id } = confirmDel
     try {
-      await api.deleteScreenerPreset(id)
-      toast.success('预设已删除')
-      setPresets((prev) => prev.filter((p) => p.id !== id))
+      if (type === 'history') {
+        await api.deleteScreenerHistory(id)
+        toast.success('记录已删除')
+        setHistory((prev) => prev.filter((h) => h.id !== id))
+        if (activeHistory === id) setActiveHistory(null)
+      } else {
+        await api.deleteScreenerPreset(id)
+        toast.success('预设已删除')
+        setPresets((prev) => prev.filter((p) => p.id !== id))
+      }
     } catch (err) {
       toast.error(String((err as Error).message))
+    } finally {
+      setConfirmDel(null)
     }
   }
 
@@ -287,17 +305,10 @@ export default function Screener() {
     }
   }
 
-  // 删除单条历史记录
-  const removeHistory = async (e: MouseEvent, id: number) => {
+  // 删除单条历史记录(二次确认)
+  const removeHistory = (e: MouseEvent, id: number) => {
     e.stopPropagation()
-    try {
-      await api.deleteScreenerHistory(id)
-      toast.success('记录已删除')
-      setHistory((prev) => prev.filter((h) => h.id !== id))
-      if (activeHistory === id) setActiveHistory(null)
-    } catch (err) {
-      toast.error(String((err as Error).message))
-    }
+    setConfirmDel({ type: 'history', id })
   }
 
   // 历史记录参数摘要(如: 沪深300+中证500成分 · 主板/科创板 · Top30)
@@ -800,6 +811,16 @@ export default function Screener() {
             </>
           )}
         </Card>
+      )}
+
+      {/* 删除二次确认(项目规则) */}
+      {confirmDel && (
+        <ConfirmDialog
+          title={confirmDel.type === 'history' ? '删除分析记录' : '删除条件预设'}
+          message={confirmDel.type === 'history' ? '删除后无法恢复，确定删除该条分析记录？' : '删除后无法恢复，确定删除该条件预设？'}
+          onConfirm={doDelete}
+          onCancel={() => setConfirmDel(null)}
+        />
       )}
     </div>
   )
