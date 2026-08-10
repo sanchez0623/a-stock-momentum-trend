@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
-import type { AccountInfo, Portfolio, PositionItem, Quote, WatchlistItem } from '../api/client'
+import type { AccountInfo, PositionItem, Quote } from '../api/client'
 import { colorByPct, fmtPct } from '../const/colors'
 import { Button, Card, ConfirmDialog, EmptyState, ErrorBox, Field, ListRow, Loading, Tag, inputStyle, toast } from '../components/ui'
 import SymbolInput from '../components/SymbolInput'
@@ -26,11 +27,7 @@ function fmtMoney(n: number): string {
 }
 
 export default function Watchlist() {
-  const [watch, setWatch] = useState<WatchlistItem[]>([])
-  const [portfolio, setPortfolio] = useState<Portfolio | null>(null)
-  const [account, setAccount] = useState<AccountInfo | null>(null)
-  const [quotes, setQuotes] = useState<Record<string, Quote>>({})
-  const [loading, setLoading] = useState(true)
+  const queryClient = useQueryClient()
   const [error, setError] = useState('')
 
   // 表单
@@ -42,34 +39,38 @@ export default function Watchlist() {
   // 删除二次确认(项目规则): 待移除的自选代码
   const [confirmDel, setConfirmDel] = useState<string | null>(null)
 
-  const refresh = () =>
-    Promise.all([
-      api.watchlist().then(setWatch).catch(() => {}),
-      api.positions().then(setPortfolio).catch((e) => setError(String(e.message || e))),
-      api.account().then(setAccount).catch(() => {}),
-    ])
+  // 自选/持仓/账户: 每 10s 轮询(react-query 统一管理缓存/去重/清理)
+  const { data: watch = [], isLoading } = useQuery({
+    queryKey: ['watchlist'],
+    queryFn: api.watchlist,
+    refetchInterval: 10_000,
+  })
+  const { data: portfolio, error: posQueryError } = useQuery({
+    queryKey: ['positions'],
+    queryFn: api.positions,
+    refetchInterval: 10_000,
+  })
+  const { data: account } = useQuery({
+    queryKey: ['account'],
+    queryFn: api.account,
+    refetchInterval: 10_000,
+  })
+  // 自选行情: 批量接口一次请求, queryKey 随自选列表变化自动重建轮询
+  const watchKey = watch.map((w) => w.symbol).join(',')
+  const { data: quotes = {} } = useQuery({
+    queryKey: ['quotes', watchKey],
+    queryFn: () => api.quoteBatch(watch.map((w) => w.symbol)),
+    enabled: watch.length > 0,
+    refetchInterval: 10_000,
+    select: (qs) => Object.fromEntries(qs.map((q) => [q.symbol, q])),
+  })
+  const err = error || (posQueryError ? String((posQueryError as Error).message || posQueryError) : '')
 
-  useEffect(() => {
-    refresh().finally(() => setLoading(false))
-    const timer = setInterval(refresh, 10000)
-    return () => clearInterval(timer)
-  }, [])
-
-  // 自选行情: 页面级单一定时器批量拉取后分发, 替代每行独立轮询(N 请求 -> 1 请求)
-  useEffect(() => {
-    if (watch.length === 0) {
-      setQuotes({})
-      return
-    }
-    const loadQuotes = () => {
-      api.quoteBatch(watch.map((w) => w.symbol)).then((qs) => {
-        setQuotes(Object.fromEntries(qs.map((q) => [q.symbol, q])))
-      }).catch(() => {})
-    }
-    loadQuotes()
-    const t = setInterval(loadQuotes, 10000)
-    return () => clearInterval(t)
-  }, [watch])
+  const refresh = () => {
+    queryClient.invalidateQueries({ queryKey: ['watchlist'] })
+    queryClient.invalidateQueries({ queryKey: ['positions'] })
+    queryClient.invalidateQueries({ queryKey: ['account'] })
+  }
 
   const addWatch = async () => {
     if (!watchSymbol.trim()) return
@@ -124,12 +125,12 @@ export default function Watchlist() {
     ? account.start_capital + portfolio.realized_pnl + portfolio.unrealized_pnl
     : null
 
-  if (loading) return <Loading />
+  if (isLoading) return <Loading />
 
   return (
     <div>
       <h1 className="mb-4 text-[20px] font-semibold">自选与持仓</h1>
-      {error && <ErrorBox message={error} />}
+      {err && <ErrorBox message={err} />}
 
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-[2fr_1fr]">
         {/* 左: 自选 + 持仓 */}
@@ -197,7 +198,7 @@ export default function Watchlist() {
           </Card>
 
           <AccountCard
-            account={account}
+            account={account ?? null}
             availableCap={availableCap}
             marketValue={portfolio?.market_value ?? 0}
             totalEquity={totalEquity}

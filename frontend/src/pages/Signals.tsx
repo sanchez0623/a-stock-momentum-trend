@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { createPortal } from 'react-dom'
 import { motion } from 'framer-motion'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { api } from '../api/client'
-import type { PositionItem, Signal, SignalRecord } from '../api/client'
+import type { Signal } from '../api/client'
 import { Button, Card, ErrorBox, EmptyState, FormRow, ListRow, Loading, Tag, inputStyle, toast } from '../components/ui'
 import { SIGNAL_META } from '../components/ui'
 import { fmtPct } from '../const/colors'
@@ -21,22 +22,26 @@ interface ResultItem {
 export default function Signals() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
-  const [records, setRecords] = useState<SignalRecord[]>([])
-  const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [symbol, setSymbol] = useState('')
   const [name, setName] = useState('')
   const [busy, setBusy] = useState(false) // 单个评估 / 批量分析 共用
   const [results, setResults] = useState<ResultItem[] | null>(null)
-  const [positions, setPositions] = useState<PositionItem[]>([])
   const [confirm, setConfirm] = useState<{ symbol: string; name: string } | null>(null) // 生成计划前先确认是否跳转
 
-  const refresh = () => api.signals(undefined, 30).then(setRecords).catch((e) => setError(String(e.message || e)))
+  const { data: records = [], isLoading, error: queryError } = useQuery({
+    queryKey: ['signals', 'recent'],
+    queryFn: () => api.signals(undefined, 30),
+  })
+  const { data: positions = [] } = useQuery({
+    queryKey: ['positions'],
+    queryFn: api.positions,
+    select: (p) => p.positions,
+  })
+  const err = error || (queryError ? String((queryError as Error).message || queryError) : '')
 
+  // 从选股结果跳转而来(?symbol=xxx): 自动填充代码并评估该票信号(仅挂载时执行一次)
   useEffect(() => {
-    refresh().finally(() => setLoading(false))
-    api.positions().then((p) => setPositions(p.positions)).catch(() => {})
-    // 从选股结果跳转而来(?symbol=xxx): 自动填充代码并评估该票信号
     const qs = searchParams.get('symbol')
     if (qs) {
       setSymbol(qs)
@@ -44,7 +49,7 @@ export default function Signals() {
       if (nm) setName(nm)
       evaluate([qs])
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅初始化时执行一次
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅挂载时执行一次
   }, [])
 
   // 单个/多个代码评估(逗号或空格分隔), 统一走批量接口
@@ -116,12 +121,12 @@ export default function Signals() {
     }
   }
 
-  if (loading) return <Loading />
+  if (isLoading) return <Loading />
 
   return (
     <div>
       <h1 className="mb-4 text-[20px] font-semibold">信号中心</h1>
-      {error && <ErrorBox message={error} />}
+      {err && <ErrorBox message={err} />}
 
       {/* 操作区: 两条输入通道(持仓快捷入口 / 代码手动输入), 共用 FormRow 对齐 */}
       <Card title="信号分析">

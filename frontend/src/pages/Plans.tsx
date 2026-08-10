@@ -1,22 +1,22 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
-import type { PlanRecord } from '../api/client'
 import { Button, Card, ErrorBox, EmptyState, Field, Loading, toast } from '../components/ui'
 import SymbolInput from '../components/SymbolInput'
 
 export default function Plans() {
-  const [plans, setPlans] = useState<PlanRecord[]>([])
-  const [loading, setLoading] = useState(true)
+  const queryClient = useQueryClient()
   const [error, setError] = useState('')
   const [symbol, setSymbol] = useState('')
   const [name, setName] = useState('')
   const [generating, setGenerating] = useState(false)
 
-  const refresh = () => api.currentPlans().then(setPlans).catch((e) => setError(String(e.message || e)))
-
-  useEffect(() => {
-    refresh().finally(() => setLoading(false))
-  }, [])
+  const { data: plans = [], isLoading, error: queryError } = useQuery({
+    queryKey: ['plans'],
+    queryFn: api.currentPlans,
+  })
+  const err = error || (queryError ? String((queryError as Error).message || queryError) : '')
+  const refresh = () => queryClient.invalidateQueries({ queryKey: ['plans'] })
 
   const generate = async () => {
     if (!symbol.trim()) return
@@ -51,12 +51,12 @@ export default function Plans() {
     }
   }
 
-  if (loading) return <Loading />
+  if (isLoading) return <Loading />
 
   return (
     <div>
       <h1 className="mb-4 text-[20px] font-semibold">交易计划</h1>
-      {error && <ErrorBox message={error} />}
+      {err && <ErrorBox message={err} />}
 
       <Card title="生成计划(需先有信号, 持仓票评估效果更佳)">
         <div className="flex items-end gap-2">

@@ -1,15 +1,12 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
-import type { PositionItem, TradeRecord } from '../api/client'
 import { colorByPct, fmtPct } from '../const/colors'
 import { Button, Card, ErrorBox, EmptyState, Field, Loading, inputStyle, toast } from '../components/ui'
 import { cn } from '../components/ui'
 
 export default function Trades() {
-  const [trades, setTrades] = useState<TradeRecord[]>([])
-  const [total, setTotal] = useState(0)
-  const [positions, setPositions] = useState<PositionItem[]>([])
-  const [loading, setLoading] = useState(true)
+  const queryClient = useQueryClient()
   const [error, setError] = useState('')
 
   // 筛选
@@ -22,18 +19,24 @@ export default function Trades() {
   const [opQty, setOpQty] = useState('')
   const [opMode, setOpMode] = useState<'reduce' | 'close'>('reduce')
 
-  const refresh = (): Promise<void> => {
-    const p1 = api
-      .trades({ symbol: filterSymbol || undefined, action: filterAction || undefined, limit: 200 })
-      .then((d) => { setTrades(d.items); setTotal(d.total) })
-      .catch((e) => setError(String(e.message || e)))
-    const p2 = api.positions().then((p) => setPositions(p.positions)).catch(() => {})
-    return Promise.all([p1, p2]).then(() => undefined)
+  // 成交记录: queryKey 含筛选条件, 切换自动重新请求; 保留旧列表避免闪烁
+  const { data: tradesData, isLoading, error: queryError } = useQuery({
+    queryKey: ['trades', filterSymbol, filterAction],
+    queryFn: () => api.trades({ symbol: filterSymbol || undefined, action: filterAction || undefined, limit: 200 }),
+    placeholderData: (prev) => prev,
+  })
+  const trades = tradesData?.items ?? []
+  const total = tradesData?.total ?? 0
+  const { data: positions = [] } = useQuery({
+    queryKey: ['positions'],
+    queryFn: api.positions,
+    select: (p) => p.positions,
+  })
+  const err = error || (queryError ? String((queryError as Error).message || queryError) : '')
+  const refresh = () => {
+    queryClient.invalidateQueries({ queryKey: ['trades'] })
+    queryClient.invalidateQueries({ queryKey: ['positions'] })
   }
-
-  useEffect(() => {
-    refresh().finally(() => setLoading(false))
-  }, [filterSymbol, filterAction])
 
   const doOperation = async () => {
     if (!opSymbol.trim() || !opPrice) return
@@ -53,12 +56,12 @@ export default function Trades() {
     }
   }
 
-  if (loading) return <Loading />
+  if (isLoading) return <Loading />
 
   return (
     <div>
       <h1 className="mb-4 text-[20px] font-semibold">交易日志</h1>
-      {error && <ErrorBox message={error} />}
+      {err && <ErrorBox message={err} />}
 
       <div className="mb-4 flex items-center gap-3">
         <input style={{ ...inputStyle, width: 120 }} value={filterSymbol} onChange={(e) => setFilterSymbol(e.target.value)} placeholder="代码筛选" />

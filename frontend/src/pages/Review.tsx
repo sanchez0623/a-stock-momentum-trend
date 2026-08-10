@@ -1,27 +1,37 @@
-import { useEffect, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
-import type { EquityPoint, MonthStat, SignalDistItem, StatsSummary, TradeScore } from '../api/client'
 import { colorByPct } from '../const/colors'
 import { Card, ChartContainer, ErrorBox, Loading, SIGNAL_META, StatCard } from '../components/ui'
 import { EquityChart } from '../components/charts/EquityChart'
 
 export default function Review() {
-  const [summary, setSummary] = useState<StatsSummary | null>(null)
-  const [curve, setCurve] = useState<EquityPoint[]>([])
-  const [months, setMonths] = useState<MonthStat[]>([])
-  const [signals, setSignals] = useState<SignalDistItem[]>([])
-  const [scores, setScores] = useState<{ items: TradeScore[]; health: number } | null>(null)
-  const [error, setError] = useState('')
-
-  useEffect(() => {
-    api.statsSummary().then(setSummary).catch((e) => setError(String(e.message || e)))
-    api.statsEquityCurve().then((d) => setCurve(d.curve)).catch(() => {})
-    api.statsMonthly().then((d) => setMonths(d.months)).catch(() => {})
-    api.statsSignals().then((d) => setSignals(d.items)).catch(() => {})
-    api.statsScores().then(setScores).catch(() => {})
-  }, [])
-
-  if (error && !summary) return <ErrorBox message={'加载失败: ' + error} />
+  const { data: summary, error: summaryQueryError } = useQuery({
+    queryKey: ['stats', 'summary'],
+    queryFn: api.statsSummary,
+  })
+  const { data: curve = [] } = useQuery({
+    queryKey: ['stats', 'curve'],
+    queryFn: api.statsEquityCurve,
+    select: (d) => d.curve,
+  })
+  const { data: months = [] } = useQuery({
+    queryKey: ['stats', 'months'],
+    queryFn: api.statsMonthly,
+    select: (d) => d.months,
+  })
+  const { data: signals = [] } = useQuery({
+    queryKey: ['stats', 'signals'],
+    queryFn: api.statsSignals,
+    select: (d) => d.items,
+  })
+  const { data: scores } = useQuery({
+    queryKey: ['stats', 'scores'],
+    queryFn: api.statsScores,
+  })
+  // 原逻辑: 仅 summary 失败且无数据时整页报错(其余图表失败静默降级)
+  if (summaryQueryError && !summary) {
+    return <ErrorBox message={'加载失败: ' + String((summaryQueryError as Error).message || summaryQueryError)} />
+  }
 
   return (
     <div>
