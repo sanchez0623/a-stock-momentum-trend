@@ -20,6 +20,17 @@ from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
+# 加载项目根 .env(如 LIXINGER_TOKEN / LLM_API_KEY 等). 不覆盖已存在的环境变量,
+# 保证外部注入(容器/IDE/手动 export)优先. dotenv 为可选依赖, 缺失时静默跳过.
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(_PROJECT_ROOT / ".env", override=False)
+    load_dotenv(_PROJECT_ROOT / "backend" / ".env", override=False)
+except ImportError:  # pragma: no cover - 可选依赖
+    pass
+
 # ---------------------------------------------------------------- 默认配置
 DEFAULT_CONFIG: dict[str, Any] = {
     "趋势": {
@@ -223,14 +234,20 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "rsi_exhaust": 80.0,         # 阶段判定: RSI >= 此值且红柱缩短视为衰竭
     },
     "数据源": {
-        "priority": ["mootdx", "tencent", "baostock", "eastmoney", "akshare"],
+        "priority": ["mootdx", "tencent", "baostock", "eastmoney", "lixinger", "akshare"],
         "enabled": {"mootdx": True, "tencent": True, "baostock": True,
-                    "eastmoney": True, "akshare": True},
+                    "eastmoney": True, "akshare": True, "lixinger": True},
         "eastmoney": {
             "interval_sec": 2.0,
             "max_workers": 1,
             "retry": 3,
             "enable_patch": True,
+        },
+        "lixinger": {
+            # 理杏仁开放平台: 申万2021行业分级 + 日线 K 线(前复权)兜底;
+            # token 由 .env LIXINGER_TOKEN 注入(接口限流 1000次/分, 36次/秒).
+            # 排在 akshare 之前: 前 4 源健康时不会被调用, 请求数天然受控.
+            "token": "",
         },
         "proxy_pool": [],
     },
@@ -263,6 +280,7 @@ _ENV_MAP: dict[str, str] = {
     "EASTMONEY_INTERVAL_SEC": "数据源.eastmoney.interval_sec",
     "EASTMONEY_MAX_WORKERS": "数据源.eastmoney.max_workers",
     "ENABLE_EASTMONEY_PATCH": "数据源.eastmoney.enable_patch",
+    "LIXINGER_TOKEN": "数据源.lixinger.token",
 }
 
 
@@ -294,6 +312,14 @@ def _migrate_config(cfg: dict[str, Any]) -> None:
         else:
             priority.append("baostock")
         logger.info("配置迁移: 数据源优先级补入 baostock -> %s", priority)
+    enabled.setdefault("lixinger", True)
+    if "lixinger" not in priority:
+        # 放在 akshare 之前: 付费日线复权稳定, 前 4 源健康时不被打扰(请求数受控)
+        if "akshare" in priority:
+            priority.insert(priority.index("akshare"), "lixinger")
+        else:
+            priority.append("lixinger")
+        logger.info("配置迁移: 数据源优先级补入 lixinger -> %s", priority)
 
 
 def _apply_env_overrides(cfg: dict[str, Any]) -> None:
@@ -317,7 +343,7 @@ def _apply_env_overrides(cfg: dict[str, Any]) -> None:
         node[parts[-1]] = raw
     # 数据源开关
     enabled = cfg["数据源"]["enabled"]
-    for name in ("mootdx", "tencent", "baostock", "eastmoney", "akshare"):
+    for name in ("mootdx", "tencent", "baostock", "eastmoney", "akshare", "lixinger"):
         flag = os.getenv(f"ENABLE_{name.upper()}")
         if flag is not None:
             enabled[name] = flag.lower() in ("1", "true", "yes", "on")
