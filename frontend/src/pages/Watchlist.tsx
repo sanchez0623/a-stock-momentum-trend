@@ -29,6 +29,7 @@ export default function Watchlist() {
   const [watch, setWatch] = useState<WatchlistItem[]>([])
   const [portfolio, setPortfolio] = useState<Portfolio | null>(null)
   const [account, setAccount] = useState<AccountInfo | null>(null)
+  const [quotes, setQuotes] = useState<Record<string, Quote>>({})
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
@@ -51,6 +52,22 @@ export default function Watchlist() {
     const timer = setInterval(refresh, 10000)
     return () => clearInterval(timer)
   }, [])
+
+  // 自选行情: 页面级单一定时器批量拉取后分发, 替代每行独立轮询(N 请求 -> 1 请求)
+  useEffect(() => {
+    if (watch.length === 0) {
+      setQuotes({})
+      return
+    }
+    const loadQuotes = () => {
+      api.quoteBatch(watch.map((w) => w.symbol)).then((qs) => {
+        setQuotes(Object.fromEntries(qs.map((q) => [q.symbol, q])))
+      }).catch(() => {})
+    }
+    loadQuotes()
+    const t = setInterval(loadQuotes, 10000)
+    return () => clearInterval(t)
+  }, [watch])
 
   const addWatch = async () => {
     if (!watchSymbol.trim()) return
@@ -115,7 +132,7 @@ export default function Watchlist() {
               <EmptyState>暂无自选。右侧添加,如 300750。</EmptyState>
             ) : (
               watch.map((w) => (
-                <WatchRow key={w.symbol} symbol={w.symbol} name={w.name} onRemove={() => removeWatch(w.symbol)} />
+                <WatchRow key={w.symbol} symbol={w.symbol} name={w.name} quote={quotes[w.symbol]} onRemove={() => removeWatch(w.symbol)} />
               ))
             )}
           </Card>
@@ -185,13 +202,13 @@ export default function Watchlist() {
   )
 }
 
-function WatchRow({ symbol, name, onRemove }: { symbol: string; name: string; onRemove: () => void }) {
-  const [quote, setQuote] = useState<Quote | null>(null)
-  useEffect(() => {
-    api.quote(symbol).then((q) => setQuote(q)).catch(() => {})
-    const t = setInterval(() => api.quote(symbol).then(setQuote).catch(() => {}), 10000)
-    return () => clearInterval(t)
-  }, [symbol])
+function WatchRow({ symbol, name, quote, onRemove }: {
+  symbol: string
+  name: string
+  quote?: Quote | null
+  onRemove: () => void
+}) {
+  // 行情由页面级批量轮询(Watchlist)统一拉取后通过 props 注入, 行组件不持有轮询
   return (
     <ListRow className="py-2.5">
       <span className="font-semibold">{symbol} <span className="font-normal text-ink-muted">{name || quote?.name || ''}</span></span>

@@ -507,6 +507,27 @@ class StockScreener:
             return []
         return [x.strip() for x in value.split(",") if x.strip()]
 
+    @staticmethod
+    def _filter_by_industry(pool: list[tuple[str, str, str]], keywords: list[str],
+                            class_map: dict[str, Any]) -> list[tuple[str, str, str]]:
+        """行业过滤: 选中名精确命中申万 sw_l1/l2/l3 任一即通过(支持三级树多选).
+
+        无分类映射的票回退到东财行业(Stock.industry)包含匹配(兼容旧数据).
+        """
+        if not keywords:
+            return pool
+        lowered = {kw.lower() for kw in keywords}
+
+        def _match(sym: str, ind: str) -> bool:
+            cl = class_map.get(sym)
+            if cl is not None:
+                # 有申万映射: 精确匹配, 不命中即排除
+                return any(name and name.strip().lower() in lowered
+                           for name in (cl.sw_l1, cl.sw_l2, cl.sw_l3))
+            return any(kw in (ind or "").lower() for kw in lowered)  # 无映射: 回退包含匹配
+
+        return [(sym, name, ind) for sym, name, ind in pool if _match(sym, ind)]
+
     async def scan(
         self,
         symbols: list[str] | None = None,
@@ -547,7 +568,10 @@ class StockScreener:
         uni_name = (universe or uni_cfg.get("universe") or "all").strip()
         uni_info: dict[str, Any] = {"universe": uni_name, "applied": False,
                                     "before": len(pool), "after": len(pool), "note": "全A(未预筛)"}
-        if uni_name.lower() != "all":
+        # 显式传入 symbols(指定列表扫描)时跳过预筛: 显式列表优先, 不被成分股池过滤
+        if symbols is not None:
+            uni_info["note"] = "显式列表(未预筛)"
+        if uni_name.lower() != "all" and symbols is None:
             try:
                 allowed, note = await ensure_universe(uni_name, int(uni_cfg.get("max_age_days", 7)))
             except Exception as exc:  # noqa: BLE001
@@ -573,14 +597,13 @@ class StockScreener:
         if boards:
             filtered = [(sym, name, ind) for sym, name, ind in filtered
                         if any(self._match_board(sym, b) for b in boards)]
-        # 行业过滤(行业名包含匹配, 多值任一命中)
+        # 行业过滤(申万三级: 选中名命中 sw_l1/l2/l3 任一即通过; 无映射回退东财包含匹配)
         keywords = self._split_multi(industry)
         if keywords:
-            lowered = [kw.lower() for kw in keywords]
-            filtered = [(sym, name, ind) for sym, name, ind in filtered
-                        if any(kw in (ind or "").lower() for kw in lowered)]
+            class_map = load_classification_map([sym for sym, _, _ in filtered])
+            filtered = self._filter_by_industry(filtered, keywords, class_map)
             if not filtered:
-                logger.warning("行业过滤后为空: %s(本地行业数据可能未就绪, 需东财列表成功拉取一次)", industry)
+                logger.warning("行业过滤后为空: %s(分类映射未就绪时回退东财行业匹配)", industry)
 
         symbols = [sym for sym, _, _ in filtered]
         if not symbols:
@@ -612,17 +635,20 @@ class StockScreener:
 
         results: list[dict[str, Any]] = []
         total = len(symbols)
-        for i, symbol in enumerate(symbols):
-            if progress_cb and (i % 20 == 0 or i == total - 1):
-                progress_cb(i + 1, total)
+        # 并发 3(2026-08-10 拍板): 网络等待重叠, 总耗时约为串行的 1/3;
+        # 每只仍保留 0.05s 降压, 对上游限流友好
+        SCAN_CONCURRENCY = 3
+
+        async def _score_one(symbol: str) -> dict[str, Any] | None:
+            """取数+评分单只票; 停牌/数据不足/失败返回 None."""
             try:
                 df = await data_source_manager.get_kline(symbol, "daily", count)
                 if df is None or len(df) < 40:
-                    continue  # 停牌/数据不足
+                    return None  # 停牌/数据不足
                 # 流动性过滤: 近 20 日均额
                 avg_amount = _f(pd.to_numeric(df["amount"], errors="coerce").tail(20).mean())
                 if avg_amount < min_amount:
-                    continue
+                    return None
                 ind = compute_all(
                     df,
                     ma_short=cfg["趋势"]["ma_short"], ma_mid=cfg["趋势"]["ma_mid"], ma_long=cfg["趋势"]["ma_long"],
@@ -634,11 +660,20 @@ class StockScreener:
                 score["symbol"] = symbol
                 score["name"] = name_map.get(symbol, "")
                 score["amount_avg"] = round(avg_amount / 100_000_000, 2)  # 亿
-                results.append(score)
+                return score
             except Exception as exc:  # noqa: BLE001
                 logger.debug("扫描 %s 失败: %s", symbol, exc)
-                continue
-            await asyncio.sleep(0.05)  # 降压
+                return None
+            finally:
+                await asyncio.sleep(0.05)  # 降压
+
+        for start in range(0, total, SCAN_CONCURRENCY):
+            batch = symbols[start:start + SCAN_CONCURRENCY]
+            for score in await asyncio.gather(*(_score_one(s) for s in batch)):
+                if score is not None:
+                    results.append(score)
+            if progress_cb:
+                progress_cb(min(start + SCAN_CONCURRENCY, total), total)
 
         # 按总分降序
         results.sort(key=lambda r: r["total"], reverse=True)

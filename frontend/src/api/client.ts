@@ -25,6 +25,9 @@ export const api = {
   dataSourceStatus: () => request<SourceStatus[]>('/data-sources/status'),
   testSource: (name: string) => request(`/data-sources/test/${name}`, { method: 'POST' }),
   quote: (symbol: string) => request<Quote>('/quote/' + symbol),
+  /** 批量实时行情(自选页用): 一次请求多只, 替代每行独立轮询 */
+  quoteBatch: (symbols: string[]) =>
+    request<Quote[]>('/quote/batch', { method: 'POST', body: JSON.stringify({ symbols }) }),
   kline: (symbol: string, period = 'daily', count = 120) =>
     request<KlineData>(`/kline/${symbol}?period=${period}&count=${count}`),
   indicators: (symbol: string, period = 'daily') =>
@@ -101,6 +104,8 @@ export const api = {
   universeStats: () => request<UniverseStats>('/screener/universe/stats'),
   /** 可选行业列表(合并东财行业+申万一级, 按股票数降序) */
   screenerIndustries: () => request<{ items: IndustryItem[]; total: number }>('/screener/industries'),
+  /** 申万三级行业树(一级->二级->三级, 每级带股票数), 供选股页树形多选 */
+  screenerIndustryTree: () => request<{ items: IndustryNode[]; total: number }>('/screener/industries/tree'),
 
   // ---------------------------------------------------------------- 回测中心(方案C: 阶段分桶)
   backtestFactor: (body: { symbols?: string[] | null; hold_days?: number[]; min_bars?: number; cost?: boolean }) =>
@@ -361,6 +366,13 @@ export interface ScreenerTask {
     event_score?: number
   }>
   error: string
+}
+
+/** 申万行业树节点(递归: children 缺省=叶子) */
+export interface IndustryNode {
+  name: string
+  count: number
+  children?: IndustryNode[]
 }
 
 /** 选股扫描历史(列表项不含结果, 点击后再取详情) */

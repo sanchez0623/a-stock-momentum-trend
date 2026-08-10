@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
 import { api } from '../api/client'
-import type { IndustryItem, ScreenerHistoryItem, ScreenerTask, UniverseStats } from '../api/client'
+import type { IndustryNode, ScreenerHistoryItem, ScreenerTask, UniverseStats } from '../api/client'
 import { Button, Card, EmptyState, ErrorBox, Loading, Tag, toast } from '../components/ui'
 import { cn } from '../components/ui'
 
@@ -71,17 +71,17 @@ export default function Screener() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
-  // ① 股票池
-  const [universe, setUniverse] = useState('')
+  // ① 股票池(默认上证50: 全A串行扫描小时级, sz50 秒级; 与后端配置默认一致)
+  const [universe, setUniverse] = useState('sz50')
   const [universeStats, setUniverseStats] = useState<UniverseStats | null>(null)
   const [universeNote, setUniverseNote] = useState('')
 
   // ② 过滤条件
   const [boards, setBoards] = useState<string[]>([])
   const [industries, setIndustries] = useState<string[]>([])
-  const [industryList, setIndustryList] = useState<IndustryItem[]>([])
+  const [industryTree, setIndustryTree] = useState<IndustryNode[]>([])
   const [industryNote, setIndustryNote] = useState('')
-  const [industryKeyword, setIndustryKeyword] = useState('')
+  const [expandedInds, setExpandedInds] = useState<Set<string>>(new Set()) // 树形展开的节点名
 
   // ③ 扫描参数
   const [showAdvanced, setShowAdvanced] = useState(false)
@@ -117,10 +117,10 @@ export default function Screener() {
       setUniverseStats(s)
       if (Object.keys(s).length === 0) setUniverseNote('成分股缓存为空, 请先在后端刷新选股池(Swagger: POST /screener/universe/refresh)')
     }).catch(() => setUniverseNote('选股池状态读取失败'))
-    api.screenerIndustries().then((r) => {
-      setIndustryList(r.items ?? [])
-      if (!r.items?.length) setIndustryNote('行业数据为空, 需东财股票列表成功拉取一次后自动填充')
-    }).catch(() => setIndustryNote('行业列表读取失败'))
+    api.screenerIndustryTree().then((r) => {
+      setIndustryTree(r.items ?? [])
+      if (!r.items?.length) setIndustryNote('行业数据为空, 需先刷新申万分类映射(设置->数据源或 Swagger: POST /screener/classification/refresh)')
+    }).catch(() => setIndustryNote('行业树读取失败'))
     return stopPoll
   }, [])
 
@@ -130,11 +130,13 @@ export default function Screener() {
   const toggleIndustry = (name: string) =>
     setIndustries((prev) => (prev.includes(name) ? prev.filter((x) => x !== name) : [...prev, name]))
 
-  const filteredIndustries = useMemo(() => {
-    const kw = industryKeyword.trim().toLowerCase()
-    const list = kw ? industryList.filter((i) => i.name.toLowerCase().includes(kw)) : industryList
-    return list.slice(0, 30)
-  }, [industryList, industryKeyword])
+  const toggleExpand = (name: string) =>
+    setExpandedInds((prev) => {
+      const next = new Set(prev)
+      if (next.has(name)) next.delete(name)
+      else next.add(name)
+      return next
+    })
 
   const run = async () => {
     setRunning(true)
@@ -318,34 +320,26 @@ export default function Screener() {
 
         <div className="mt-3">
           <div className="flex items-center gap-2">
-            <span className="text-[13px] text-ink-secondary">申万行业</span>
-            <input
-              value={industryKeyword}
-              onChange={(e) => setIndustryKeyword(e.target.value)}
-              placeholder="搜索行业..."
-              className="w-[160px] rounded border border-[#d0d3d9] px-2.5 py-[6px] text-[13px]"
-            />
+            <span className="text-[13px] text-ink-secondary">申万行业(三级树)</span>
             {industries.length > 0 && (
               <span className="text-[11px] text-ink-faint">已选 {industries.length} 个</span>
             )}
           </div>
-          <div className="mt-2 flex max-h-[104px] flex-wrap gap-1.5 overflow-y-auto">
-            {filteredIndustries.map((i) => (
-              <button
-                key={i.name}
-                type="button"
-                onClick={() => toggleIndustry(i.name)}
-                title={`覆盖 ${i.count} 只`}
-                className={cn(
-                  'rounded-full border px-2.5 py-1 text-[12px] transition-colors',
-                  industries.includes(i.name) ? 'border-[#185fa5] bg-[#185fa5] text-white' : 'border-[#d0d3d9] hover:border-[#a0a5ad]',
-                )}
-              >
-                {i.name} · {i.count}
-              </button>
-            ))}
-            {filteredIndustries.length === 0 && (
-              <span className="text-[12px] text-ink-faint">{industryNote || '无匹配行业'}</span>
+          <div className="mt-2 max-h-[240px] overflow-y-auto rounded border border-divider p-1.5">
+            {industryTree.length === 0 ? (
+              <span className="text-[12px] text-ink-faint">{industryNote || '无行业数据'}</span>
+            ) : (
+              industryTree.map((n) => (
+                <TreeRow
+                  key={n.name}
+                  node={n}
+                  depth={0}
+                  expanded={expandedInds}
+                  selected={industries}
+                  onToggleSelect={toggleIndustry}
+                  onToggleExpand={toggleExpand}
+                />
+              ))
             )}
           </div>
           {industries.length > 0 && (
@@ -639,6 +633,55 @@ export default function Screener() {
           )}
         </Card>
       )}
+    </div>
+  )
+}
+
+// 申万三级行业树行(递归): 箭头展开/收起 + 复选框多选, 任意级节点均可选中
+function TreeRow({ node, depth, expanded, selected, onToggleSelect, onToggleExpand }: {
+  node: IndustryNode
+  depth: number
+  expanded: Set<string>
+  selected: string[]
+  onToggleSelect: (name: string) => void
+  onToggleExpand: (name: string) => void
+}) {
+  const hasKids = !!node.children?.length
+  const isExpanded = expanded.has(node.name)
+  return (
+    <div>
+      <div className="flex items-center gap-1 py-[3px] text-[13px]" style={{ paddingLeft: depth * 16 }}>
+        <button
+          type="button"
+          onClick={() => hasKids && onToggleExpand(node.name)}
+          className={`w-4 shrink-0 text-center text-[10px] ${hasKids ? 'text-ink-muted hover:text-ink' : 'text-transparent'}`}
+        >
+          {hasKids ? (isExpanded ? '▾' : '▸') : '·'}
+        </button>
+        <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 select-none">
+          <input
+            type="checkbox"
+            checked={selected.includes(node.name)}
+            onChange={() => onToggleSelect(node.name)}
+            className="h-3.5 w-3.5 shrink-0 accent-[#dc2626]"
+          />
+          <span className={cn('truncate', depth === 0 ? 'font-medium text-ink' : depth === 1 ? 'text-ink-secondary' : 'text-ink-muted')}>
+            {node.name}
+          </span>
+          <span className="ml-auto shrink-0 text-[11px] text-ink-faint">{node.count}</span>
+        </label>
+      </div>
+      {hasKids && isExpanded && node.children!.map((c) => (
+        <TreeRow
+          key={`${depth + 1}-${c.name}`}
+          node={c}
+          depth={depth + 1}
+          expanded={expanded}
+          selected={selected}
+          onToggleSelect={onToggleSelect}
+          onToggleExpand={onToggleExpand}
+        />
+      ))}
     </div>
   )
 }

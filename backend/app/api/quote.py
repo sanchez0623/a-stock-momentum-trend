@@ -7,6 +7,7 @@ import logging
 
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 
 from app.core.config import config_manager
 from app.core.datasource import data_source_manager
@@ -15,6 +16,10 @@ from app.core.indicators import compute_all
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["quote"])
+
+
+class QuoteBatchBody(BaseModel):
+    symbols: list[str] = Field(min_length=1, max_length=200)
 
 
 def _kline_to_records(df) -> list[dict]:
@@ -35,18 +40,32 @@ def _kline_to_records(df) -> list[dict]:
     return out
 
 
+def _quote_dict(q) -> dict:
+    """Quote -> 统一字典(单只/批量共用, 保持字段一致)."""
+    return {
+        "symbol": q.symbol, "name": q.name, "price": q.price,
+        "open": q.open, "high": q.high, "low": q.low, "prev_close": q.prev_close,
+        "volume": q.volume, "amount": q.amount, "change": q.change,
+        "change_pct": q.change_pct, "timestamp": q.timestamp,
+    }
+
+
 @router.get("/quote/{symbol}")
 async def get_quote(symbol: str) -> dict:
     quotes = await data_source_manager.get_realtime_quote([symbol])
     if not quotes:
         return JSONResponse(status_code=404, content={"code": 1, "msg": "未获取到行情", "data": None})
-    q = quotes[0]
-    return {"code": 0, "msg": "ok", "data": {
-        "symbol": q.symbol, "name": q.name, "price": q.price,
-        "open": q.open, "high": q.high, "low": q.low, "prev_close": q.prev_close,
-        "volume": q.volume, "amount": q.amount, "change": q.change,
-        "change_pct": q.change_pct, "timestamp": q.timestamp,
-    }}
+    return {"code": 0, "msg": "ok", "data": _quote_dict(quotes[0])}
+
+
+@router.post("/quote/batch")
+async def batch_quote(body: QuoteBatchBody) -> dict:
+    """批量实时行情(自选/持仓页用): 一次请求多只, 复用 5s 内存缓存.
+
+    替代前端 N 只自选 N 个轮询请求; 无行情的代码不在返回中(前端按需容错).
+    """
+    quotes = await data_source_manager.get_realtime_quote(body.symbols)
+    return {"code": 0, "msg": "ok", "data": [_quote_dict(q) for q in quotes]}
 
 
 @router.get("/kline/{symbol}")

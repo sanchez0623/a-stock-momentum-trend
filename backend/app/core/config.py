@@ -182,9 +182,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "fallback_csrc": True,
     },
     "选股池": {
-        # 用指数成分股把 5000+ 全A 缩到 300~800 只质量池(数据源: baostock)
+        # 用指数成分股把 5000+ 全A 缩到质量池(数据源: baostock)
         # all / hs300 / zz500 / hs300+zz500(≈中证800) / sz50
-        "universe": "all",
+        # 2026-08-10: 默认改为 sz50(全A扫描串行小时级; 上证50池 ~50 只秒级完成)
+        "universe": "sz50",
         "max_age_days": 7,       # 成分股缓存超过 N 天自动刷新
         "fallback_on_empty": True,  # 成分股取不到时是否放行全池(False=直接空结果)
     },
@@ -312,6 +313,12 @@ def _migrate_config(cfg: dict[str, Any]) -> None:
         else:
             priority.append("baostock")
         logger.info("配置迁移: 数据源优先级补入 baostock -> %s", priority)
+    # 2026-08-10: 默认选股池 all -> sz50(全A串行扫描小时级; 上证50秒级),
+    # 旧库存过配置的 universe 仍是 all, 一并迁移(想要全A可在设置页显式改回)
+    pool = cfg.setdefault("选股池", {})
+    if pool.get("universe", "all") == "all":
+        pool["universe"] = "sz50"
+        logger.info("配置迁移: 默认选股池 all -> sz50")
     enabled.setdefault("lixinger", True)
     if "lixinger" not in priority:
         # 放在 akshare 之前: 付费日线复权稳定, 前 4 源健康时不被打扰(请求数受控)

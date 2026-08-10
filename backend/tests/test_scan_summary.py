@@ -46,6 +46,8 @@ def patched(monkeypatch):
     cfg["择时闸门"] = {**base.get("择时闸门", {}),
                      "enabled": True, "ma_long": 20, "ma_mid": 5, "min_index_bars": 25}
     cfg["行业限配"] = base.get("行业限配", {})
+    # 固定全A: 默认配置(未 load DB)的选股池可能是 sz50, 会把测试假票预筛掉
+    cfg["选股池"] = {**base.get("选股池", {}), "universe": "all"}
     monkeypatch.setattr(config_manager, "get", lambda: cfg)
 
     calls = []
@@ -61,9 +63,15 @@ def patched(monkeypatch):
     from app.core import market_gate
     monkeypatch.setattr(market_gate, "fetch_gate_index_dfs", fake_idx)
 
-    fake_map = {s: SimpleNamespace(sw_l1=ind) for s, ind in zip(SYMS, _IND, strict=True)}
+    fake_map = {s: SimpleNamespace(sw_l1=ind, sw_l2="", sw_l3="") for s, ind in zip(SYMS, _IND, strict=True)}
     from app.core import classification
     monkeypatch.setattr(classification, "load_classification_map", lambda syms: fake_map)
+    # 隔离选股池: 不预筛(本组测试只验证闸门/限配/行业过滤, 避免真实拉取指数成分股)
+    from app.core import universe as universe_mod
+
+    async def fake_ensure_universe(*a, **k):
+        return set(), "test: 不预筛"
+    monkeypatch.setattr(universe_mod, "ensure_universe", fake_ensure_universe)
     return cfg
 
 
@@ -122,15 +130,26 @@ def test_board_multi_value_filter(patched):
 
 
 def test_industry_multi_value_filter(patched, monkeypatch):
-    """行业多值: industry=\"半导体,电力\" 任一命中即通过(区分包含匹配与大小写)."""
+    """行业多值(申万三级): 有映射精确命中 sw_l1 通过; 无映射回退东财行业包含匹配.
+
+    注意覆盖 fixture 默认 fake_map(SYMS 映射为电子/医药), 否则 000001 会因
+    映射为"电子"而被精确匹配排除, 与断言矛盾.
+    """
+    from app.core import classification
+
     pool = [("000001", "A", "半导体"), ("000002", "B", "医药生物"),
             ("300001", "C", "电子"), ("300002", "D", "电力设备")]
+    # 000001 有申万映射且精确命中; 300002 无映射走回退包含匹配
+    monkeypatch.setattr(
+        classification, "load_classification_map",
+        lambda syms: {"000001": SimpleNamespace(sw_l1="半导体", sw_l2="", sw_l3="")},
+    )
 
     async def fake_resolve(market):
         return pool
     monkeypatch.setattr(screener_pkg.screener, "_resolve_symbols", fake_resolve)
 
     res = asyncio.run(screener_pkg.screener.scan(
-        market="all", industry="半导体,电力", per_industry=0, apply_gate=False, apply_factors=False))
+        market="all", industry="半导体,电力设备", per_industry=0, apply_gate=False, apply_factors=False))
     got = {r["symbol"] for r in res}
     assert got == {"000001", "300002"}
