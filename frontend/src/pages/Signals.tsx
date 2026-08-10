@@ -49,7 +49,6 @@ export default function Signals() {
       if (nm) setName(nm)
       evaluate([qs])
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅挂载时执行一次
   }, [])
 
   // 单个/多个代码评估(逗号或空格分隔), 统一走批量接口

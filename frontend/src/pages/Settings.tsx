@@ -6,7 +6,8 @@ import { CONFIG_GROUPS, DATA_SOURCE_LABELS } from '../const/configSchema'
 import type { FieldMeta } from '../const/configSchema'
 import { Button, Card, ErrorBox, Field, Loading, Tag, cn, inputStyle, toast } from '../components/ui'
 
-/* eslint 未启用; 配置树为任意 JSON, 此处放宽类型 */
+// 配置树为任意 JSON(no-explicit-any 已在 eslint 配置中关闭), 此处放宽类型
+// 注意: 注释勿以 "eslint" 开头, 会被当作 inline directive 解析报错
 type AnyRec = Record<string, any>
 
 const clone = <T,>(v: T): T => JSON.parse(JSON.stringify(v)) as T
