@@ -151,6 +151,70 @@ def test_plan_sell_reduce_shows_compliant_qty_range(tmp_engine):
     assert "减后剩余不足 200 股" in content
 
 
+# ---------------------------------------------------------------- 申万三级行业树
+
+def test_industry_tree_grouped_by_three_levels(tmp_engine):
+    """行业树按 一级->二级->三级 聚合, 每级股票数正确, 无三级时无 children 字段."""
+    from app.core.classification import industry_tree
+    from app.models.models import StockClassification
+    from sqlmodel import Session
+
+    with Session(db.engine) as s:
+        rows = [
+            StockClassification(symbol="600001", sw_l1="电子", sw_l2="半导体", sw_l3="数字芯片"),
+            StockClassification(symbol="600002", sw_l1="电子", sw_l2="半导体", sw_l3="数字芯片"),
+            StockClassification(symbol="600003", sw_l1="电子", sw_l2="半导体", sw_l3="模拟芯片"),
+            StockClassification(symbol="600004", sw_l1="电子", sw_l2="消费电子", sw_l3=""),
+            StockClassification(symbol="600005", sw_l1="医药生物", sw_l2="", sw_l3=""),
+        ]
+        for r in rows:
+            s.add(r)
+        s.commit()
+
+    tree = industry_tree()
+    names = [n["name"] for n in tree]
+    assert "电子" in names and "医药生物" in names
+    elec = next(n for n in tree if n["name"] == "电子")
+    assert elec["count"] == 4
+    l2 = {n["name"]: n for n in elec["children"]}
+    assert l2["半导体"]["count"] == 3
+    assert l2["消费电子"]["count"] == 1
+    # 消费电子无三级 -> 无 children 字段; 半导体有两个三级叶子
+    assert "children" not in l2["消费电子"]
+    l3 = {n["name"]: n for n in l2["半导体"]["children"]}
+    assert l3["数字芯片"]["count"] == 2
+    assert l3["模拟芯片"]["count"] == 1
+
+
+def test_filter_by_industry_sw_levels_and_fallback(tmp_engine):
+    """行业过滤: 选中名精确命中 sw_l1/l2/l3 任一; 无映射的票回退东财包含匹配."""
+    from app.core.classification import load_classification_map
+    from app.core.screener.engine import StockScreener
+    from app.models.models import StockClassification
+    from sqlmodel import Session
+
+    with Session(db.engine) as s:
+        s.add(StockClassification(symbol="600001", sw_l1="电子", sw_l2="半导体", sw_l3="数字芯片"))
+        s.add(StockClassification(symbol="600002", sw_l1="电子", sw_l2="半导体", sw_l3="模拟芯片"))
+        s.commit()
+
+    pool = [
+        ("600001", "A", "半导体"),   # 有映射: 命中 sw_l3 数字芯片
+        ("600002", "B", "半导体"),   # 有映射: 命中 sw_l2 半导体
+        ("600003", "C", "电子"),     # 无映射: 回退东财包含匹配
+        ("600004", "D", "银行"),     # 不命中
+    ]
+    class_map = load_classification_map([s for s, _, _ in pool])
+    out = StockScreener._filter_by_industry(pool, ["半导体"], class_map)
+    assert {x[0] for x in out} == {"600001", "600002"}  # 600003 东财行业"电子"不含"半导体"
+    out = StockScreener._filter_by_industry(pool, ["数字芯片"], class_map)
+    assert {x[0] for x in out} == {"600001"}  # 三级精确命中
+    out = StockScreener._filter_by_industry(pool, ["电子"], class_map)
+    assert {x[0] for x in out} == {"600001", "600002", "600003"}  # 一级 + 回退包含
+    # 无关键词 -> 原样返回
+    assert StockScreener._filter_by_industry(pool, [], class_map) == pool
+
+
 # ---------------------------------------------------------------- 选股器评分
 def test_score_indicators_uptrend(kline_df):
     from app.core.indicators import compute_all
@@ -186,7 +250,10 @@ def test_score_indicators_downtrend_ranks_low():
 def test_screener_history_roundtrip(tmp_engine):
     """扫描历史: 保存 -> 列表(不含结果) -> 详情(含结果) -> 删除 全链路."""
     from app.core.screener.history import (
-        delete_scan_history, get_scan_history, list_scan_history, save_scan_history,
+        delete_scan_history,
+        get_scan_history,
+        list_scan_history,
+        save_scan_history,
     )
 
     hid = save_scan_history(

@@ -192,6 +192,11 @@ async def _fetch_shenwan_raw() -> dict[str, dict[str, str]]:
         l2 = l3_to_l2.get(l3_name, "")
         l1 = l2_to_l1.get(l2, "")
         for sym in syms:
+            # 乐咕可能返回带交易所后缀的代码(如 600598.SH), 归一化为 6 位;
+            # 非 6 位数字的脏数据直接丢弃, 避免污染分类表(2026-08-10 清理过 2 条)
+            sym = str(sym).strip().split(".")[0]
+            if len(sym) != 6 or not sym.isdigit():
+                continue
             out[sym] = {"sw_l1": l1, "sw_l2": l2, "sw_l3": l3_name}
 
     async def _guarded(code: str, name: str) -> None:
@@ -250,35 +255,128 @@ async def _fetch_boards_raw() -> dict[str, dict[str, list[str]]]:
 
 
 # ---------------------------------------------------------------- 落库
-def _upsert(rows: list[StockClassification]) -> None:
+def _upsert(rows: list[StockClassification], update_boards: bool = True) -> None:
+    """批量 upsert 分类映射.
+
+    update_boards=False: 只更新申万三级(理杏仁源无东财板块数据), 板块字段保留已有值.
+    """
     with db.session_scope() as s:
         for r in rows:
             existing = s.get(StockClassification, r.symbol)
             if existing is None:
                 s.add(r)
-            else:
-                existing.sw_l1 = r.sw_l1
-                existing.sw_l2 = r.sw_l2
-                existing.sw_l3 = r.sw_l3
+                continue
+            existing.sw_l1 = r.sw_l1
+            existing.sw_l2 = r.sw_l2
+            existing.sw_l3 = r.sw_l3
+            if update_boards:
                 existing.boards_industry = r.boards_industry
                 existing.boards_concept = r.boards_concept
-                existing.source = r.source
-                existing.updated_at = r.updated_at
-                existing.name = r.name or existing.name
+            existing.source = r.source
+            existing.updated_at = r.updated_at
+            existing.name = r.name or existing.name
         s.commit()
 
 
-async def refresh_classification(progress_cb: Any = None) -> dict[str, Any]:
-    """刷新全量分类映射(申万 + 板块). 返回统计.
+# ---------------------------------------------------------------- 理杏仁源(申万2021)
+_LIX_SOURCE: Any = None
 
+
+def _get_lixinger_source() -> Any:
+    """理杏仁源单例: token 读配置, 配置变更后自动重建(随 .env 热更新)."""
+    global _LIX_SOURCE
+    from app.core.config import config_manager
+    from app.core.datasource.lixinger_src import LixingerSource
+
+    token = str(config_manager.get().get("数据源", {}).get("lixinger", {}).get("token", ""))
+    if _LIX_SOURCE is None or getattr(_LIX_SOURCE, "token", None) != token:
+        _LIX_SOURCE = LixingerSource(token=token)
+    return _LIX_SOURCE
+
+
+async def _fetch_lixinger_sw_raw(progress_cb: Any = None) -> dict[str, dict[str, str]]:
+    """理杏仁申万2021 全市场三级映射(两次请求, 见 lixinger_src.get_sw_classification)."""
+    src = _get_lixinger_source()
+    if not src.enabled:
+        raise RuntimeError("LIXINGER_TOKEN 未配置, 无法使用理杏仁源")
+    if progress_cb:
+        progress_cb("理杏仁: 拉取行业与成分股", 0.15)
+    return await src.get_sw_classification()
+
+
+async def _save_lixinger_sw(sw: dict[str, dict[str, str]], progress_cb: Any = None) -> dict[str, Any]:
+    """理杏仁结果落库: 只更新 sw_* 字段, 板块字段保留已有值."""
+    from app.models.models import _now
+
+    rows: list[StockClassification] = []
+    for sym, v in sw.items():
+        rows.append(StockClassification(
+            symbol=sym, name="",
+            sw_l1=v.get("sw_l1", ""), sw_l2=v.get("sw_l2", ""), sw_l3=v.get("sw_l3", ""),
+            boards_industry="[]", boards_concept="[]",
+            source="lixinger", updated_at=_now(),
+        ))
+    if progress_cb:
+        progress_cb("写入数据库", 0.9)
+    _upsert(rows, update_boards=False)
+    if progress_cb:
+        progress_cb("完成", 1.0)
+    stats = {
+        "ok": True, "source": "lixinger",
+        "total": len(sw),
+        "sw_l1_covered": sum(1 for v in sw.values() if v.get("sw_l1")),
+        "sw_l2_covered": sum(1 for v in sw.values() if v.get("sw_l2")),
+        "sw_l3_covered": sum(1 for v in sw.values() if v.get("sw_l3")),
+        "l1_distinct": len({v.get("sw_l1") for v in sw.values() if v.get("sw_l1")}),
+    }
+    logger.info("理杏仁分类映射刷新完成: %s", stats)
+    return stats
+
+
+async def refresh_classification(progress_cb: Any = None, source: str = "auto") -> dict[str, Any]:
+    """刷新全量分类映射(申万三级 + 板块). 返回统计.
+
+    source:
+      - auto:      理杏仁(申万2021)优先, 未配置/失败自动回落 akshare(原逻辑)
+      - lixinger:  仅理杏仁, 两次请求构建全市场三级映射, 只更新 sw_* 字段
+      - akshare:   仅原逻辑(legulegu 申万 + akshare 东财板块)
+
+    理杏仁路径(2026-08-10 接入):
+    1) 接入 manager 熔断(lixinger) —— 熔断中直接跳过; 成败回报 manager;
+    2) 失败安全 —— 拉取为空则回落/报错, 不覆盖库中数据;
+    3) 板块数据(东财口径)理杏仁不提供, 落库时保留库中已有值.
+    申万2021 与 akshare 申万旧版为不同口径, 二者互为补充, 以最近一次刷新源为准.
+
+    akshare 路径(原逻辑):
     数据由 akshare 生态专属接口提供(申万来自 legulegu.com, 板块来自 akshare SDK),
-    无等价备用源(manager 的 get_industry_map 为证监会行业, 口径不同, 不可直接替换).
-    故不强行改绑多源, 而是:
-    1) 接入 manager 的 akshare 熔断状态 —— 熔断中直接跳过, 避免空跑/超时;
-    2) 刷新成败回报 manager, 使分类失败计入 akshare 统一熔断(不再游离于健康体系外);
-    3) 失败安全 —— 若本次拉取为空但库中已有数据, 保留上次有效数据并显式报错, 绝不静默清空.
+    接入 manager 的 akshare 熔断状态与成败回报 + 失败安全.
     """
     from app.core.datasource import data_source_manager
+
+    manager = data_source_manager
+
+    # ---- 理杏仁优先(auto) 或 显式指定(lixinger) ----
+    if source in ("auto", "lixinger"):
+        lx = _get_lixinger_source()
+        lx_usable = lx.enabled and not manager.source_circuit_open("lixinger")
+        if lx_usable:
+            try:
+                sw = await _fetch_lixinger_sw_raw(progress_cb)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("理杏仁分类刷新失败: %s", exc)
+                sw = {}
+            if sw:
+                manager.report_source("lixinger", True)
+                return await _save_lixinger_sw(sw, progress_cb)
+            manager.report_source("lixinger", False)
+            if source == "lixinger":
+                return {"ok": False, "error": "lixinger_empty", "total": 0}
+        elif source == "lixinger":
+            reason = ("lixinger_circuit_open" if manager.source_circuit_open("lixinger")
+                      else "lixinger_not_configured")
+            return {"ok": False, "error": reason, "total": 0}
+
+    # ---- akshare 路径(原逻辑: source=akshare 或 auto 回落) ----
     from app.models.models import _now
 
     # 1) 尊重 akshare 熔断: 熔断期跳过, 不浪费时间重试已知坏源
@@ -336,6 +434,7 @@ async def refresh_classification(progress_cb: Any = None) -> dict[str, Any]:
     # 统计(在落库前基于 merged 计算, 避免 session 关闭后访问 detached ORM 对象)
     stats = {
         "ok": True,
+        "source": "akshare",
         "total": len(merged),
         "sw_l1_covered": sum(1 for v in merged.values() if v.get("sw_l1")),
         "sw_l2_covered": sum(1 for v in merged.values() if v.get("sw_l2")),
@@ -368,6 +467,43 @@ def load_classification_map(symbols: list[str]) -> dict[str, StockClassification
         for r in rows:
             out[r.symbol] = r
     return out
+
+
+def industry_tree() -> list[dict[str, Any]]:
+    """申万三级行业树(一级 -> 二级 -> 三级), 每级带覆盖股票数, 按一级名排序.
+
+    选股页树形多选用: 选中任意级节点, 扫描时按 sw_l1/l2/l3 精确匹配.
+    """
+    with db.session_scope() as s:
+        rows = s.exec(
+            select(StockClassification.sw_l1, StockClassification.sw_l2,
+                   StockClassification.sw_l3, func.count())
+            .where(StockClassification.sw_l1 != "")
+            .group_by(StockClassification.sw_l1, StockClassification.sw_l2,
+                      StockClassification.sw_l3)
+        ).all()
+    root: dict[str, dict[str, Any]] = {}
+    for l1, l2, l3, cnt in rows:
+        n1 = root.setdefault(l1, {"name": l1, "count": 0, "children": {}})
+        n1["count"] += int(cnt)
+        if l2:
+            n2 = n1["children"].setdefault(l2, {"name": l2, "count": 0, "children": {}})
+            n2["count"] += int(cnt)
+            if l3:
+                n3 = n2["children"].setdefault(l3, {"name": l3, "count": 0})
+                n3["count"] += int(cnt)
+
+    def _to_list(node: dict[str, Any]) -> dict[str, Any]:
+        out: dict[str, Any] = {"name": node["name"], "count": node["count"]}
+        if node.get("children"):
+            kids = [_to_list(v) for v in node["children"].values()]
+            kids.sort(key=lambda x: (-x["count"], x["name"]))
+            out["children"] = kids
+        return out
+
+    items = [_to_list(v) for v in root.values()]
+    items.sort(key=lambda x: (-x["count"], x["name"]))
+    return items
 
 
 # ---------------------------------------------------------------- 纯函数(可单测)

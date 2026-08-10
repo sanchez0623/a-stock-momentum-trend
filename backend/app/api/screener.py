@@ -186,6 +186,15 @@ async def screener_industries() -> dict:
     return {"code": 0, "msg": "ok", "data": {"items": items, "total": len(items)}}
 
 
+@router.get("/screener/industries/tree")
+async def screener_industries_tree() -> dict:
+    """申万三级行业树(一级->二级->三级, 每级带股票数), 供选股页树形多选."""
+    from app.core.classification import industry_tree
+
+    items = industry_tree()
+    return {"code": 0, "msg": "ok", "data": {"items": items, "total": len(items)}}
+
+
 # ---------------------------------------------------------------- 基本面 + 业绩事件
 async def _resolve_refresh_symbols(universe: str) -> list[str]:
     """刷新任务用的 symbol 解析: 指定 universe 取其成分股, 否则用本地全部股票列表."""
