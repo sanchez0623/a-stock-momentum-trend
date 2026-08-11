@@ -62,6 +62,7 @@ def _migrate_columns() -> None:
         ("position", "cost_raw", "REAL DEFAULT 0.0"),
         ("position", "opened_at", "TEXT DEFAULT ''"),
         ("position", "pyramid_stage", "INTEGER DEFAULT 0"),
+        ("klinecache", "updated_at", "TEXT DEFAULT ''"),
     ]
     added: list[tuple[str, str]] = []
     try:

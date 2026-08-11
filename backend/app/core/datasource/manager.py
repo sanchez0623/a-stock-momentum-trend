@@ -26,6 +26,9 @@ FETCH_TIMEOUT = 15.0
 CIRCUIT_AFTER = 5  # 连续失败 5 次才熔断(原 3, 腾讯偶发抖动 3 次易误熔断)
 CIRCUIT_SECS = 600
 HEALTH_INTERVAL = 60.0
+# 盘中日线缓存 TTL: 交易日 9:15~15:05 期间, 最后日期=今天的缓存超过该秒数视为过期重拉
+# (盘中 bar 实时变化, 缓存只记日期会把当天早盘价当新鲜; 盘后不设 TTL)
+INTRADAY_TTL_SEC = 600
 
 
 class DataSourceManager:
@@ -180,7 +183,9 @@ class DataSourceManager:
         会把当天早盘的 bar 视为新鲜, 导致信号基于旧数据). 拉取后仍写缓存.
         """
         cached = kline_store.get_dataframe(symbol, period)
-        if not force and cached is not None and len(cached) >= count and self._cache_fresh(cached, period):
+        # 缓存命中条件含盘中 TTL 检查(_intraday_fresh: 收盘后恒新鲜)
+        if (not force and cached is not None and len(cached) >= count
+                and self._cache_fresh(cached, period) and self._intraday_fresh(symbol, period, cached)):
             return cached.tail(count).reset_index(drop=True)
         fresh = await self._fetch_kline(symbol, period, count, secid=secid, prefer_long=prefer_long)
         if fresh is not None and not fresh.empty:
@@ -399,6 +404,31 @@ class DataSourceManager:
         except Exception as exc:  # noqa: BLE001
             self._record(name, False, 0.0)
             return {"name": name, "ok": False, "rows": 0, "latency_ms": 0.0, "error": str(exc)}
+
+    def _intraday_fresh(self, symbol: str, period: str, df: pd.DataFrame) -> bool:
+        """盘中缓存新鲜判定: 交易日盘中 + 日线 + 最后日期=今天 时, 写入时间距现在须 ≤ TTL.
+
+        解决盘中选股拿到「当天第一次拉取时点」旧价的问题;
+        盘前/盘后/周末/无时间戳(迁移前旧缓存)一律视为新鲜.
+        """
+        if period != "daily" or df is None or df.empty:
+            return True
+        now = dt.datetime.now(dt.timezone(dt.timedelta(hours=8)))
+        if now.weekday() >= 5:
+            return True
+        if not (dt.time(9, 15) <= now.time() <= dt.time(15, 5)):
+            return True  # 盘外不设 TTL(收盘后数据不再变化)
+        if str(df.iloc[-1]["date"])[:10] != now.strftime("%Y-%m-%d"):
+            return True  # 缓存最后日期非今天(盘前旧数据), 维持原判定
+        updated = kline_store.get_updated_at(symbol, period)
+        if not updated:
+            return True  # 无时间戳(旧库迁移), 保守视为新鲜, 下次写入即带时间戳
+        try:
+            updated_dt = dt.datetime.strptime(updated[:19], "%Y-%m-%d %H:%M:%S").replace(
+                tzinfo=dt.timezone(dt.timedelta(hours=8)))
+            return (now - updated_dt).total_seconds() <= INTRADAY_TTL_SEC
+        except ValueError:
+            return True
 
     @staticmethod
     def _cache_fresh(df: pd.DataFrame, period: str) -> bool:

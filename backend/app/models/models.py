@@ -124,6 +124,7 @@ class KlineCache(SQLModel, table=True):
     period: str = Field(index=True)
     date: str = Field(default="")  # 最后一条日期, 用于增量判断
     ohlcv_json: str = Field(default="[]")
+    updated_at: str = Field(default="")  # 写入时间(盘中 TTL 判定用; 旧库迁移补列后为空)
 
 
 class BacktestKline(SQLModel, table=True):

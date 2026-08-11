@@ -1,11 +1,13 @@
 """缓存层(方案 §3.4).
 
-- K线缓存: SQLite 表 kline_cache, 每个 (symbol, period) 存一整段 JSON, 记录最后日期用于增量
+- K线缓存: SQLite 表 kline_cache, 每个 (symbol, period) 存一整段 JSON, 记录最后日期用于增量;
+  写入时间戳 updated_at 供盘中 TTL 判定(盘中日线 10 分钟过期自动重拉)
 - 实时行情: 内存 LRU, TTL 5s
 """
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import logging
 import time
@@ -21,6 +23,11 @@ logger = logging.getLogger(__name__)
 
 # 单段缓存最大条数(日线保留 ~800 条, 分钟线 ~2000)
 _MAX_ROWS = {"daily": 800, "weekly": 600, "1m": 2000, "5m": 2000, "15m": 2000, "30m": 2000, "60m": 2000}
+
+
+def _now() -> str:
+    # 强制东八区(与 models._now 一致)
+    return dt.datetime.now(dt.timezone(dt.timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S")
 
 
 class KlineStore:
@@ -55,6 +62,7 @@ class KlineStore:
                     s.add(row)
                 row.ohlcv_json = json.dumps(rows[-_MAX_ROWS.get(period, 800):], ensure_ascii=False)
                 row.date = rows[-1]["date"] if rows else ""
+                row.updated_at = _now()
                 s.commit()
         except Exception as exc:  # noqa: BLE001
             logger.warning("KlineStore.save 失败: %s", exc)
@@ -64,6 +72,19 @@ class KlineStore:
         if not rows:
             return None
         return pd.DataFrame(rows)
+
+    def get_updated_at(self, symbol: str, period: str) -> str:
+        """缓存段写入时间(盘中 TTL 判定用; 旧库迁移后为空串)."""
+        try:
+            with Session(db.engine) as s:
+                stmt = select(KlineCache.updated_at).where(
+                    KlineCache.symbol == symbol, KlineCache.period == period
+                )
+                row = s.exec(stmt).first()
+                return str(row[0] or "") if row else ""
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("KlineStore.get_updated_at 失败: %s", exc)
+            return ""
 
     def list_symbols(self, period: str = "daily") -> list[str]:
         """列出缓存了指定周期且有数据(非空段)的 symbol, 升序. 供回测/预热统计用."""
