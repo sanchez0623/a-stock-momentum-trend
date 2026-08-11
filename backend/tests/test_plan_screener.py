@@ -106,6 +106,37 @@ def test_plan_generate_buy_first(tmp_engine):
     assert "首仓买入" in plan["content"]
 
 
+def test_plan_unknown_mode_blocks_buy_but_allows_stop(tmp_engine):
+    """市况不明(unknown): 买入类信号转观望(hold), 卖出/止损类照常(风控优先)."""
+    from app.core.modes import ModeDecision
+
+    unknown = ModeDecision(
+        mode_key="unknown",
+        mode={"label": "市况不明", "pyramid_ratios": [0.5, 0.3, 0.2],
+              "max_stages": 0, "stop_loss_pct": 5.0, "trailing_stop_pct": 8.0,
+              "take_profit_ratios": [0.2, 0.3, 0.5], "atr_multipliers": [1.5, 3.0, 5.0]},
+        regime={}, reason="市况不明", label="市况不明",
+    )
+
+    # 买入类 -> hold 观望
+    buy_sig = Signal(type="BUY_FIRST", symbol="600001", name="测试", direction="buy",
+                     strength=80.0, reason="三共振入场", price=10.0)
+    plan = gen.generate("600001", "测试", buy_sig, mode=unknown)
+    assert plan["action"] == "hold"
+    assert "观望" in plan["content"]
+
+    # 止损类 -> 照常给止损计划
+    from app.core.position import position_manager
+
+    position_manager.open_or_add("600001", "测试", 100, 10.0, "首仓", None)
+    _backdate("600001")
+    stop_sig = Signal(type="SELL_STOP", symbol="600001", name="测试", direction="sell",
+                      strength=90.0, reason="跌破止损线", price=9.0)
+    plan = gen.generate("600001", "测试", stop_sig, mode=unknown)
+    assert plan["action"] == "sell_stop"
+    assert "止损" in plan["content"]
+
+
 def test_plan_star_board_buy_add_qty_rounded_to_lot(tmp_engine):
     """复现 bug: 科创板加仓建议不得出现 <200 股的违规数量(如 180 股), 须按板块规则取整."""
     from app.core.position import position_manager

@@ -43,7 +43,6 @@ class PlanGenerator:
         """
         cfg = config_manager.get()
         risk = cfg["风控"]
-        t_cfg = cfg["做T"]
         mode = mode or mode_for_ind(None)  # None -> 默认模式决策
         mode_cfg = mode.mode  # 本模式的配置对象(比率/止损/止盈/加仓规则)
         stop_pct = float(mode_cfg.get("stop_loss_pct", risk["stop_loss_pct"]))
@@ -59,7 +58,14 @@ class PlanGenerator:
         state_desc = self._state_desc(pos, price)
         signal_desc = f"{signal.type}(强度{signal.strength:.0f}) — {signal.reason}"
 
-        if signal.type == "BUY_FIRST":
+        # 市况不明(unknown): 买入类信号转观望(不建仓/不加仓), 卖出/止损类照常(风控优先)
+        if mode.mode_key == "unknown" and signal.type in ("BUY_FIRST", "BUY_ADD", "T_BUY"):
+            action, advice = "hold", (
+                "市况特征不明确(均线/位置无明确模式), 建议观望, 暂不建仓加仓; "
+                "等待市况明朗或信号转强后再动手"
+            )
+            stop_line = "—"
+        elif signal.type == "BUY_FIRST":
             action, advice = "buy_first", self._advice_buy_first(price, mode, symbol)
             stop_line = "—"
         elif signal.type == "BUY_ADD":

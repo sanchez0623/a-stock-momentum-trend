@@ -16,19 +16,16 @@ from __future__ import annotations
 import copy
 
 import pandas as pd
-
 from app.core.config import config_manager
 from app.core.modes import (
     ModeDecision,
     active_mode,
     classify,
     mode_for_ind,
-    regime_features,
 )
 from app.core.plan.generator import PlanGenerator
 from app.core.position import position_manager
 from app.core.signals.engine import PositionInfo, Signal, SignalEngine
-
 
 gen = PlanGenerator()
 eng = SignalEngine()
@@ -107,7 +104,7 @@ def test_classify_fallback_pullback_when_too_deep():
     cfg = config_manager.get()
     # 多头强趋势但距高偏深(>8%) -> 兜底仍判回踩
     regime = {"pdi": 25, "mdi": 10, "adx": 25, "dist_to_high_pct": 20.0,
-              "volume_ratio": 1.0, "ma_bull": True}
+              "volume_ratio": 1.0, "ma_bull": True, "ma_uptrend": True}
     key, reason = classify(regime, cfg)
     assert key == "trend_pullback"
 
@@ -129,6 +126,27 @@ def test_classify_is_deterministic():
     a = classify(regime, cfg)
     b = classify(regime, cfg)
     assert a == b
+
+
+def test_classify_unknown_when_no_pattern_matches():
+    """极端兜底: 无任何模式特征命中 -> 返回 unknown(不再硬套默认模式)."""
+    cfg = config_manager.get()
+    # ADX 中等(>=weak)但均线非多头、距高也不在回踩区间 -> 前 5 条全不命中
+    regime = {"pdi": 20, "mdi": 10, "adx": 22, "dist_to_high_pct": 9.5,
+              "volume_ratio": 0.8, "ma_bull": False, "ma_uptrend": False}
+    key, reason = classify(regime, cfg)
+    assert key == "unknown"
+    assert "市况不明" in reason
+
+
+def test_classify_pullback_with_loose_uptrend():
+    """放宽多头: MA10>MA60>MA20(中间缠绕)且 ADX>=weak -> 归入趋势回踩(距高偏深但趋势未破)."""
+    cfg = config_manager.get()
+    regime = {"pdi": 38, "mdi": 9, "adx": 27, "dist_to_high_pct": 9.3,
+              "volume_ratio": 1.48, "ma_bull": False, "ma_uptrend": True}
+    key, reason = classify(regime, cfg)
+    assert key == "trend_pullback"
+    assert "短期站上长期均线" in reason
 
 
 # ---------------------------------------------------------------- mode_for_ind / active_mode

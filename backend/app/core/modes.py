@@ -105,7 +105,10 @@ def regime_features(ind: pd.DataFrame, cfg: dict, end: int | None = None) -> dic
     rsi_now = _f(last.get(f"rsi{rsi_p}"), 50)
     rsi_prev = _f(prev.get(f"rsi{rsi_p}"), 50)
     dist_to_high_pct = ((dc_upper - close) / close * 100) if (dc_upper > 0 and close > 0) else 0.0
+    # 完整多头排列(严格): MA10>MA20>MA60
     ma_bull = ma_s_v > ma_m_v > ma_l_v
+    # 放宽多头(允许短期/中期缠绕, 如急涨后 MA10>MA60>MA20): 短期与中期均站上长期均线
+    ma_uptrend = ma_s_v > ma_l_v and ma_m_v > ma_l_v
     return {
         "close": close,
         "atr_pct": round(atr_pct, 4),
@@ -113,6 +116,7 @@ def regime_features(ind: pd.DataFrame, cfg: dict, end: int | None = None) -> dic
         "pdi": round(pdi, 2),
         "mdi": round(mdi, 2),
         "ma_bull": ma_bull,
+        "ma_uptrend": ma_uptrend,
         "ma_s_v": ma_s_v,
         "ma_m_v": ma_m_v,
         "ma_l_v": ma_l_v,
@@ -146,6 +150,7 @@ def classify(regime: dict, cfg: dict) -> tuple[str, str]:
     dist = regime.get("dist_to_high_pct", 0.0)
     vr = regime.get("volume_ratio", 0.0)
     ma_bull = regime.get("ma_bull", False)
+    ma_uptrend = regime.get("ma_uptrend", False)
     pdi = regime.get("pdi", 0.0)
     mdi = regime.get("mdi", 0.0)
 
@@ -170,13 +175,15 @@ def classify(regime: dict, cfg: dict) -> tuple[str, str]:
     # 4. 震荡: 趋势弱
     if adx < adx_weak:
         return "range", f"震荡: ADX={adx:.0f}(<{adx_weak}) 无明确趋势, 轻仓小加"
-    # 5. 兜底: 多头强趋势但距高偏深
-    if adx >= adx_weak and ma_bull:
+    # 5. 兜底: 趋势未破(放宽多头: 短期与中期站上长期均线, 允许中间缠绕)但距高偏深
+    if adx >= adx_weak and ma_uptrend:
         return "trend_pullback", (
-            f"趋势回踩: ADX={adx:.0f} 多头排列, 距高{dist:.1f}% 偏深但趋势未破"
+            f"趋势回踩: ADX={adx:.0f} 短期站上长期均线, 距高{dist:.1f}% 偏深但趋势未破"
         )
-    # 极端兜底
-    return cfg[MODE_GROUP].get("default_mode", DEFAULT_MODE_KEY), "默认模式(无明确市况特征)"
+    # 6. 市况不明: 无任何模式特征命中 -> 专用 unknown 模式(买入建议观望, 不再硬套默认模式)
+    return "unknown", (
+        f"市况不明: ADX={adx:.0f} 均线/位置均无明确模式特征, 买入建议观望"
+    )
 
 
 def _default_decision(cfg: dict) -> ModeDecision:

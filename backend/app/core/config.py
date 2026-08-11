@@ -156,6 +156,20 @@ DEFAULT_CONFIG: dict[str, Any] = {
                 "take_profit_ratios": [1.0],
                 "take_profit_levels": [1.03],
             },
+            "unknown": {
+                # 市况特征不明(无任何模式命中): 买入类建议观望, 卖出/止损类照常
+                "label": "市况不明",
+                "pyramid_ratios": [0.5, 0.3, 0.2],
+                "stop_loss_pct": 5.0,
+                "trailing_stop_pct": 8.0,
+                "min_add_profit_pct": 999.0,  # 实际不可达 -> 不加仓
+                "allow_add": False,
+                "max_stages": 0,              # 无档位可推进
+                "take_profit_mode": "atr",
+                "atr_multipliers": [1.5, 3.0, 5.0],
+                "take_profit_ratios": [0.2, 0.3, 0.5],
+                "take_profit_levels": [1.03, 1.06, 1.10],
+            },
         },
     },
     "评分权重": {
