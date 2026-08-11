@@ -159,8 +159,6 @@ export const api = {
       method: 'POST', body: JSON.stringify({ review_id: reviewId, index, status }),
     }),
   aiReviewConfig: () => request<AiReviewConfig>('/ai-review/config'),
-  aiReviewSaveConfig: (cfg: { base_url?: string; api_key?: string; model?: string; enabled?: boolean }) =>
-    request<AiReviewConfig>('/ai-review/config', { method: 'PUT', body: JSON.stringify(cfg) }),
   // 参数变更记录(采纳建议 -> 热写回配置 -> 可回滚)
   aiReviewChanges: () => request<ConfigChange[]>('/ai-review/changes'),
   aiReviewRevert: (changeId: number) =>

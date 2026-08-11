@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useNavigate } from 'react-router-dom'
 import { api } from '../api/client'
 import type { AiReviewRecord, AiReviewSuggestion } from '../api/client'
-import { Button, Card, EmptyState, ErrorBox, Field, ListRow, Loading, PageHeader, Tag, inputStyle, toast } from '../components/ui'
+import { Button, Card, EmptyState, ErrorBox, ListRow, Loading, PageHeader, Tag, inputStyle, toast } from '../components/ui'
 
 const LEVEL_META: Record<string, { label: string; color: string }> = {
   high: { label: '严重', color: '#dc2626' },
@@ -37,19 +38,14 @@ function diffPct(from: number | null | undefined, to: number): string | null {
 
 export default function AiReview() {
   const queryClient = useQueryClient()
+  const navigate = useNavigate()
   const [error, setError] = useState('')
 
-  // 配置
+  // 配置(只读状态: LLM 是否启用/模型名; 编辑入口在 设置 -> AI 复盘)
   const { data: cfg } = useQuery({
     queryKey: ['ai-review', 'config'],
     queryFn: api.aiReviewConfig,
   })
-  const [cfgForm, setCfgForm] = useState({ base_url: '', api_key: '', model: '', enabled: false })
-  const [cfgSaved, setCfgSaved] = useState('')
-  // cfg 到达后同步表单(保存后 invalidate 重取亦同步, 与原 loadConfig 行为一致)
-  useEffect(() => {
-    if (cfg) setCfgForm({ base_url: cfg.base_url || '', api_key: '', model: cfg.model || '', enabled: cfg.enabled })
-  }, [cfg])
 
   // 触发
   const [scope, setScope] = useState('week')
@@ -101,25 +97,6 @@ export default function AiReview() {
     try {
       const { task_id } = await api.aiReviewRun(scope)
       setTaskId(task_id)
-    } catch (e) {
-      setError(String((e as Error).message))
-      toast.error(String((e as Error).message))
-    }
-  }
-
-  const saveConfig = async () => {
-    setCfgSaved('')
-    try {
-      await api.aiReviewSaveConfig({
-        base_url: cfgForm.base_url || undefined,
-        api_key: cfgForm.api_key || undefined,
-        model: cfgForm.model || undefined,
-        enabled: cfgForm.enabled,
-      })
-      setCfgSaved('已保存')
-      setCfgForm((f) => ({ ...f, api_key: '' }))
-      toast.success('LLM 配置已保存')
-      queryClient.invalidateQueries({ queryKey: ['ai-review', 'config'] })
     } catch (e) {
       setError(String((e as Error).message))
       toast.error(String((e as Error).message))
@@ -296,31 +273,22 @@ export default function AiReview() {
         </Card>
       )}
 
-      {/* LLM 配置 */}
-      <Card title="LLM 配置(兼容 OpenAI 协议: DeepSeek / 通义 / Kimi / Ollama)" className="mt-3">
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-          <Field label="API 地址">
-            <input style={inputStyle} value={cfgForm.base_url} onChange={(e) => setCfgForm({ ...cfgForm, base_url: e.target.value })} placeholder="如 https://api.deepseek.com/v1" />
-          </Field>
-          <Field label={`API Key(${cfg?.has_key ? '已配置, 留空则不修改' : '未配置'})`}>
-            <input style={inputStyle} type="password" value={cfgForm.api_key} onChange={(e) => setCfgForm({ ...cfgForm, api_key: e.target.value })} placeholder={cfg?.has_key ? 'sk-****(已保存)' : '输入 DeepSeek Key'} />
-          </Field>
-          <Field label="模型">
-            <input style={inputStyle} value={cfgForm.model} onChange={(e) => setCfgForm({ ...cfgForm, model: e.target.value })} placeholder="如 deepseek-chat" />
-          </Field>
-          <Field label="启用 LLM">
-            <label className="flex items-center gap-2 pt-2 text-[13px]">
-              <input type="checkbox" checked={cfgForm.enabled} onChange={(e) => setCfgForm({ ...cfgForm, enabled: e.target.checked })} />
-              启用深度复盘(不启用则只做规则诊断)
-            </label>
-          </Field>
-        </div>
-        <div className="mt-2 flex items-center gap-3">
-          <Button onClick={saveConfig}>保存配置</Button>
-          {cfgSaved && <span className="text-xs text-fall">{cfgSaved}</span>}
-        </div>
-        <div className="mt-2 text-[11px] text-ink-faint">
-          默认指向 DeepSeek(base_url 留空 + 填入 Key 即可)。Key 仅存本机数据库, 接口回传时脱敏。
+      {/* LLM 配置入口(编辑在 设置 -> AI 复盘, 避免两处入口改同一配置) */}
+      <Card title="LLM 配置" className="mt-3">
+        <div className="flex flex-wrap items-center gap-2 text-[13px]">
+          <span className="text-ink-secondary">
+            {cfg?.enabled && cfg.has_key ? `已启用(${cfg.model})` : '未启用, 仅规则诊断'}
+          </span>
+          <button
+            type="button"
+            onClick={() => navigate('/settings')}
+            className="cursor-pointer border-none bg-transparent text-[12px] text-link hover:underline"
+          >
+            去设置页配置 →
+          </button>
+          <span className="text-[11px] text-ink-faint">
+            API 地址 / Key / 模型 / 温度等参数统一在 设置 → AI 复盘 中管理, 保存后此处即时生效。
+          </span>
         </div>
       </Card>
 

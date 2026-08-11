@@ -39,13 +39,6 @@ class SuggestionBody(BaseModel):
     status: str  # accepted / rejected
 
 
-class ConfigBody(BaseModel):
-    base_url: str = ""
-    api_key: str = ""  # 空表示不修改(脱敏不回传)
-    model: str = ""
-    enabled: bool | None = None
-
-
 def _mask_key(key: str) -> str:
     if not key:
         return ""
@@ -161,7 +154,7 @@ async def tuning_policy() -> dict:
 
 @router.get("/config")
 async def get_llm_config() -> dict:
-    """LLM 配置(key 脱敏)."""
+    """LLM 配置只读状态(供 AI 复盘页展示; 编辑统一在 设置 -> AI 复盘)."""
     llm = config_manager.get().get("llm", {})
     return {"code": 0, "msg": "ok", "data": {
         "provider": llm.get("provider", "openai_compatible"),
@@ -170,23 +163,4 @@ async def get_llm_config() -> dict:
         "has_key": bool(llm.get("api_key")),
         "model": llm.get("model", ""),
         "enabled": bool(llm.get("enabled")),
-    }}
-
-
-@router.put("/config")
-async def update_llm_config(body: ConfigBody) -> dict:
-    """更新 LLM 配置(api_key 留空则不覆盖已保存的 key)."""
-    llm = dict(config_manager.get().get("llm", {}))
-    if body.base_url:
-        llm["base_url"] = body.base_url
-    if body.api_key:
-        llm["api_key"] = body.api_key.strip()
-    if body.model:
-        llm["model"] = body.model
-    if body.enabled is not None:
-        llm["enabled"] = body.enabled
-    config_manager.update({"llm": llm})
-    return {"code": 0, "msg": "配置已保存", "data": {
-        "base_url": llm.get("base_url", ""), "model": llm.get("model", ""),
-        "has_key": bool(llm.get("api_key")), "enabled": bool(llm.get("enabled")),
     }}
