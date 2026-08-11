@@ -7,7 +7,15 @@ export async function request<T = unknown>(path: string, init?: RequestInit): Pr
     ...init,
   })
   if (!resp.ok) {
-    throw new Error(`HTTP ${resp.status}`)
+    // 透传后端错误详情(如 FastAPI 400 的 detail), 避免只显示 HTTP 400 无法定位原因
+    let detail = ''
+    try {
+      const b = await resp.json()
+      detail = b?.detail ?? b?.msg ?? ''
+    } catch {
+      /* 非 JSON 响应, 忽略 */
+    }
+    throw new Error(detail || `HTTP ${resp.status}`)
   }
   const body = await resp.json()
   if (body.code !== 0) {
