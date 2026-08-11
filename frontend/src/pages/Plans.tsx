@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
 import type { PlanRecord } from '../api/client'
-import { Button, Card, ErrorBox, EmptyState, Field, Loading, PageHeader, Tag, toast } from '../components/ui'
+import { Button, Card, ErrorBox, EmptyState, Field, Loading, PageHeader, Tag, Tip, toast } from '../components/ui'
 import SymbolInput from '../components/SymbolInput'
 
 // 计划正文三段式解析(兼容旧版无分组标记的纯文本):
@@ -29,6 +29,53 @@ function parsePlan(content: string): { action: string; prices: string[]; context
   }
   if (!out.action && out.prices.length === 0) out.raw = true // 旧版格式, 回退纯文本
   return out
+}
+
+// 风控/纪律行渲染: 术语字段悬停提示含义(交易说明书同源精简版)
+function ControlLine({ line }: { line: string }) {
+  if (line.startsWith('风控检查:')) {
+    const rest = line.slice('风控检查:'.length).trim()
+    const parts = rest.split('|')
+    return (
+      <div>
+        <span className="mr-1">风控检查:</span>
+        {parts.map((p, i) => {
+          const seg = p.trim()
+          const tip =
+            seg.startsWith('日亏损熔断')
+              ? '当日账户浮亏达 3% 时, 当天禁止一切新开仓(已有持仓的止损/减仓照常)'
+              : seg.startsWith('防守模式')
+                ? '账户净值从高点回撤超 10% 时进入防守, 只减不加, 买入类信号全部拦截'
+                : seg.startsWith('总仓位')
+                  ? '持仓市值 ÷ 总资金的比例, 超过 80% 上限禁止加仓'
+                  : ''
+          return (
+            <span key={i}>
+              {i > 0 && <span className="mx-1">|</span>}
+              {tip ? <Tip text={tip}>{seg}</Tip> : <span>{seg}</span>}
+            </span>
+          )
+        })}
+      </div>
+    )
+  }
+  if (line.startsWith('一致性:')) {
+    return (
+      <div>
+        <Tip text="信号建议动作与计划最终动作的对应关系; 不一致时注明原因(档位用尽/市况不明/T+1等)">一致性:</Tip>
+        <span>{line.slice('一致性:'.length)}</span>
+      </div>
+    )
+  }
+  if (line.startsWith('纪律提醒:')) {
+    return (
+      <div>
+        <Tip text="计划执行纪律: 信号与计划一致时才动手; 加仓后总仓位不超上限">纪律提醒:</Tip>
+        <span>{line.slice('纪律提醒:'.length)}</span>
+      </div>
+    )
+  }
+  return <div>{line}</div>
 }
 
 // 行动卡片配色: 买入=红(利多) / 卖出=绿(偏空) / 观望=灰
@@ -87,7 +134,7 @@ function PlanCard({ p, onMark }: { p: PlanRecord; onMark: (id: number, status: '
           {parsed.control.length > 0 && (
             <div className="mt-2 text-[11px] leading-[1.8] text-ink-faint">
               {parsed.control.map((line, i) => (
-                <div key={i}>{line}</div>
+                <ControlLine key={i} line={line} />
               ))}
             </div>
           )}
