@@ -2,7 +2,7 @@ import { Fragment, useEffect, useMemo, useState, type MouseEvent } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../api/client'
-import type { IndustryNode, ScreenerHistoryItem, ScreenerPreset, ScreenerTask } from '../api/client'
+import type { IndustryNode, InterruptedTask, ScreenerHistoryItem, ScreenerPreset, ScreenerTask } from '../api/client'
 import { Button, Card, ConfirmDialog, EmptyState, ErrorBox, Loading, PageHeader, Table, Td, Th, Tag, inputStyle, toast } from '../components/ui'
 import { cn } from '../components/ui'
 
@@ -126,6 +126,13 @@ export default function Screener() {
     queryFn: api.screenerPresets,
     select: (d) => d.items,
   })
+  // 断点续传: 可恢复的中断任务(服务重启后自动标记, 可继续扫描; 完成/丢弃后失效)
+  const { data: interruptedTasks = [] } = useQuery({
+    queryKey: ['screener', 'interrupted'],
+    queryFn: api.screenerInterruptedTasks,
+    select: (d) => d.items,
+  })
+  const interrupted: InterruptedTask | null = interruptedTasks[0] ?? null
 
   // ---- 实时扫描任务: 触发后每 3s 轮询, 终态自动停止 ----
   const [taskId, setTaskId] = useState<string | null>(null)
@@ -141,12 +148,13 @@ export default function Screener() {
     (latestTask && (latestTask.status === 'done' || latestTask.status === 'failed') ? latestTask : null)
   const running = taskId !== null && (liveTask === undefined || liveTask.status === 'running' || liveTask.status === 'pending')
 
-  // 任务终态副作用: 刷新历史列表 + 回到实时结果
+  // 任务终态副作用: 刷新历史列表 + 清除中断提示 + 回到实时结果
   useEffect(() => {
     if (liveTask?.status === 'done' || liveTask?.status === 'failed') {
       setActiveHistory(null)
       setHistoryTask(null)
       queryClient.invalidateQueries({ queryKey: ['screener', 'history'] })
+      queryClient.invalidateQueries({ queryKey: ['screener', 'interrupted'] })
       if (liveTask.status === 'failed') toast.error(liveTask.error || '扫描失败')
     }
   }, [liveTask?.status])
@@ -262,7 +270,7 @@ export default function Screener() {
       return next
     })
 
-  const run = async () => {
+  const run = async (resumeTaskId?: string) => {
     setError('')
     try {
       const { task_id } = await api.screenerRun(
@@ -272,8 +280,9 @@ export default function Screener() {
         // 关键: 未选指数池时显式传 'all'(而不是 undefined), 否则后端会回退到配置默认 sz50
         universeSel.join(',') || 'all',
         { perIndustry, industryLevel, applyGate, applyFactors },
+        resumeTaskId,
       )
-      toast.info('扫描已启动, 完成后自动刷新结果')
+      toast.info(resumeTaskId ? '已从断点继续扫描(跳过已完成票, 结果保留)' : '扫描已启动, 完成后自动刷新结果')
       setHistoryTask(null)
       setTaskId(task_id)
     } catch (e) {
@@ -362,6 +371,18 @@ export default function Screener() {
     setUniverseSel([])
     setBoards([])
     setIndustries([])
+  }
+
+  // 丢弃中断任务
+  const discardTask = async () => {
+    if (!interrupted) return
+    try {
+      await api.deleteScreenerTask(interrupted.task_id)
+      toast.success('已丢弃中断任务')
+      queryClient.invalidateQueries({ queryKey: ['screener', 'interrupted'] })
+    } catch (e) {
+      toast.error(String((e as Error).message))
+    }
   }
 
   return (
@@ -619,7 +640,7 @@ export default function Screener() {
 
       {/* ---------- 扫描按钮 + 已选摘要 ---------- */}
       <div className="mt-3 flex flex-wrap items-center gap-2">
-        <Button onClick={run} disabled={scanning}>
+        <Button onClick={() => run()} disabled={scanning}>
           {scanning ? '扫描中...' : '开始扫描'}
         </Button>
         {task && <span className="text-xs text-ink-muted">最近任务: {task.status} · {task.done}/{task.total} · {task.progress}%</span>}
@@ -627,6 +648,25 @@ export default function Screener() {
           <span className="text-xs text-ink-faint">已应用 {conditionChips.length} 个条件</span>
         )}
       </div>
+
+      {/* 断点续传: 中断任务提示(可继续/重扫/丢弃) */}
+      {interrupted && !scanning && (
+        <div className="mt-2 flex flex-wrap items-center gap-2 rounded border border-[#f59e0b]/40 bg-[#fffbeb] px-3 py-2 text-[12px]">
+          <span className="text-[#b45309]">
+            上次扫描中断: {interrupted.done}/{interrupted.total}({interrupted.total ? Math.round(interrupted.done / interrupted.total * 100) : 0}%),
+            可继续扫描(跳过已完成, 已扫结果保留)
+          </span>
+          <Button onClick={() => run(interrupted.task_id)} className="h-7 px-2 text-xs">继续扫描</Button>
+          <Button kind="ghost" onClick={() => run()} className="h-7 px-2 text-xs">重新扫描</Button>
+          <button
+            type="button"
+            onClick={discardTask}
+            className="cursor-pointer border-none bg-transparent text-[11px] text-ink-faint hover:text-rise"
+          >
+            丢弃
+          </button>
+        </div>
+      )}
       {task?.error && <div className="mt-2 text-xs text-orange-500">任务异常: {task.error}</div>}
 
       {/* ---------- 分析记录(持久化, 点击回看) ---------- */}

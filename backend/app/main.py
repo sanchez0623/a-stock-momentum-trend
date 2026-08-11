@@ -67,6 +67,15 @@ async def init_app() -> None:
     config_manager.load_from_db()
     data_source_manager.setup(build_sources())
     await data_source_manager.start_health_checks()
+    # 断点续传自愈: 上次进程遗留的 running 扫描任务标记 interrupted(前端可继续扫描)
+    try:
+        from app.core.screener.persistence import mark_all_running_interrupted
+
+        n = mark_all_running_interrupted()
+        if n:
+            logger.info("扫描任务自愈: %d 个遗留任务标记为中断(可在选股页继续扫描)", n)
+    except Exception:  # noqa: BLE001
+        pass
     from app.scheduler import start_scheduler
 
     start_scheduler()

@@ -32,8 +32,9 @@ async def run_screener(
     apply_gate: bool = Query(True, description="是否应用大盘择时闸门"),
     universe: str | None = Query(None, description="选股池预筛: all/hs300/zz500/sz50/hs300+zz500/zz800(空=用配置)"),
     apply_factors: bool = Query(True, description="是否叠加基本面质量 + 业绩事件因子"),
+    resume_task_id: str | None = Query(None, description="断点续传: 恢复该中断任务(用原参数, 跳过已完成票)继续扫描"),
 ) -> dict:
-    """触发扫描(异步, 返回 task_id). 支持 market + 板块多值 + 行业多值 + 每行业限配 + 闸门 + 选股池预筛 + 因子."""
+    """触发扫描(异步, 返回 task_id). 支持 market + 板块多值 + 行业多值 + 每行业限配 + 闸门 + 选股池预筛 + 因子 + 断点续传."""
     task_id = scan_tasks.create(market, top_n)
     scan_tasks.update(task_id, status="running")
     params = {
@@ -43,26 +44,58 @@ async def run_screener(
     }
 
     async def _run() -> None:
+        persist_task_id = resume_task_id or task_id
+        resume_data = None
         try:
+            if resume_task_id:
+                # 恢复中断任务: 原参数 + 已产生结果(结果即进度, 推导已完成票集合)
+                from app.core.screener.persistence import load_batches, load_task
+
+                t = load_task(resume_task_id)
+                if t:
+                    for k in ("market", "board", "industry", "top_n", "per_industry",
+                              "industry_level", "apply_gate", "universe", "apply_factors"):
+                        params[k] = t.get(k, params[k])
+                    batches = load_batches(resume_task_id)
+                    resume_data = {
+                        "done": {r["symbol"] for r in batches if r.get("symbol")},
+                        "results": batches,
+                    }
+                else:
+                    raise RuntimeError(f"中断任务 {resume_task_id} 不存在")
+            else:
+                from app.core.screener.persistence import create_task
+
+                create_task(task_id, params, [])
             result = await screener.scan(
-                market=market,
-                board=board,
-                industry=industry,
-                top_n=top_n,
-                per_industry=per_industry,
-                industry_level=industry_level,
-                apply_gate=apply_gate,
-                universe=universe,
-                apply_factors=apply_factors,
+                market=params["market"],
+                board=params["board"],
+                industry=params["industry"],
+                top_n=params["top_n"],
+                per_industry=params["per_industry"],
+                industry_level=params["industry_level"],
+                apply_gate=params["apply_gate"],
+                # 恢复时用原扫描池快照已预筛, 跳过重复预筛
+                universe=("all" if resume_data else params["universe"]),
+                apply_factors=params["apply_factors"],
+                persist_task_id=persist_task_id,
+                done_symbols=resume_data["done"] if resume_data else None,
+                initial_results=resume_data["results"] if resume_data else None,
                 progress_cb=lambda done, total: scan_tasks.progress(task_id, done, total),
             )
             scan_tasks.update(task_id, status="done", progress=100, result=result)
             # 扫描完成 -> 结果持久化到历史表(前端可回看, 内存任务重启即清)
             from app.core.screener.history import save_scan_history
+            from app.core.screener.persistence import cleanup_old_tasks, delete_task
 
             save_scan_history(scan_tasks.get(task_id) or {}, params)
+            delete_task(persist_task_id)
+            cleanup_old_tasks()
         except Exception as exc:  # noqa: BLE001
             scan_tasks.update(task_id, status="failed", error=str(exc))
+            from app.core.screener.persistence import update_task
+
+            update_task(persist_task_id, status="failed", error=str(exc))
 
     asyncio.get_running_loop().create_task(_run())
     return {"code": 0, "msg": "扫描已启动", "data": {"task_id": task_id}}
@@ -294,6 +327,23 @@ async def screener_latest() -> dict:
 
 
 # ---------------------------------------------------------------- 扫描历史(持久化回看)
+@router.get("/screener/tasks/interrupted")
+async def screener_interrupted_tasks() -> dict:
+    """可恢复的中断任务列表(服务重启后 running 任务被标记 interrupted)."""
+    from app.core.screener.persistence import list_interrupted
+
+    return {"code": 0, "msg": "ok", "data": {"items": list_interrupted()}}
+
+
+@router.delete("/screener/tasks/{task_id}")
+async def screener_task_delete(task_id: str) -> dict:
+    """丢弃中断任务(删除任务与结果批次)."""
+    from app.core.screener.persistence import delete_task
+
+    delete_task(task_id)
+    return {"code": 0, "msg": "ok", "data": {"task_id": task_id}}
+
+
 @router.get("/screener/history")
 async def screener_history_list(limit: int = Query(50, ge=1, le=200)) -> dict:
     """选股扫描历史列表(不含结果 JSON, 点击某条再取详情)."""

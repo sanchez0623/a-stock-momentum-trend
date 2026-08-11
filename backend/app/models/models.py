@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 
+from sqlalchemy import UniqueConstraint
 from sqlmodel import Field, SQLModel
 
 
@@ -125,6 +126,33 @@ class KlineCache(SQLModel, table=True):
     ohlcv_json: str = Field(default="[]")
 
 
+class BacktestKline(SQLModel, table=True):
+    """回测专用 K 线(方案 v2 §4): 行式存储, 冻结快照, 与实盘 kline_cache 完全隔离.
+
+    - 回测统一前复权(qfq): 区间拉取后**冻结**(同 key 行不随日常增量刷新/重算),
+      从根上消除动态前复权的未来函数问题(§4.3);
+    - 指数用 symbol = "idx:" + secid(如 idx:0.000300), adjust = raw(指数无复权);
+    - force 重拉只允许显式触发(诊断/修复), 常规路径永不覆盖已有行.
+    """
+
+    __table_args__ = (
+        UniqueConstraint("symbol", "period", "adjust", "date", name="uq_backtest_kline"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    symbol: str = Field(index=True)  # 6 位代码 / idx:secid
+    period: str = Field(default="daily", index=True)
+    adjust: str = Field(default="qfq", index=True)  # qfq(前复权) / raw(指数不复权)
+    date: str = Field(default="", index=True)  # YYYY-MM-DD
+    open: float = Field(default=0.0)
+    high: float = Field(default=0.0)
+    low: float = Field(default=0.0)
+    close: float = Field(default=0.0)
+    volume: float = Field(default=0.0)
+    amount: float = Field(default=0.0)
+    fetched_at: str = Field(default_factory=_now)
+
+
 class Watchlist(SQLModel, table=True):
     """自选股."""
 
@@ -181,6 +209,39 @@ class ScreenerPreset(SQLModel, table=True):
     universe: str = Field(default="")      # 逗号分隔多值
     board: str = Field(default="")         # 板块多值(逗号分隔)
     industry: str = Field(default="")      # 行业多值(逗号分隔)
+    created_at: str = Field(default_factory=_now)
+
+
+class ScreenerTask(SQLModel, table=True):
+    """选股扫描任务持久化(断点续传: 服务重启后任务不丢, 可继续扫描)."""
+
+    id: int | None = Field(default=None, primary_key=True)
+    task_id: str = Field(default="", index=True)  # 与内存任务对应
+    status: str = Field(default="running", index=True)  # running/done/failed/interrupted
+    market: str = Field(default="all")
+    board: str = Field(default="")
+    industry: str = Field(default="")
+    top_n: int = Field(default=30)
+    per_industry: int = Field(default=0)
+    industry_level: str = Field(default="sw_l1")
+    apply_gate: bool = Field(default=True)
+    universe: str = Field(default="")
+    apply_factors: bool = Field(default=True)
+    symbols_json: str = Field(default="[]")  # 扫描池快照(过滤后), 恢复时用原池
+    total: int = Field(default=0)
+    done: int = Field(default=0)
+    error: str = Field(default="")
+    created_at: str = Field(default_factory=_now)
+    updated_at: str = Field(default_factory=_now)
+
+
+class ScreenerTaskBatch(SQLModel, table=True):
+    """扫描结果批次(每批约 N 只增量落库, 恢复时按 seq 合并; 结果即进度)."""
+
+    id: int | None = Field(default=None, primary_key=True)
+    task_id: str = Field(default="", index=True)
+    seq: int = Field(default=0)
+    data_json: str = Field(default="[]")  # 本批结果列表
     created_at: str = Field(default_factory=_now)
 
 

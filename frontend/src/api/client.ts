@@ -92,6 +92,7 @@ export const api = {
     industry?: string,
     universe?: string,
     opts?: { perIndustry?: number; industryLevel?: string; applyGate?: boolean; applyFactors?: boolean },
+    resumeTaskId?: string,
   ) => {
     const q = new URLSearchParams({ market, top_n: String(topN) })
     if (board) q.set('board', board)
@@ -101,10 +102,13 @@ export const api = {
     if (opts?.industryLevel) q.set('industry_level', opts.industryLevel)
     if (opts?.applyGate === false) q.set('apply_gate', 'false')
     if (opts?.applyFactors === false) q.set('apply_factors', 'false')
+    if (resumeTaskId) q.set('resume_task_id', resumeTaskId)
     return request<{ task_id: string }>(`/screener/run?${q.toString()}`, { method: 'POST' })
   },
   screenerResult: (taskId: string) => request<ScreenerTask>(`/screener/result?task_id=${taskId}`),
   screenerLatest: () => request<ScreenerTask | null>('/screener/result/latest'),
+  screenerInterruptedTasks: () => request<{ items: InterruptedTask[] }>('/screener/tasks/interrupted'),
+  deleteScreenerTask: (taskId: string) => request(`/screener/tasks/${taskId}`, { method: 'DELETE' }),
   screenerHistory: () => request<{ items: ScreenerHistoryItem[] }>('/screener/history'),
   screenerHistoryDetail: (id: number) => request<ScreenerHistoryItem>(`/screener/history/${id}`),
   deleteScreenerHistory: (id: number) => request<{ id: number }>(`/screener/history/${id}`, { method: 'DELETE' }),
@@ -393,6 +397,22 @@ export interface IndustryNode {
   name: string
   count: number
   children?: IndustryNode[]
+}
+
+/** 中断的扫描任务(断点续传: 可继续扫描) */
+export interface InterruptedTask {
+  task_id: string
+  status: string
+  market: string
+  board: string
+  industry: string
+  top_n: number
+  universe: string
+  total: number
+  done: number
+  error: string
+  created_at: string
+  updated_at: string
 }
 
 /** 选股条件组合预设(指数池+板块+行业) */

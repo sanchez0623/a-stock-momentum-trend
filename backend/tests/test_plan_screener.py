@@ -343,6 +343,51 @@ def test_screener_preset_roundtrip(tmp_engine):
     assert delete_preset(pid) is False
 
 
+# ---------------------------------------------------------------- 断点续传持久化
+
+def test_screener_task_persistence_roundtrip(tmp_engine):
+    """任务落库 -> 批次追加 -> 恢复读取 -> 中断自愈 -> 删除 全链路."""
+    from app.core.screener import persistence as pers
+
+    pers.create_task("t1", {"market": "all", "top_n": 30, "universe": "hs300",
+                            "board": "main", "industry": "半导体"}, ["600000", "600001", "600002"])
+    pers.append_batch("t1", 1, [{"symbol": "600000", "total": 70.0}, {"symbol": "600001", "total": 65.0}])
+    pers.update_task("t1", done=2)
+
+    # 恢复: 任务参数 + 结果批次(结果即进度 -> 已完成票集合)
+    t = pers.load_task("t1")
+    assert t is not None and t["done"] == 2 and t["universe"] == "hs300"
+    batches = pers.load_batches("t1")
+    assert [r["symbol"] for r in batches] == ["600000", "600001"]
+
+    # 启动自愈: running -> interrupted
+    pers.update_task("t1", status="running")
+    assert pers.mark_all_running_interrupted() == 1
+    items = pers.list_interrupted()
+    assert len(items) == 1 and items[0]["task_id"] == "t1" and items[0]["done"] == 2
+
+    pers.delete_task("t1")
+    assert pers.load_task("t1") is None
+    assert pers.load_batches("t1") == []
+
+
+def test_screener_task_batch_resume_skips_done(tmp_engine, monkeypatch):
+    """恢复扫描: 跳过已完成票, 结果从批次恢复后继续追加新批次."""
+    from app.core.screener import persistence as pers
+
+    pers.create_task("t2", {"market": "all", "top_n": 10}, ["600000", "600001", "600002", "600003"])
+    pers.append_batch("t2", 1, [{"symbol": "600000", "total": 70.0}])
+    done = {r["symbol"] for r in pers.load_batches("t2")}
+    assert done == {"600000"}
+
+    # 模拟恢复后的扫描: 新结果来自剩余票, 追加为第 2 批
+    pers.append_batch("t2", 2, [{"symbol": "600001", "total": 66.0}])
+    all_results = pers.load_batches("t2")
+    assert [r["symbol"] for r in all_results] == ["600000", "600001"]  # 已恢复 + 新增
+    assert "600002" not in {r["symbol"] for r in all_results}
+    pers.delete_task("t2")
+
+
 # ---------------------------------------------------------------- 选股器评分
 def test_score_indicators_uptrend(kline_df):
     from app.core.indicators import compute_all

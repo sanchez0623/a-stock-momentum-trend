@@ -562,6 +562,9 @@ class StockScreener:
         apply_gate: bool = True,     # ④ 大盘择时闸门
         universe: str | None = None,    # ⑥ 选股池: all/hs300/zz500/hs300+zz500/sz50
         apply_factors: bool = True,     # ⑦ 基本面质量 + 业绩事件因子
+        persist_task_id: str | None = None,   # 断点续传: 非空时结果分批落库+进度持久化
+        done_symbols: set[str] | None = None, # 断点续传: 已完成的票(跳过评分, 结果从批次恢复)
+        initial_results: list[dict[str, Any]] | None = None,  # 断点续传: 已恢复的结果
     ) -> list[dict[str, Any]]:
         """扫描并排名.
 
@@ -652,7 +655,9 @@ class StockScreener:
             logger.info("择时闸门未启用(apply_gate=%s, 配置enabled=%s) -> 不缩放",
                         apply_gate, bool(gate_cfg.get("enabled")))
 
-        results: list[dict[str, Any]] = []
+        results = list(initial_results or [])
+        skip = set(done_symbols or [])
+        pending = [s for s in symbols if s not in skip]
         total = len(symbols)
         # 并发 3(2026-08-10 拍板): 网络等待重叠, 总耗时约为串行的 1/3;
         # 每只仍保留 0.05s 降压, 对上游限流友好
@@ -686,13 +691,35 @@ class StockScreener:
             finally:
                 await asyncio.sleep(0.05)  # 降压
 
-        for start in range(0, total, SCAN_CONCURRENCY):
-            batch = symbols[start:start + SCAN_CONCURRENCY]
+        # 断点续传: 每 PERSIST_EVERY 条新结果落一批(崩溃最多丢一批, 有 K 线缓存重扫成本低)
+        PERSIST_EVERY = 20
+        persist_seq = 0
+        new_results: list[dict[str, Any]] = []
+        done = len(skip)
+        for start in range(0, len(pending), SCAN_CONCURRENCY):
+            batch = pending[start:start + SCAN_CONCURRENCY]
             for score in await asyncio.gather(*(_score_one(s) for s in batch)):
                 if score is not None:
                     results.append(score)
+                    new_results.append(score)
+            done += len(batch)
             if progress_cb:
-                progress_cb(min(start + SCAN_CONCURRENCY, total), total)
+                progress_cb(min(done, total), total)
+            if persist_task_id and len(new_results) >= PERSIST_EVERY:
+                persist_seq += 1
+                from app.core.screener.persistence import append_batch, update_task
+
+                append_batch(persist_task_id, persist_seq, new_results)
+                new_results = []
+                update_task(persist_task_id, done=done)
+        # 收尾批 + 完成标记
+        if persist_task_id:
+            from app.core.screener.persistence import append_batch, update_task
+
+            if new_results:
+                persist_seq += 1
+                append_batch(persist_task_id, persist_seq, new_results)
+            update_task(persist_task_id, done=total, status="done")
 
         # 按总分降序
         results.sort(key=lambda r: r["total"], reverse=True)
