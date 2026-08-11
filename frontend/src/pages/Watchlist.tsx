@@ -38,6 +38,8 @@ export default function Watchlist() {
   const [posPrice, setPosPrice] = useState('')
   // 删除二次确认(项目规则): 待移除的自选代码
   const [confirmDel, setConfirmDel] = useState<string | null>(null)
+  // 强制录入确认(加仓价低于成本时弹出)
+  const [forceConfirm, setForceConfirm] = useState(false)
 
   // 自选/持仓/账户: 每 10s 轮询(react-query 统一管理缓存/去重/清理)
   const { data: watch = [], isLoading } = useQuery({
@@ -108,6 +110,29 @@ export default function Watchlist() {
       })
       setPosSymbol(''); setPosName(''); setPosPrice('')
       toast.success(`已录入持仓 ${posSymbol.trim()}`)
+      refresh()
+    } catch (e) {
+      const msg = String((e as Error).message)
+      // 加仓价低于成本被规则拒绝 -> 弹强制录入确认(摊薄成本, 原因自动标注)
+      if (msg.includes('低于当前成本')) {
+        setForceConfirm(true)
+        return
+      }
+      setError(msg)
+      toast.error(msg)
+    }
+  }
+
+  // 强制录入: 确认后带 force=true 重新提交(允许低于成本加仓)
+  const doForceAdd = async () => {
+    setForceConfirm(false)
+    try {
+      await api.addPosition({
+        symbol: posSymbol.trim(), name: posName.trim(),
+        qty: Number(posQty), price: Number(posPrice), reason: '界面录入', force: true,
+      })
+      setPosSymbol(''); setPosName(''); setPosPrice('')
+      toast.success(`已强制录入持仓 ${posSymbol.trim()}`)
       refresh()
     } catch (e) {
       setError(String((e as Error).message))
@@ -214,6 +239,16 @@ export default function Watchlist() {
           message={`确定将 ${confirmDel} 从自选移除？`}
           onConfirm={doRemoveWatch}
           onCancel={() => setConfirmDel(null)}
+        />
+      )}
+      {/* 强制录入确认(低于成本加仓) */}
+      {forceConfirm && (
+        <ConfirmDialog
+          title="强制录入持仓"
+          message={`加仓价低于当前成本，将摊薄成本并计入金字塔档位。确定以 ${posPrice} 强制录入 ${posSymbol.trim()} ${posQty} 股？`}
+          confirmText="仍要录入"
+          onConfirm={doForceAdd}
+          onCancel={() => setForceConfirm(false)}
         />
       )}
     </div>

@@ -49,7 +49,7 @@ export const api = {
 
   // 持仓
   positions: () => request<Portfolio>('/positions'),
-  addPosition: (p: { symbol: string; name?: string; qty: number; price: number; reason?: string; action?: string }) =>
+  addPosition: (p: { symbol: string; name?: string; qty: number; price: number; reason?: string; action?: string; force?: boolean }) =>
     request('/positions', { method: 'POST', body: JSON.stringify(p) }),
   positionDetail: (symbol: string) => request<PositionDetail>(`/positions/${symbol}`),
   updatePositionTime: (symbol: string, opened_at: string) =>

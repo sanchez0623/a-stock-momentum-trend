@@ -8,7 +8,7 @@ from app.core.account import account_manager
 from app.core.config import config_manager
 from app.core.fees import compute_trade_fee
 from app.core.position.manager import PositionManager, PositionManagerError
-from app.models.models import Position
+from app.models.models import Position, Trade
 from sqlmodel import select
 
 pm = PositionManager()
@@ -215,6 +215,26 @@ def test_portfolio_realized_pnl_accumulates_sells(tmp_engine):
     pnl2 = pm.close("600519", 90.0, "清仓", None)
     summary = pm.portfolio({}, None)
     assert summary["realized_pnl"] == pytest.approx(pnl1 + pnl2, abs=0.01)
+
+
+def test_open_or_add_force_allows_below_cost(tmp_engine):
+    """低于成本加仓默认拒绝; force=True 放行且摊薄成本, 成交原因标注「强制录入」."""
+    pm.open_or_add("300750", "宁德时代", 100, 100.0, "首仓", None)
+    with pytest.raises(PositionManagerError, match="低于当前成本"):
+        pm.open_or_add("300750", "宁德时代", 100, 90.0, "低位加仓", None)
+
+    pos = pm.open_or_add("300750", "宁德时代", 100, 90.0, "低位加仓", None, force=True)
+    assert pos.qty == 200
+    # 摊薄后成本介于两次成交价之间(含费)
+    assert 90.0 < pos.cost < 100.0
+    assert pos.cost_raw == pytest.approx(95.0, abs=0.01)
+    # 成交原因标注强制录入
+    with db.session_scope() as s:
+        last = s.exec(select(Trade).where(Trade.symbol == "300750").order_by(Trade.id.desc())).first()
+        assert last is not None and "强制录入" in (last.reason or "")
+    # 数量合规仍是硬规则: force 不能绕过
+    with pytest.raises(PositionManagerError, match="买入申报数量"):
+        pm.open_or_add("688146", "中船特气", 150, 300.0, "首仓", None, force=True)
 
 
 def test_open_or_add_rejects_non_compliant_buy_qty(tmp_engine):

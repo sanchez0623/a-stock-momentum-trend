@@ -23,6 +23,7 @@ class PositionBody(BaseModel):
     price: float = Field(gt=0)
     reason: str = ""
     action: str = Field("buy", pattern="^(buy|sell)$")  # buy=首仓/加仓, sell=减仓
+    force: bool = False  # 强制录入: 允许低于成本加仓(摊薄成本), 成交原因自动标注
 
 
 class UpdatePositionTimeBody(BaseModel):
@@ -55,7 +56,8 @@ async def upsert_position(body: PositionBody, session: Session = Depends(get_ses
     """手动录入/调整持仓(虚拟, 不接实盘)."""
     try:
         if body.action == "buy":
-            pos = position_manager.open_or_add(body.symbol, body.name, body.qty, body.price, body.reason, session)
+            pos = position_manager.open_or_add(
+                body.symbol, body.name, body.qty, body.price, body.reason, session, force=body.force)
             return {"code": 0, "msg": "ok", "data": {"position": pos.model_dump(), "action": "buy"}}
         pnl = position_manager.reduce(body.symbol, body.qty, body.price, body.reason, session)
         return {"code": 0, "msg": "ok", "data": {"action": "sell", "realized_pnl": pnl}}

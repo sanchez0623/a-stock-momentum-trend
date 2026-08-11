@@ -61,8 +61,12 @@ class PositionManager:
             return list(s.exec(stmt).all())
 
     # ------------------------------------------------------------ 交易操作
-    def open_or_add(self, symbol: str, name: str, qty: int, price: float, reason: str = "", session: Session | None = None) -> Position:
-        """首仓或加仓. 加仓必须顺向(price >= 当前成交均价), 否则抛错.
+    def open_or_add(self, symbol: str, name: str, qty: int, price: float, reason: str = "",
+                    session: Session | None = None, force: bool = False) -> Position:
+        """首仓或加仓. 默认要求顺向加仓(price >= 当前成交均价), 否则抛错.
+
+        force=True 时允许低于成本加仓(摊薄成本), 成交 reason 自动标注「强制录入」;
+        数量合规校验不受 force 影响(申报单位是硬规则).
 
         成本口径(对齐券商 APP): pos.cost 为**含费摊薄成本**, 买入手续费直接摊进成本;
         pos.cost_raw 为纯成交均价, 仅用于顺向加仓判断(避免手续费把判断线抬高).
@@ -87,7 +91,10 @@ class PositionManager:
                 # 顺向判断用纯均价: 含费成本天然高于成交价, 用它会误杀平价加仓
                 ref = pos.cost_raw or pos.cost
                 if price < ref:
-                    raise PositionManagerError(f"加仓价 {price:.2f} 低于当前成本 {ref:.2f}, 拒绝顺向加仓")
+                    if not force:
+                        raise PositionManagerError(f"加仓价 {price:.2f} 低于当前成本 {ref:.2f}, 拒绝顺向加仓")
+                    # 强制录入: 允许摊薄成本, 成交原因标注以便追溯
+                    reason = (reason + " · " if reason else "") + "强制录入"
                 # 显式推进金字塔档位(取代旧「按成交笔数倒推」的脆弱逻辑)
                 pos.pyramid_stage = (pos.pyramid_stage or 0) + 1
             # 先落成交, 以 trade.fee 为手续费唯一真相源(避免与日志层重复计算而口径漂移)
