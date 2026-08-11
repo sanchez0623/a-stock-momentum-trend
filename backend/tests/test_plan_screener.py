@@ -137,6 +137,38 @@ def test_plan_unknown_mode_blocks_buy_but_allows_stop(tmp_engine):
     assert "止损" in plan["content"]
 
 
+def test_plan_consistency_line(tmp_engine):
+    """一致性行: 信号与计划一致显示 ✓; 不一致时给出拦截原因(档位用尽/市况不明)."""
+    from app.core.modes import ModeDecision
+    from app.core.position import position_manager
+
+    # ① 一致: 首仓信号 -> 建仓计划
+    sig = Signal(type="BUY_FIRST", symbol="600001", name="测试", direction="buy",
+                 strength=72.0, reason="三共振入场", price=10.0)
+    plan = gen.generate("600001", "测试", sig)
+    assert "一致性: 信号→计划一致 ✓ (建仓)" in plan["content"]
+
+    # ② 不一致-档位用尽: 两档加仓都用尽后 BUY_ADD -> 观望
+    position_manager.open_or_add("600001", "测试", 100, 10.0, "首仓", None)
+    position_manager.open_or_add("600001", "测试", 100, 11.0, "加仓1", None)
+    position_manager.open_or_add("600001", "测试", 100, 12.0, "加仓2", None)
+    add_sig = Signal(type="BUY_ADD", symbol="600001", name="测试", direction="buy",
+                     strength=76.0, reason="回踩企稳", price=12.0)
+    plan = gen.generate("600001", "测试", add_sig)
+    assert "一致性: 信号建议加仓, 计划观望: 金字塔档位已用尽" in plan["content"]
+
+    # ③ 不一致-市况不明: unknown 模式下买入类转观望
+    unknown = ModeDecision(
+        mode_key="unknown",
+        mode={"label": "市况不明", "pyramid_ratios": [0.5, 0.3, 0.2], "max_stages": 0,
+              "stop_loss_pct": 5.0, "trailing_stop_pct": 8.0,
+              "take_profit_ratios": [0.2, 0.3, 0.5], "atr_multipliers": [1.5, 3.0, 5.0]},
+        regime={}, reason="市况不明", label="市况不明",
+    )
+    plan = gen.generate("600001", "测试", sig, mode=unknown)
+    assert "一致性: 信号建议建仓, 计划观望: 市况特征不明确, 观望" in plan["content"]
+
+
 def test_plan_star_board_buy_add_qty_rounded_to_lot(tmp_engine):
     """复现 bug: 科创板加仓建议不得出现 <200 股的违规数量(如 180 股), 须按板块规则取整."""
     from app.core.position import position_manager

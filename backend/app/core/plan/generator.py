@@ -26,6 +26,16 @@ class PlanGenerator:
         "T_SELL": "t_sell",
     }
 
+    # 信号字面动作 / 计划动作 的中文标签(用于「信号→计划一致性」展示)
+    LITERAL_ACTION = {
+        "BUY_FIRST": "建仓", "BUY_ADD": "加仓", "SELL_REDUCE": "减仓",
+        "SELL_STOP": "止损", "T_BUY": "做T买入", "T_SELL": "做T卖出",
+    }
+    PLAN_ACTION_LABEL = {
+        "buy_first": "建仓", "buy_add": "加仓", "sell_reduce": "减仓",
+        "sell_stop": "止损", "t_buy": "做T买入", "t_sell": "做T卖出", "hold": "观望",
+    }
+
     def generate(
         self,
         symbol: str,
@@ -69,7 +79,9 @@ class PlanGenerator:
             action, advice = "buy_first", self._advice_buy_first(price, mode, symbol)
             stop_line = "—"
         elif signal.type == "BUY_ADD":
-            action, advice = "buy_add", self._advice_buy_add(pos, portfolio, mode, symbol)
+            advice = self._advice_buy_add(pos, portfolio, mode, symbol)
+            # 档位用尽/无法加仓时, 计划动作降级为观望(而非 buy_add), 保证动作与建议语义一致
+            action = "hold" if "暂不加仓" in advice else "buy_add"
             stop_line = f"{pos.cost * (1 - stop_pct / 100):.2f}(成本下移{stop_pct:.0f}%)"
         elif signal.type in ("SELL_REDUCE", "SELL_STOP", "T_SELL"):
             if t_locked:
@@ -130,6 +142,7 @@ class PlanGenerator:
             f"止损价位: {stop_line}",
             f"止盈计划: {tp_text}",
             f"风控检查: {rc_text}",
+            f"一致性: {self._consistency_line(signal, action, mode, t_locked, advice)}",
             f"纪律提醒: 加仓后总仓位勿超 {risk['total_position_pct']:.0f}%; 信号与计划一致时才动手",
         ]
         if t_locked:
@@ -140,6 +153,29 @@ class PlanGenerator:
         return {"action": action, "content": "\n".join(lines)}
 
     # ------------------------------------------------------------ 文案助手
+    @staticmethod
+    def _consistency_line(signal: Any, action: str, mode: ModeDecision | None,
+                          t_locked: bool, advice: str) -> str:
+        """信号→计划动作 一致性说明: 一致显示 ✓, 不一致给出拦截原因(纪律提醒的可查依据)."""
+        sig_literal = PlanGenerator.LITERAL_ACTION.get(signal.type, signal.type)
+        plan_label = PlanGenerator.PLAN_ACTION_LABEL.get(action, action)
+        expected = PlanGenerator.ACTION_MAP.get(signal.type)
+        if expected and action == expected:
+            return f"信号→计划一致 ✓ ({sig_literal})"
+        # 不一致: 规则层拦截(档位用尽/市况不明/T+1/未达条件), 显式给出原因
+        reason = ""
+        # T+1 只约束卖出类信号; 买入类被拦截另有原因(如档位用尽/市况不明)
+        if t_locked and signal.type in ("SELL_REDUCE", "SELL_STOP", "T_SELL"):
+            reason = "T+1 限制(今日买入不可减仓/卖出)"
+        elif mode is not None and mode.mode_key == "unknown" and signal.type in ("BUY_FIRST", "BUY_ADD", "T_BUY"):
+            reason = "市况特征不明确, 观望"
+        elif action == "hold":
+            if "档位已用尽" in advice:
+                reason = "金字塔档位已用尽"
+            else:
+                reason = "未达可执行条件"
+        return f"信号建议{sig_literal}, 计划{plan_label}: {reason}" if reason else f"信号建议{sig_literal}, 计划{plan_label}"
+
     @staticmethod
     def _state_desc(pos: Any, price: float) -> str:
         if pos is None or pos.qty <= 0:
