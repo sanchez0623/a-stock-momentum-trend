@@ -34,7 +34,8 @@ class PlanStatusBody(BaseModel):
 @router.post("/plan/generate")
 async def generate_plan(body: GenerateBody, session: Session = Depends(get_session)) -> dict:
     """为指定票生成交易计划(评估信号 -> 组装人话指引 -> 落库 pending)."""
-    df = await data_source_manager.get_kline(body.symbol, "daily", 120)
+    # force=True: 盘中信号评估必须用最新 K 线(日线缓存只记日期, 会把当天早盘 bar 视为新鲜)
+    df = await data_source_manager.get_kline(body.symbol, "daily", 120, force=True)
     if df is None or df.empty:
         return {"code": 0, "msg": "无行情数据, 无法评估", "data": None}
     quotes = await data_source_manager.get_realtime_quote([body.symbol])

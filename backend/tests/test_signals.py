@@ -211,7 +211,7 @@ def test_evaluate_symbol_stores_signal(tmp_engine, monkeypatch):
         high = close[-1] + 1.0
         low = close[-1] - 1.0
 
-    async def fake_kline(symbol, period, count):
+    async def fake_kline(symbol, period, count, **kwargs):
         return df
 
     async def fake_quote(symbols):

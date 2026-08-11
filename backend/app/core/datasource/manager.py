@@ -165,7 +165,8 @@ class DataSourceManager:
 
     # ------------------------------------------------------------ 数据入口
     async def get_kline(self, symbol: str, period: str = "daily", count: int = 120,
-                        secid: str | None = None, prefer_long: bool = False) -> pd.DataFrame:
+                        secid: str | None = None, prefer_long: bool = False,
+                        force: bool = False) -> pd.DataFrame:
         """K线: 缓存优先, 缺失/过期回源, 合并后返回最近 count 条.
 
         secid: 显式 secid(如东财指数 "1.000001"). 提供时跳过按代码前缀推断交易所,
@@ -174,9 +175,12 @@ class DataSourceManager:
         prefer_long: 长历史优先模式(补拉历史用). 默认 False 行为不变(首个源成功即返回);
         True 时根数不足 count 的源不终止尝试, 继续试能给更多历史的源(baostock/东财),
         全部不足则返回根数最多的结果. 该模式不调整全局源偏好, 避免污染日常取数顺序.
+
+        force: 强制跳过缓存重新回源(如盘中信号评估需要最新价, 日线缓存只记日期
+        会把当天早盘的 bar 视为新鲜, 导致信号基于旧数据). 拉取后仍写缓存.
         """
         cached = kline_store.get_dataframe(symbol, period)
-        if cached is not None and len(cached) >= count and self._cache_fresh(cached, period):
+        if not force and cached is not None and len(cached) >= count and self._cache_fresh(cached, period):
             return cached.tail(count).reset_index(drop=True)
         fresh = await self._fetch_kline(symbol, period, count, secid=secid, prefer_long=prefer_long)
         if fresh is not None and not fresh.empty:

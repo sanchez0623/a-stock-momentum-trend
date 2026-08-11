@@ -94,3 +94,38 @@ def test_quote_cache_missing_only():
     hit = cache.get(["300750", "600519"])
     assert "300750" in hit
     assert "600519" not in hit  # 缺失的不返回
+
+
+async def test_get_kline_force_bypasses_fresh_cache(tmp_engine, monkeypatch):
+    """force=True 时即使日线缓存新鲜(最后日期=今天)也重新回源——盘中信号评估场景."""
+    import datetime as dt
+
+    import pandas as pd
+    from app.core.datasource import manager as mgr_mod
+    from app.core.datasource.cache import kline_store
+
+    today = dt.date.today().isoformat()
+    rows = [
+        {"date": f"2025-01-{i + 1:02d}", "open": 10.0, "high": 11.0, "low": 9.0,
+         "close": 10.5, "volume": 1000.0, "amount": 10500.0}
+        for i in range(29)
+    ] + [{"date": today, "open": 10.0, "high": 11.0, "low": 9.0,
+          "close": 10.5, "volume": 1000.0, "amount": 10500.0}]
+    kline_store.save("600519", "daily", rows)
+
+    calls = {"n": 0}
+
+    async def fake_fetch(*a, **k):
+        calls["n"] += 1
+        return pd.DataFrame(rows)
+
+    monkeypatch.setattr(mgr_mod.data_source_manager, "_fetch_kline", fake_fetch)
+
+    # 默认: 缓存根数足够且新鲜(最后日期=今天) -> 直接命中, 不回源
+    df = await mgr_mod.data_source_manager.get_kline("600519", "daily", 30)
+    assert calls["n"] == 0
+    assert df.iloc[-1]["date"][:10] == today
+
+    # force=True: 跳过缓存重新回源(盘中评估要最新价), 拉取后仍写缓存
+    await mgr_mod.data_source_manager.get_kline("600519", "daily", 30, force=True)
+    assert calls["n"] == 1

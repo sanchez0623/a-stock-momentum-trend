@@ -93,7 +93,8 @@ async def _evaluate_one(symbol: str, session: Session | None = None) -> dict:
     Session 的并发写竞态(identity map / pending 状态交错属未定义行为)。
     """
     try:
-        df = await data_source_manager.get_kline(symbol, "daily", 120)
+        # force=True: 盘中信号评估必须用最新 K 线(日线缓存只记日期, 会把当天早盘 bar 视为新鲜)
+        df = await data_source_manager.get_kline(symbol, "daily", 120, force=True)
         if df is None or df.empty:
             return {"symbol": symbol, "name": "", "price": 0.0, "signal": None, "error": "无行情数据"}
         quote = None
