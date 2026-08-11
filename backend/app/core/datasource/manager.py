@@ -406,29 +406,39 @@ class DataSourceManager:
             return {"name": name, "ok": False, "rows": 0, "latency_ms": 0.0, "error": str(exc)}
 
     def _intraday_fresh(self, symbol: str, period: str, df: pd.DataFrame) -> bool:
-        """盘中缓存新鲜判定: 交易日盘中 + 日线 + 最后日期=今天 时, 写入时间距现在须 ≤ TTL.
-
-        解决盘中选股拿到「当天第一次拉取时点」旧价的问题;
-        盘前/盘后/周末/无时间戳(迁移前旧缓存)一律视为新鲜.
-        """
+        """盘中缓存新鲜判定(包装纯函数 _intraday_ttl)."""
         if period != "daily" or df is None or df.empty:
             return True
         now = dt.datetime.now(dt.timezone(dt.timedelta(hours=8)))
+        last_date = str(df.iloc[-1]["date"])[:10]
+        updated = kline_store.get_updated_at(symbol, period)
+        return self._intraday_ttl(now, last_date, updated)
+
+    @staticmethod
+    def _intraday_ttl(now: dt.datetime, last_date: str, updated_at: str) -> bool:
+        """纯函数: 日线缓存新鲜判定(盘中 TTL + 盘外截断识别), 返回是否新鲜.
+
+        - 盘中(交易日 9:15~15:05): 写入超 TTL(10 分钟)视为过期(盘中 bar 实时变化)
+        - 盘外: 若缓存是「当天盘中写入」的截断 bar -> 过期重拉收盘数据(修复盘后命中盘中旧价);
+          盘后写入或昨日写入 -> 恒新鲜
+        - 周末/最后日期非今天/无时间戳异常 -> 维持原判定(新鲜或按旧逻辑)
+        """
         if now.weekday() >= 5:
             return True
-        if not (dt.time(9, 15) <= now.time() <= dt.time(15, 5)):
-            return True  # 盘外不设 TTL(收盘后数据不再变化)
-        if str(df.iloc[-1]["date"])[:10] != now.strftime("%Y-%m-%d"):
-            return True  # 缓存最后日期非今天(盘前旧数据), 维持原判定
-        updated = kline_store.get_updated_at(symbol, period)
-        if not updated:
-            return True  # 无时间戳(旧库迁移), 保守视为新鲜, 下次写入即带时间戳
+        if last_date != now.strftime("%Y-%m-%d"):
+            return True  # 最后日期非今天(昨日收盘数据), 维持原判定
+        if not updated_at:
+            return False  # 当天数据但无写入时点(迁移前缓存) -> 保守重拉一次, 落定后即新鲜
         try:
-            updated_dt = dt.datetime.strptime(updated[:19], "%Y-%m-%d %H:%M:%S").replace(
+            upd = dt.datetime.strptime(updated_at[:19], "%Y-%m-%d %H:%M:%S").replace(
                 tzinfo=dt.timezone(dt.timedelta(hours=8)))
-            return (now - updated_dt).total_seconds() <= INTRADAY_TTL_SEC
         except ValueError:
             return True
+        t = now.time()
+        if dt.time(9, 15) <= t <= dt.time(15, 5):
+            return (now - upd).total_seconds() <= INTRADAY_TTL_SEC
+        # 盘外: 命中当天盘中写入的截断 bar -> 过期(需收盘数据); 盘后写入 -> 新鲜
+        return not (upd.date() == now.date() and dt.time(9, 15) <= upd.time() <= dt.time(15, 5))
 
     @staticmethod
     def _cache_fresh(df: pd.DataFrame, period: str) -> bool:

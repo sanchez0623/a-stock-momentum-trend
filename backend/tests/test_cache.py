@@ -129,3 +129,53 @@ async def test_get_kline_force_bypasses_fresh_cache(tmp_engine, monkeypatch):
     # force=True: 跳过缓存重新回源(盘中评估要最新价), 拉取后仍写缓存
     await mgr_mod.data_source_manager.get_kline("600519", "daily", 30, force=True)
     assert calls["n"] == 1
+
+def test_intraday_ttl_outside_session_hits_intraday_cache():
+    """盘外(盘后)命中「当天盘中写入」的缓存 -> 判定过期重拉(修复盘后拿到盘中截断价)."""
+    import datetime as dt
+
+    from app.core.datasource.manager import DataSourceManager
+
+    tz = dt.timezone(dt.timedelta(hours=8))
+    today = "2026-08-11"  # 周二(交易日)
+    # 盘后 17:00: 缓存是当天 11:00 盘中写入 -> 过期
+    assert DataSourceManager._intraday_ttl(
+        dt.datetime(2026, 8, 11, 17, 0, tzinfo=tz), today, "2026-08-11 11:00:00") is False
+    # 盘后 17:00: 缓存是当天盘后写入 -> 新鲜
+    assert DataSourceManager._intraday_ttl(
+        dt.datetime(2026, 8, 11, 17, 0, tzinfo=tz), today, "2026-08-11 16:30:00") is True
+    # 盘后 17:00: 无时间戳(迁移前缓存) -> 保守重拉一次
+    assert DataSourceManager._intraday_ttl(
+        dt.datetime(2026, 8, 11, 17, 0, tzinfo=tz), today, "") is False
+    # 最后日期非今天(昨日收盘) -> 新鲜(维持原判定)
+    assert DataSourceManager._intraday_ttl(
+        dt.datetime(2026, 8, 11, 17, 0, tzinfo=tz), "2026-08-10", "2026-08-10 16:00:00") is True
+
+
+def test_intraday_ttl_during_session():
+    """盘中: 写入超 TTL(10 分钟) -> 过期; 未超 -> 新鲜."""
+    import datetime as dt
+
+    from app.core.datasource.manager import DataSourceManager
+
+    tz = dt.timezone(dt.timedelta(hours=8))
+    today = "2026-08-11"
+    now = dt.datetime(2026, 8, 11, 10, 0, tzinfo=tz)
+    # 09:00 写入(超 10 分钟) -> 过期重拉
+    assert DataSourceManager._intraday_ttl(now, today, "2026-08-11 09:00:00") is False
+    # 09:55 写入(5 分钟) -> 新鲜
+    assert DataSourceManager._intraday_ttl(now, today, "2026-08-11 09:55:00") is True
+    # 周末 -> 恒新鲜
+    assert DataSourceManager._intraday_ttl(
+        dt.datetime(2026, 8, 9, 10, 0, tzinfo=tz), "2026-08-08", "2026-08-08 15:30:00") is True
+
+
+def test_intraday_ttl_early_morning():
+    """盘前(9:15 前): 最后日期=昨天 -> 新鲜(盘前不会写入今天的盘中 bar)."""
+    import datetime as dt
+
+    from app.core.datasource.manager import DataSourceManager
+
+    tz = dt.timezone(dt.timedelta(hours=8))
+    assert DataSourceManager._intraday_ttl(
+        dt.datetime(2026, 8, 11, 8, 30, tzinfo=tz), "2026-08-10", "") is True
