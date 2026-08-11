@@ -9,10 +9,62 @@ import uuid
 from fastapi import APIRouter
 from pydantic import BaseModel
 
+from app.core.backtest.data import backtest_data
 from app.core.backtest.factor import backtest_factors
 from app.core.backtest.strategy import run_strategy_backtest
 
 router = APIRouter(prefix="/api", tags=["backtest"])
+
+
+class BacktestDataWarmupBody(BaseModel):
+    symbols: list[str] | None = None   # 为空 = 自选 + 持仓
+    start: str = ""                    # 空 = end 前推 3 年(含指标预热回退)
+    end: str = ""                      # 空 = 今天
+    force: bool = False                # 显式重拉(常规路径不需要)
+
+
+@router.post("/backtest/data/warmup")
+async def warmup_backtest_data(body: BacktestDataWarmupBody) -> dict:
+    """回测数据预热: 把目标股票池区间数据拉成前复权冻结快照(baostock).
+
+    冻结语义: 已拉取日期不再覆盖; 同区间重复调用命中快照不重复拉取.
+    """
+    try:
+        symbols = body.symbols or _default_backtest_pool()
+        if not symbols:
+            return {"code": 0, "msg": "ok(空股票池, 无需预热)", "data": {"meta": {"symbols": 0}, "results": {}}}
+        report = await asyncio.to_thread(
+            backtest_data.warmup,
+            symbols=symbols,
+            start=body.start,
+            end=body.end,
+            force=bool(body.force),
+        )
+        return {"code": 0, "msg": "ok", "data": report}
+    except Exception as exc:  # noqa: BLE001
+        return {"code": 1, "msg": f"回测数据预热失败: {exc}", "data": None}
+
+
+@router.get("/backtest/data/status")
+async def backtest_data_status() -> dict:
+    """回测冻结快照状态(诊断用)."""
+    try:
+        return {"code": 0, "msg": "ok", "data": backtest_data.status()}
+    except Exception as exc:  # noqa: BLE001
+        return {"code": 1, "msg": f"查询失败: {exc}", "data": None}
+
+
+def _default_backtest_pool() -> list[str]:
+    """默认预热池: 自选 + 持仓(与策略回测默认池口径一致)."""
+    from sqlmodel import select
+
+    from app import db
+    from app.models.models import Position, Watchlist
+
+    with db.session_scope() as s:
+        wl = [r.symbol for r in s.exec(select(Watchlist)).all()]
+        pos = [r.symbol for r in s.exec(select(Position).where(Position.status == "holding")).all()]
+    return list(dict.fromkeys(wl + pos))
 
 
 class BacktestFactorBody(BaseModel):

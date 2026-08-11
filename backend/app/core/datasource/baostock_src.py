@@ -163,9 +163,8 @@ def _ensure_login() -> None:
 
 def _relogin() -> None:
     global _LOGGED_IN
-    with contextlib.redirect_stdout(io.StringIO()):
-        with contextlib.suppress(Exception):
-            _bs.logout()
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.suppress(Exception):
+        _bs.logout()
     _LOGGED_IN = False
     _ensure_login()
 
@@ -193,6 +192,51 @@ def _call_sync(fn_name: str, *args, **kwargs) -> pd.DataFrame:
             logger.debug("baostock %s 首次失败, 重登后重试: %s", fn_name, exc)
             _relogin()
             return _rs_to_df(fn(*args, **kwargs))
+
+
+def fetch_daily_range(symbol: str, start_date: str, end_date: str,
+                      adjustflag: str = "2", secid: str | None = None) -> pd.DataFrame:
+    """回测专用: 按起止日期拉取日线(同步, 内部串行锁+自动重登).
+
+    - 与 get_kline(按 count 反推)不同: 区间精确可控, 供 backtest_kline 冻结快照补拉;
+    - adjustflag: 2=前复权(回测默认口径), 3=后复权(预留);
+    - secid: 东财 secid(指数, 如 0.000300), 内部转 baostock 指数代码;
+    - 返回统一列 DataFrame(date/open/high/low/close/volume/amount) 升序,
+      已剔除停牌占位行; 代码非法/无数据返回空 DataFrame(不抛异常, 调用方降级).
+    """
+    empty = pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume", "amount"])
+    if not start_date or not end_date or start_date >= end_date:
+        return empty
+    if secid:
+        codes = secid_to_bs_codes(secid)
+        fields = INDEX_FIELDS
+    else:
+        code = to_bs_code(symbol)
+        codes = (code,) if code else ()
+        fields = DAILY_FIELDS
+    # 格式闸门: 绝不把非法代码喂给 baostock(否则它会刷屏 "股票代码应为9位")
+    codes = tuple(c for c in codes if _valid_bs_code(c))
+    if not codes:
+        return empty
+    df = pd.DataFrame()
+    for code in codes:
+        try:
+            df = _call_sync(
+                "query_history_k_data_plus", code, fields,
+                start_date=start_date, end_date=end_date,
+                frequency="d", adjustflag=adjustflag,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("baostock 区间拉取失败 %s: %s", code, exc)
+            df = pd.DataFrame()
+        if not df.empty:
+            break
+    if df.empty:
+        return empty
+    # 停牌日 baostock 会给 volume=0 的占位行, 剔除避免污染量能指标
+    if "tradestatus" in df.columns:
+        df = df[df["tradestatus"].astype(str) == "1"]
+    return normalize_kline(df)
 
 
 def _num(v, scale: float = 1.0) -> float | None:
