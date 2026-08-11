@@ -169,6 +169,32 @@ def test_plan_consistency_line(tmp_engine):
     assert "一致性: 信号建议建仓, 计划观望: 市况特征不明确, 观望" in plan["content"]
 
 
+def test_capital_note_caps_by_dynamic_total_limit():
+    """加仓建议按动态总仓位上限自动缩减股数并注明(不再只显示不管)."""
+    import re as _re
+    from types import SimpleNamespace
+
+    # 当前仓位 75%, 启动资金 10w, 动态上限 80% -> 只允许再加 5% = 5000 元
+    pos = SimpleNamespace(pyramid_stage=0, qty=1000, cost=10.0)
+    note = PlanGenerator._capital_aware_add_note(
+        pos, [0.5, 0.3, 0.2], 1,
+        {"total_pct": 75.0, "start_capital": 100000.0, "available_capital": 50000.0},
+        "600519", {"total_pct": 80.0},
+    )
+    # 未缩减时会建议 600 股(超限), 缩减后为 500 股(恰至上限)
+    m = _re.search(r"约加 (\d+) 股", note)
+    assert m and int(m.group(1)) == 500
+    assert "已按总仓位上限 80% 缩减" in note
+
+    # 已近上限 -> 缩减后不足最小单位, 建议不加仓
+    note = PlanGenerator._capital_aware_add_note(
+        pos, [0.5, 0.3, 0.2], 1,
+        {"total_pct": 79.5, "start_capital": 100000.0, "available_capital": 50000.0},
+        "600519", {"total_pct": 80.0},
+    )
+    assert "本次建议暂不加仓" in note
+
+
 def test_plan_star_board_buy_add_qty_rounded_to_lot(tmp_engine):
     """复现 bug: 科创板加仓建议不得出现 <200 股的违规数量(如 180 股), 须按板块规则取整."""
     from app.core.position import position_manager

@@ -13,7 +13,7 @@ import datetime as dt
 from contextlib import contextmanager
 from typing import Any
 
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from app import db
 from app.core.config import config_manager
@@ -124,6 +124,73 @@ class RiskManager:
 
         allowed = st.day_loss_tripped is False and suggest_pct > 0
         return allowed, reasons, round(suggest_pct, 2)
+
+    # ------------------------------------------------------------ 动态仓位上限
+    def dynamic_limits(self, session: Session | None = None,
+                       market_env: str | None = None) -> dict[str, Any]:
+        """动态仓位上限: 基础(80/25) × 状态(防守/连亏砍半) × 大盘环境 × 凯利因子.
+
+        - 状态: 防守模式或连亏达限 -> 总/单票上限各 ×0.5(接线原 check_entry 的砍半逻辑)
+        - 大盘: bull ×1.0 / neutral ×0.85 / bear ×0.6(与择时闸门同源, 独立于闸门开关)
+        - 凯利: 近 50 笔已平仓的胜率/盈亏比 -> 折扣后 f∈[0,0.5], 映射缩放 0.7~1.3 倍
+        返回 {total_pct, single_pct, notes: [调整说明]}.
+        """
+        cfg = config_manager.get()
+        risk = cfg["风控"]
+        total = float(risk["total_position_pct"])
+        single = float(risk["single_position_pct"])
+        notes: list[str] = []
+
+        with _session(session) as s:
+            st = self._load(s)
+            if st.defense_mode or st.consecutive_losses >= int(risk.get("consecutive_loss_limit", 3)):
+                total *= 0.5
+                single *= 0.5
+                notes.append("防守/连亏: 上限砍半")
+
+        # 大盘环境(与择时闸门同源; 未提供则不调整)
+        env_factor = {"bull": 1.0, "neutral": 0.85, "bear": 0.6}.get(market_env or "", 1.0)
+        if market_env in ("bear", "neutral") and env_factor < 1.0:
+            total *= env_factor
+            single *= env_factor
+            notes.append(f"大盘{('看空' if market_env == 'bear' else '中性')}: ×{env_factor:.0%}")
+
+        # 凯利因子: 近 50 笔已平仓胜率/盈亏比(数据不足不调整)
+        kelly_factor = self._kelly_factor(session)
+        if kelly_factor is not None:
+            total *= kelly_factor
+            single *= kelly_factor
+            notes.append(f"凯利: ×{kelly_factor:.0%}")
+
+        return {"total_pct": round(total, 1), "single_pct": round(single, 1), "notes": notes}
+
+    @staticmethod
+    def _kelly_factor(session: Session | None = None) -> float | None:
+        """按近 50 笔已平仓统计凯利因子: f=0.5(满) -> ×1.3; f=0 -> ×0.7; 不足 10 笔返回 None."""
+        import statistics
+
+        with _session(session) as s:
+            from app.models.models import Trade
+
+            rows = list(s.exec(select(Trade).where(Trade.action == "sell")
+                               .order_by(Trade.time.desc()).limit(50)).all())
+        pnls = [r.pnl or 0.0 for r in rows if r.pnl is not None]
+        if len(pnls) < 10:
+            return None
+        wins = [p for p in pnls if p > 0]
+        losses = [abs(p) for p in pnls if p < 0]
+        if not wins or not losses:
+            return None
+        win_rate = len(wins) / len(pnls)
+        avg_win = statistics.mean(wins)
+        avg_loss = statistics.mean(losses)
+        if avg_win <= 0 or avg_loss <= 0:
+            return None
+        from app.core.position import position_manager
+
+        f = position_manager.kelly(win_rate, avg_win, avg_loss)  # 折扣后 0~0.5
+        # 映射: f 满值(0.5)时上限 +30%, f=0 时 -30%; 中间线性
+        return round(0.7 + 0.6 * min(1.0, max(0.0, f / 0.5)), 3)
 
     # ------------------------------------------------------------ 状态更新
     def record_trade_result(self, pnl: float, session: Session | None = None) -> None:

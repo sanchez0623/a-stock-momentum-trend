@@ -84,3 +84,38 @@ def test_drawdown_triggers_defense(tmp_engine):
     assert rm.update_drawdown(100_000.0, 89_000.0, None) is True  # 回撤 11% > 10%
     st = rm.status(None)
     assert st["defense_mode"] is True
+
+def test_dynamic_limits_base(tmp_engine):
+    """无状态/无环境/无凯利数据 -> 上限保持基础 80/25."""
+    rm.reset(None)
+    lim = rm.dynamic_limits(None)
+    assert lim["total_pct"] == 80.0
+    assert lim["single_pct"] == 25.0
+    assert lim["notes"] == []
+
+
+def test_dynamic_limits_defense_halves(tmp_engine):
+    """防守模式(回撤超限) -> 总/单票上限各砍半."""
+    rm.reset(None)
+    rm.update_drawdown(100_000.0, 89_000.0, None)  # 回撤 11% -> 防守
+    lim = rm.dynamic_limits(None)
+    assert lim["total_pct"] == 40.0
+    assert lim["single_pct"] == 12.5
+    assert any("砍半" in n for n in lim["notes"])
+
+
+def test_dynamic_limits_market_env(tmp_engine):
+    """大盘看空 -> 上限 ×0.6; 中性 ×0.85; 看多不调整."""
+    rm.reset(None)
+    assert rm.dynamic_limits(None, market_env="bull")["total_pct"] == 80.0
+    assert rm.dynamic_limits(None, market_env="neutral")["total_pct"] == 68.0
+    assert rm.dynamic_limits(None, market_env="bear")["total_pct"] == 48.0
+    assert any("大盘看空" in n for n in rm.dynamic_limits(None, market_env="bear")["notes"])
+
+
+def test_dynamic_limits_defense_plus_bear(tmp_engine):
+    """防守砍半 × 大盘看空 叠加 -> 80×0.5×0.6 = 24%."""
+    rm.reset(None)
+    rm.update_drawdown(100_000.0, 89_000.0, None)
+    lim = rm.dynamic_limits(None, market_env="bear")
+    assert lim["total_pct"] == 24.0

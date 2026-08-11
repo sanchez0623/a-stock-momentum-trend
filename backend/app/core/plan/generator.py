@@ -45,11 +45,14 @@ class PlanGenerator:
         portfolio: dict[str, Any] | None = None,
         risk_status: dict[str, Any] | None = None,
         mode: ModeDecision | None = None,
+        limits: dict[str, Any] | None = None,
     ) -> dict[str, str]:
         """生成计划内容. 返回 {action, content}.
 
         mode: 当前交易模式决策(Q2, 规则化市况分类器选出). 为 None 时回退默认模式.
         计划中仓位/止损/止盈档均取自该模式的配置对象, 而非全局固定值.
+        limits: 动态仓位上限(risk.dynamic_limits 产出: total_pct/single_pct/notes).
+        提供时风控检查/纪律提醒用动态上限, 加仓建议超限自动缩减.
         """
         cfg = config_manager.get()
         risk = cfg["风控"]
@@ -120,14 +123,18 @@ class PlanGenerator:
         else:
             tp_text = "首仓后按金字塔止盈计划执行"
 
-        # 风控检查文本
+        # 风控检查文本(总仓位上限用动态值, 并注明调整依据)
         rc_parts = []
         rc_parts.append(f"日亏损熔断: {'⚠ 已触发' if risk_status.get('day_loss_tripped') else '未触发'}")
         rc_parts.append(f"防守模式: {'⚠ 开启' if risk_status.get('defense_mode') else '关闭'}")
         total_pct = portfolio.get("total_pct", 0.0)
-        rc_parts.append(f"总仓位 {total_pct:.0f}% / 上限 {risk['total_position_pct']:.0f}%")
+        limit_pct = float((limits or {}).get("total_pct", risk["total_position_pct"]))
+        limit_note = ((limits or {}).get("notes") or [])
+        rc_parts.append(f"总仓位 {total_pct:.0f}% / 动态上限 {limit_pct:.0f}%")
         rc_ok = not risk_status.get("day_loss_tripped") and not risk_status.get("defense_mode")
         rc_text = " | ".join(rc_parts) + ("  ✓" if rc_ok else "  ⚠ 注意!")
+        if limit_note:
+            rc_text += f"（{'; '.join(limit_note)}）"
 
         # 当前交易模式(规则化选型, 供 LLM 解说/人工复核)
         mode_line = f"当前模式: {mode.label}（{mode.reason}）"
@@ -146,7 +153,7 @@ class PlanGenerator:
             "━━ 风控与纪律 ━━",
             f"风控检查: {rc_text}",
             f"一致性: {self._consistency_line(signal, action, mode, t_locked, advice)}",
-            f"纪律提醒: 加仓后总仓位勿超 {risk['total_position_pct']:.0f}%; 信号与计划一致时才动手",
+            f"纪律提醒: 加仓后总仓位勿超 {limit_pct:.0f}%; 信号与计划一致时才动手",
         ]
         if t_locked:
             lines.append(
@@ -200,7 +207,8 @@ class PlanGenerator:
 
     @staticmethod
     def _advice_buy_add(pos: Any, portfolio: dict[str, Any] | None = None,
-                        mode: ModeDecision | None = None, symbol: str = "") -> str:
+                        mode: ModeDecision | None = None, symbol: str = "",
+                        limits: dict[str, Any] | None = None) -> str:
         """金字塔加仓建议(当前模式的金字塔比例).
 
         pos.pyramid_stage = 已完成档位(0=仅首仓). 已持仓状态下 BUY_ADD 应建议「下一档」,
@@ -219,7 +227,7 @@ class PlanGenerator:
         next_idx = stage + 1  # 下一档加仓索引(首仓 ratios[0] 已占用)
         if next_idx < effective_max:
             advice = f"金字塔加仓: 第 {next_idx + 1} 档, 建议 {ratios[next_idx] * 100:.0f}% 目标仓位"
-            capital_note = PlanGenerator._capital_aware_add_note(pos, ratios, next_idx, portfolio, symbol)
+            capital_note = PlanGenerator._capital_aware_add_note(pos, ratios, next_idx, portfolio, symbol, limits)
             if capital_note:
                 advice += "; " + capital_note
             note = board_note(symbol)
@@ -231,12 +239,13 @@ class PlanGenerator:
     @staticmethod
     def _capital_aware_add_note(
         pos: Any, ratios: list[float], next_idx: int, portfolio: dict[str, Any] | None,
-        symbol: str = "",
+        symbol: str = "", limits: dict[str, Any] | None = None,
     ) -> str:
         """Q4: 估算本次加仓金额并与可用资金比较(无可用资金信息时返回空串).
 
         symbol 给定(非空)时, 股数按板块申报规则取整(科创板≥200/北交所≥100/主板100整数倍),
         金额按取整后股数重算 —— 避免计划中出现 180 股这类无法成交的违规建议.
+        limits 给定(动态总仓位上限)时, 加仓后总仓位超限自动缩减股数并注明.
         """
         if not portfolio:
             return ""
@@ -261,6 +270,24 @@ class PlanGenerator:
                 return f"本次加仓金额不足最小申报单位({min_buy_unit(symbol)}股)"
             return ""
         add_capital = add_qty * price  # 金额按合规股数重算
+        # 动态总仓位上限: 加仓后总仓位 = 当前 + 本次金额占比, 超限自动缩减
+        limit = (limits or {}).get("total_pct")
+        capped = False
+        if limit is not None and portfolio.get("total_pct") is not None:
+            start_capital = float(portfolio.get("start_capital", 0) or 0)
+            if start_capital > 0:
+                after_pct = portfolio["total_pct"] + add_capital / start_capital * 100
+                if after_pct > float(limit):
+                    add_capital = max(0.0, (float(limit) - portfolio["total_pct"]) / 100 * start_capital)
+                    add_qty = int(add_capital / price)
+                    if symbol:
+                        add_qty = round_buy_qty(add_qty, symbol)
+                    if add_qty <= 0:
+                        return f"总仓位已近上限 {limit:.0f}%, 本次建议暂不加仓"
+                    add_capital = add_qty * price
+                    capped = True
+        if capped:
+            return f"约加 {add_qty} 股(¥{add_capital:,.0f}), 已按总仓位上限 {limit:.0f}% 缩减"
         if add_capital <= avail:
             return f"约加 {add_qty} 股(¥{add_capital:,.0f}), 可用资金 ¥{avail:,.0f} 充足"
         return (

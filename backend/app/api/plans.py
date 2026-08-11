@@ -8,6 +8,7 @@ from sqlmodel import Session, select
 
 from app.api.deps import get_session
 from app.core.account import account_manager
+from app.core.config import config_manager
 from app.core.datasource import data_source_manager
 from app.core.modes import active_mode
 from app.core.plan import plan_generator
@@ -69,9 +70,24 @@ async def generate_plan(body: GenerateBody, session: Session = Depends(get_sessi
     risk_status = risk_manager.status(session)
     # Q2: 规则化市况分类器选出当前交易模式, 注入计划(选型走显式规则, LLM 只解说)
     mode_decision = active_mode(body.symbol, df)
+    # 动态仓位上限: 基础(80/25) × 防守/连亏砍半 × 大盘环境(择时闸门同源) × 凯利因子
+    # 供计划展示动态上限, 加仓建议超限自动缩减
+    limits = None
+    try:
+        from app.core.market_gate import compute_market_gate, fetch_gate_index_dfs
+
+        gate_cfg = config_manager.get().get("择时闸门", {})
+        market_env = None
+        if gate_cfg.get("reference_indices"):
+            idx_dfs = await fetch_gate_index_dfs(gate_cfg)
+            if idx_dfs:
+                market_env = compute_market_gate(idx_dfs, gate_cfg).get("environment")
+        limits = risk_manager.dynamic_limits(session, market_env=market_env)
+    except Exception:  # noqa: BLE001 - 动态上限失败不影响计划生成(回退静态 80%)
+        limits = None
     plan_data = plan_generator.generate(
         body.symbol, body.name or (quote.name if quote else ""), signal, quote,
-        portfolio, risk_status, mode=mode_decision,
+        portfolio, risk_status, mode=mode_decision, limits=limits,
     )
     plan = Plan(
         symbol=body.symbol,
