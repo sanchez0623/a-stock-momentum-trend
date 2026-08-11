@@ -52,6 +52,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "量能": {
         "volume_ma": 20,
         "volume_ratio_threshold": 1.5,
+        # 量能分段评分(线性, 消除"未过阈值一律0分"的一刀切):
+        #   vr <= volume_low_ratio       -> 0 分(明显缩量)
+        #   low < vr < threshold         -> 0~5 分(线性)
+        #   vr >= threshold              -> 5~10 分(线性, vr=threshold+3 满分)
+        "volume_low_ratio": 0.5,
+        # 量价配合分段: 收阳且 vr>threshold +10 / 收阳且 vr>=mild +5 / 缩量收阳(惜售) +2 / 收阴 0
+        "volume_mild_ratio": 0.8,
     },
     "风控": {
         "daily_loss_limit_pct": 3.0,

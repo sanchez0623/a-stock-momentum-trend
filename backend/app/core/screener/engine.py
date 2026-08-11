@@ -277,6 +277,7 @@ def _build_reason(f: dict[str, Any], cfg: dict) -> dict[str, Any]:
 
     # ---------------------------------------------------------------- 量能
     vr, vr_th, price_up = f["volume_ratio"], volume["volume_ratio_threshold"], f["price_up"]
+    vr_mild = float(volume.get("volume_mild_ratio", 0.8))
     parts_v: list[str] = []
     if vr >= vr_th and price_up:
         parts_v.append(f"放量{vr:.1f}倍且当日收阳, 量价配合")
@@ -286,7 +287,10 @@ def _build_reason(f: dict[str, Any], cfg: dict) -> dict[str, Any]:
         tags.append(_tag("放量收阴", "warn"))
         risks.append(f"放量{vr:.1f}倍却收阴线, 警惕高位派发")
     elif price_up:
-        parts_v.append(f"量比{vr:.1f}倍未过阈值{vr_th}, 上涨缺量能配合")
+        if vr >= vr_mild:
+            parts_v.append(f"量比{vr:.1f}倍温和放量, 上涨量能一般")
+        else:
+            parts_v.append(f"量比{vr:.1f}倍缩量上涨, 量能偏弱(惜售或无量空涨)")
     else:
         parts_v.append(f"量比{vr:.1f}倍, 缩量整理")
     if vr >= 3:
@@ -378,13 +382,28 @@ def score_indicators(ind: pd.DataFrame, cfg: dict | None = None) -> dict[str, An
     macd_score = min(15.0, max(0.0, macd_norm * 15.0))
     momentum_score = min(40.0, roc_score + rsi_score + macd_score)
 
-    # ---- 量能分 0-20
+    # ---- 量能分 0-20(线性分段, 避免未过阈值一律 0 分的一刀切)
     vr = _f(last.get(f"volume_ratio{volume['volume_ma']}"))
     vr_threshold = volume["volume_ratio_threshold"]
-    volume_score = min(10.0, max(0.0, (vr - vr_threshold) / 3 * 10))
-    # 量价配合: 收阳 + 放量 加分
+    vr_low = float(volume.get("volume_low_ratio", 0.5))
+    vr_mild = float(volume.get("volume_mild_ratio", 0.8))
+    # 基础分 0-10: 明显缩量 0 分; 缩量~阈值线性 0→5; 超阈值线性 5→10(阈值+3 满分)
+    if vr <= vr_low:
+        volume_base = 0.0
+    elif vr < vr_threshold:
+        volume_base = (vr - vr_low) / max(vr_threshold - vr_low, 1e-6) * 5.0
+    else:
+        volume_base = 5.0 + min(5.0, (vr - vr_threshold) / 3.0 * 5.0)
+    volume_score = volume_base
+    # 量价配合 0-10: 放量收阳 +10 / 温和量收阳 +5 / 缩量收阳(惜售) +2 / 收阴 0
     price_up = close_now > close_prev
-    volume_score += 10.0 if (price_up and vr > vr_threshold) else 0.0
+    if price_up and vr > vr_threshold:
+        volume_score += 10.0
+    elif price_up and vr >= vr_mild:
+        volume_score += 5.0
+    elif price_up:
+        volume_score += 2.0
+    volume_score = min(20.0, max(0.0, round(volume_score, 1)))
 
     # ② 趋势连贯性: 近 20 日收盘站在短期均线之上的占比(0~1)
     consistency = round(float((ind["close"].tail(20) > ind[ma_s].tail(20)).mean()), 2) if len(ind) >= 20 else 0.0

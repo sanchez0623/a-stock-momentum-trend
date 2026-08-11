@@ -73,6 +73,8 @@ export const CONFIG_GROUPS: GroupMeta[] = [
     fields: [
       { key: 'volume_ma', label: '成交量均线', type: 'int', unit: '日', min: 2, max: 120, hint: '量比的基准区间' },
       { key: 'volume_ratio_threshold', label: '放量阈值(量比)', type: 'float', min: 0.1, max: 10, step: 0.1, hint: '当日量 ÷ 均量 高于此值判定为放量。1.5 表示放量五成' },
+      { key: 'volume_low_ratio', label: '明显缩量线(量比)', type: 'float', min: 0.1, max: 3, step: 0.05, hint: '量比 ≤ 此值量能基础分 0 分' },
+      { key: 'volume_mild_ratio', label: '温和量线(量比)', type: 'float', min: 0.2, max: 3, step: 0.05, hint: '收阳且量比 ≥ 此值时量价配合给中间分(默认0.8)' },
     ],
   },
   {

@@ -266,6 +266,28 @@ def test_score_indicators_uptrend(kline_df):
     assert score["attention"] in ("强烈关注", "重点观察", "一般关注", "观察")
 
 
+def test_volume_score_linear_segments(kline_df):
+    """量能分线性分段: 明显缩量收阴 0 / 缩量上涨给少量分 / 温和量中间分 / 放量收阳高分."""
+    from app.core.indicators import compute_all
+
+    ind = compute_all(kline_df)
+
+    def _score(vr: float, price_up: bool = True) -> float:
+        df = ind.copy()
+        df["volume_ratio20"] = vr  # 覆盖最后一根量比
+        if not price_up:
+            df.loc[df.index[-1], "close"] = float(df["close"].iloc[-2]) - 0.1  # 最后收阴
+        return score_indicators(df)["volume_score"]
+
+    assert _score(0.4, price_up=False) == 0.0          # 明显缩量 + 收阴 -> 0 分
+    assert _score(0.4) == 2.0                           # 缩量上涨(惜售) -> 仅 2 分(不再是 0)
+    assert abs(_score(1.0) - 7.5) < 0.05                # 缩量~阈值线性 2.5 + 温和量收阳 5
+    assert _score(1.5) == 10.0                          # 临界量比(恰等于阈值, 严格大于才算放量): 基础5+温和量5
+    assert abs(_score(2.5) - 16.7) < 0.05               # 放量: 基础 6.7 + 10
+    assert _score(4.5) == 20.0                          # 满量比: 满分
+    assert abs(_score(4.5, price_up=False) - 10.0) < 0.05  # 放量收阴: 基础 10, 无配合分
+
+
 def test_score_indicators_downtrend_ranks_low():
     import numpy as np
     import pandas as pd
