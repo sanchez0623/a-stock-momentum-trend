@@ -131,51 +131,62 @@ async def test_get_kline_force_bypasses_fresh_cache(tmp_engine, monkeypatch):
     assert calls["n"] == 1
 
 def test_intraday_ttl_outside_session_hits_intraday_cache():
-    """盘外(盘后)命中「当天盘中写入」的缓存 -> 判定过期重拉(修复盘后拿到盘中截断价)."""
+    """盘后(15:30后): 今日收盘数据可复用; 今日盘中截断/无时点/无今日数据 -> 重拉."""
     import datetime as dt
 
     from app.core.datasource.manager import DataSourceManager
 
     tz = dt.timezone(dt.timedelta(hours=8))
     today = "2026-08-11"  # 周二(交易日)
-    # 盘后 17:00: 缓存是当天 11:00 盘中写入 -> 过期
-    assert DataSourceManager._intraday_ttl(
-        dt.datetime(2026, 8, 11, 17, 0, tzinfo=tz), today, "2026-08-11 11:00:00") is False
-    # 盘后 17:00: 缓存是当天盘后写入 -> 新鲜
-    assert DataSourceManager._intraday_ttl(
-        dt.datetime(2026, 8, 11, 17, 0, tzinfo=tz), today, "2026-08-11 16:30:00") is True
-    # 盘后 17:00: 无时间戳(迁移前缓存) -> 保守重拉一次
-    assert DataSourceManager._intraday_ttl(
-        dt.datetime(2026, 8, 11, 17, 0, tzinfo=tz), today, "") is False
-    # 最后日期非今天(昨日收盘) -> 新鲜(维持原判定)
-    assert DataSourceManager._intraday_ttl(
-        dt.datetime(2026, 8, 11, 17, 0, tzinfo=tz), "2026-08-10", "2026-08-10 16:00:00") is True
+    now = dt.datetime(2026, 8, 11, 17, 0, tzinfo=tz)
+    # 缓存是当天 11:00 盘中写入 -> 截断 bar, 重拉收盘数据
+    assert DataSourceManager._intraday_ttl(now, today, "2026-08-11 11:00:00") is False
+    # 缓存是当天盘后写入 -> 收盘数据, 复用
+    assert DataSourceManager._intraday_ttl(now, today, "2026-08-11 16:30:00") is True
+    # 无时间戳(迁移前缓存) -> 重拉一次
+    assert DataSourceManager._intraday_ttl(now, today, "") is False
+    # 最后日期非今天(昨日收盘) -> 重拉今日收盘
+    assert DataSourceManager._intraday_ttl(now, "2026-08-10", "2026-08-10 16:00:00") is False
 
 
 def test_intraday_ttl_during_session():
-    """盘中: 写入超 TTL(10 分钟) -> 过期; 未超 -> 新鲜."""
+    """盘中(9:15~11:30 / 13:00~15:30): 不缓存, 每次强制刷新."""
     import datetime as dt
 
     from app.core.datasource.manager import DataSourceManager
 
     tz = dt.timezone(dt.timedelta(hours=8))
     today = "2026-08-11"
-    now = dt.datetime(2026, 8, 11, 10, 0, tzinfo=tz)
-    # 09:00 写入(超 10 分钟) -> 过期重拉
-    assert DataSourceManager._intraday_ttl(now, today, "2026-08-11 09:00:00") is False
-    # 09:55 写入(5 分钟) -> 新鲜
-    assert DataSourceManager._intraday_ttl(now, today, "2026-08-11 09:55:00") is True
-    # 周末 -> 恒新鲜
+    # 上午盘中 10:00: 无论缓存何时写入都强制刷新
+    assert DataSourceManager._intraday_ttl(
+        dt.datetime(2026, 8, 11, 10, 0, tzinfo=tz), today, "2026-08-11 09:55:00") is False
+    # 下午盘中 14:00: 同样强制刷新
+    assert DataSourceManager._intraday_ttl(
+        dt.datetime(2026, 8, 11, 14, 0, tzinfo=tz), today, "2026-08-11 11:30:00") is False
+    # 周末 -> 复用最近收盘数据
     assert DataSourceManager._intraday_ttl(
         dt.datetime(2026, 8, 9, 10, 0, tzinfo=tz), "2026-08-08", "2026-08-08 15:30:00") is True
 
 
-def test_intraday_ttl_early_morning():
-    """盘前(9:15 前): 最后日期=昨天 -> 新鲜(盘前不会写入今天的盘中 bar)."""
+def test_intraday_ttl_lunch_break():
+    """午休(11:30~13:00): 有当天数据即可复用; 无当天数据 -> 重拉."""
     import datetime as dt
 
     from app.core.datasource.manager import DataSourceManager
 
     tz = dt.timezone(dt.timedelta(hours=8))
+    now = dt.datetime(2026, 8, 11, 12, 0, tzinfo=tz)
+    assert DataSourceManager._intraday_ttl(now, "2026-08-11", "2026-08-11 11:25:00") is True
+    assert DataSourceManager._intraday_ttl(now, "2026-08-10", "") is False
+
+
+def test_intraday_ttl_early_morning():
+    """盘前(9:15 前): 复用最近收盘数据, 无需强制刷新."""
+    import datetime as dt
+
+    from app.core.datasource.manager import DataSourceManager
+
+    tz = dt.timezone(dt.timedelta(hours=8))
+    # 盘前 08:30, 缓存为昨日收盘 -> 复用
     assert DataSourceManager._intraday_ttl(
-        dt.datetime(2026, 8, 11, 8, 30, tzinfo=tz), "2026-08-10", "") is True
+        dt.datetime(2026, 8, 11, 8, 30, tzinfo=tz), "2026-08-10", "2026-08-10 16:00:00") is True

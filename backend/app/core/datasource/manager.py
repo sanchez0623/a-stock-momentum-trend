@@ -26,9 +26,6 @@ FETCH_TIMEOUT = 15.0
 CIRCUIT_AFTER = 5  # 连续失败 5 次才熔断(原 3, 腾讯偶发抖动 3 次易误熔断)
 CIRCUIT_SECS = 600
 HEALTH_INTERVAL = 60.0
-# 盘中日线缓存 TTL: 交易日 9:15~15:05 期间, 最后日期=今天的缓存超过该秒数视为过期重拉
-# (盘中 bar 实时变化, 缓存只记日期会把当天早盘价当新鲜; 盘后不设 TTL)
-INTRADAY_TTL_SEC = 600
 
 
 class DataSourceManager:
@@ -183,9 +180,9 @@ class DataSourceManager:
         会把当天早盘的 bar 视为新鲜, 导致信号基于旧数据). 拉取后仍写缓存.
         """
         cached = kline_store.get_dataframe(symbol, period)
-        # 缓存命中条件含盘中 TTL 检查(_intraday_fresh: 收盘后恒新鲜)
+        # 缓存命中条件: 非 force + 数据量够 + 按交易时段窗口判定新鲜(_kline_cache_fresh)
         if (not force and cached is not None and len(cached) >= count
-                and self._cache_fresh(cached, period) and self._intraday_fresh(symbol, period, cached)):
+                and self._kline_cache_fresh(symbol, period, cached)):
             return cached.tail(count).reset_index(drop=True)
         fresh = await self._fetch_kline(symbol, period, count, secid=secid, prefer_long=prefer_long)
         if fresh is not None and not fresh.empty:
@@ -405,40 +402,52 @@ class DataSourceManager:
             self._record(name, False, 0.0)
             return {"name": name, "ok": False, "rows": 0, "latency_ms": 0.0, "error": str(exc)}
 
-    def _intraday_fresh(self, symbol: str, period: str, df: pd.DataFrame) -> bool:
-        """盘中缓存新鲜判定(包装纯函数 _intraday_ttl)."""
+    def _kline_cache_fresh(self, symbol: str, period: str, df: pd.DataFrame) -> bool:
+        """日线: 按交易时段窗口判定(用户规则); 其他周期维持 _cache_fresh 原逻辑."""
         if period != "daily" or df is None or df.empty:
-            return True
+            return self._cache_fresh(df, period)
         now = dt.datetime.now(dt.timezone(dt.timedelta(hours=8)))
         last_date = str(df.iloc[-1]["date"])[:10]
         updated = kline_store.get_updated_at(symbol, period)
         return self._intraday_ttl(now, last_date, updated)
 
     @staticmethod
-    def _intraday_ttl(now: dt.datetime, last_date: str, updated_at: str) -> bool:
-        """纯函数: 日线缓存新鲜判定(盘中 TTL + 盘外截断识别), 返回是否新鲜.
-
-        - 盘中(交易日 9:15~15:05): 写入超 TTL(10 分钟)视为过期(盘中 bar 实时变化)
-        - 盘外: 若缓存是「当天盘中写入」的截断 bar -> 过期重拉收盘数据(修复盘后命中盘中旧价);
-          盘后写入或昨日写入 -> 恒新鲜
-        - 周末/最后日期非今天/无时间戳异常 -> 维持原判定(新鲜或按旧逻辑)
-        """
-        if now.weekday() >= 5:
-            return True
-        if last_date != now.strftime("%Y-%m-%d"):
-            return True  # 最后日期非今天(昨日收盘数据), 维持原判定
-        if not updated_at:
-            return False  # 当天数据但无写入时点(迁移前缓存) -> 保守重拉一次, 落定后即新鲜
+    def _is_intraday_write(updated_at: str, today: str) -> bool:
+        """写入时点是否落在今天盘中时段(9:15~15:30) —— 截断 bar 嫌疑."""
         try:
-            upd = dt.datetime.strptime(updated_at[:19], "%Y-%m-%d %H:%M:%S").replace(
-                tzinfo=dt.timezone(dt.timedelta(hours=8)))
+            upd = dt.datetime.strptime(updated_at[:19], "%Y-%m-%d %H:%M:%S")
         except ValueError:
-            return True
+            return False
+        return (upd.strftime("%Y-%m-%d") == today
+                and dt.time(9, 15) <= upd.time() <= dt.time(15, 30))
+
+    @staticmethod
+    def _intraday_ttl(now: dt.datetime, last_date: str, updated_at: str) -> bool:
+        """纯函数: 按交易时段窗口判定日线缓存是否可复用(用户规则).
+
+        - 盘中(9:15~11:30 / 13:00~15:30): 不缓存, 每次强制刷新
+        - 午休(11:30~13:00): 复用当天上午数据(缓存最后日期=今天)
+        - 盘后(15:30 后): 复用今日收盘数据; 命中「今日盘中写入」的截断 bar 或无时间戳 -> 重拉一次
+        - 盘前(9:15 前)/周末: 复用最近收盘数据
+        """
+        today = now.strftime("%Y-%m-%d")
+        if now.weekday() >= 5:
+            return True  # 周末: 最近收盘数据可复用
         t = now.time()
-        if dt.time(9, 15) <= t <= dt.time(15, 5):
-            return (now - upd).total_seconds() <= INTRADAY_TTL_SEC
-        # 盘外: 命中当天盘中写入的截断 bar -> 过期(需收盘数据); 盘后写入 -> 新鲜
-        return not (upd.date() == now.date() and dt.time(9, 15) <= upd.time() <= dt.time(15, 5))
+        # 盘中: 不缓存, 强制刷新
+        if dt.time(9, 15) <= t < dt.time(11, 30) or dt.time(13, 0) <= t <= dt.time(15, 30):
+            return False
+        # 午休: 复用当天上午数据(有今天 bar 即可)
+        if dt.time(11, 30) <= t < dt.time(13, 0):
+            return last_date == today
+        # 盘后(15:30 后): 今日收盘数据可复用; 今日盘中截断/无时点 -> 重拉一次
+        if t >= dt.time(15, 30):
+            if last_date != today:
+                return False  # 尚无今日收盘数据 -> 重拉
+            # 盘中截断或无写入时点 -> 重拉一次(落定后即复用)
+            return bool(updated_at) and not DataSourceManager._is_intraday_write(updated_at, today)
+        # 盘前(9:15 前): 复用最近收盘数据
+        return True
 
     @staticmethod
     def _cache_fresh(df: pd.DataFrame, period: str) -> bool:
