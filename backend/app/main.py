@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app import db
 from app.api import ai_review as ai_review_api
+from app.api import assistant as assistant_api
 from app.api import backfill as backfill_api
 from app.api import backtest as backtest_api
 from app.api import plans as plans_api
@@ -117,8 +118,10 @@ app.include_router(report_api.router)
 app.include_router(screener_api.router)
 app.include_router(trades_stats_api.router)
 app.include_router(ai_review_api.router)
+app.include_router(assistant_api.router)
 app.include_router(backtest_api.router)
 app.include_router(backfill_api.router)
+app.include_router(tracking_api.router)
 
 FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 if FRONTEND_DIST.exists():

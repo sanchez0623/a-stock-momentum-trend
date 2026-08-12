@@ -69,6 +69,40 @@ async def _after_close_daily_report() -> None:
         logger.warning("盘后日报生成失败: %s", exc)
 
 
+async def _tracking_sample() -> None:
+    """得分追踪采样(盘前 8:50 / 午间 12:30 / 盘后 16:00): 对活跃追踪票记录得分/价格/阶段/信号.
+
+    三个采样点均落在日线缓存复用窗口(盘前/午休/盘后), 不触发重拉风暴;
+    盘后 16:00 首次采样会按缓存规则自动重拉收盘数据.
+    """
+    from app.core.tracking import archive_expired, sample_all
+
+    try:
+        r = await sample_all()
+        if r["total"]:
+            logger.info("得分追踪采样: %d/%d 成功", r["ok"], r["total"])
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("得分追踪采样失败: %s", exc)
+    try:
+        archive_expired()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("得分追踪归档失败: %s", exc)
+
+
+def _add_tracking_job(job_id: str, hour: int, minute: int) -> None:
+    if scheduler.get_job(job_id) is None:
+        scheduler.add_job(
+            _tracking_sample,
+            "cron",
+            day_of_week="mon-fri",
+            hour=hour,
+            minute=minute,
+            id=job_id,
+            coalesce=True,
+            max_instances=1,
+        )
+
+
 def setup_jobs() -> None:
     if scheduler.get_job("after_close_warmup") is None:
         scheduler.add_job(
@@ -92,6 +126,15 @@ def setup_jobs() -> None:
             coalesce=True,
             max_instances=1,
         )
+    # 得分追踪每日 3 次采样(盘前/午间/盘后)
+    _add_tracking_job("tracking_sample_0850", 8, 50)
+    _add_tracking_job("tracking_sample_1230", 12, 30)
+    _add_tracking_job("tracking_sample_1600", 16, 0)
+    # AI 助理(独立模块): 开关驱动注册/注销, 配置变化热生效
+    from app.core.assistant.scheduler import register_assistant_listener, setup_assistant_jobs
+
+    setup_assistant_jobs(scheduler)
+    register_assistant_listener(scheduler)
 
 
 def start_scheduler() -> None:

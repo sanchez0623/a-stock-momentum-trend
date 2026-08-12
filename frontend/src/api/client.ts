@@ -123,6 +123,14 @@ export const api = {
     request<{ id: number }>('/screener/presets', { method: 'POST', body: JSON.stringify(p) }),
   deleteScreenerPreset: (id: number) => request<{ id: number }>(`/screener/presets/${id}`, { method: 'DELETE' }),
 
+  // ---------------------------------------------------------------- 得分追踪(选股结果一键追踪, 每日3次采样)
+  trackingAdd: (body: { symbol: string; name?: string; score?: number; stage?: string }) =>
+    request<{ symbol: string; score_at_track: number }>('/tracking', { method: 'POST', body: JSON.stringify(body) }),
+  trackingRemove: (symbol: string) => request<{ ok: boolean }>(`/tracking/${symbol}`, { method: 'DELETE' }),
+  trackingList: () => request<{ items: TrackedStock[] }>('/tracking'),
+  trackingPoints: (symbol: string) => request<{ items: ScorePoint[] }>(`/tracking/points/${symbol}`),
+  trackingSampleNow: () => request<{ total: number; ok: number; failed: number }>('/tracking/sample-now', { method: 'POST' }),
+
   // ---------------------------------------------------------------- 回测中心(方案C: 阶段分桶)
   backtestFactor: (body: { symbols?: string[] | null; hold_days?: number[]; min_bars?: number; cost?: boolean }) =>
     request<BacktestFactorReport>('/backtest/factor', { method: 'POST', body: JSON.stringify(body) }),
@@ -179,6 +187,11 @@ export const api = {
   },
   notifications: (limit = 20) => request<NotificationItem[]>(`/notifications?limit=${limit}`),
   notificationRead: (id: number) => request<NotificationItem>(`/notifications/${id}/read`, { method: 'POST' }),
+
+  // ---------------------------------------------------------------- AI 助理(LangGraph 流水线)
+  /** 手动触发单阶段流水线(验证用): premarket / intraday / after_close */
+  assistantRun: (phase = 'intraday') => request<AssistantRunResult>(`/assistant/run?phase=${phase}`, { method: 'POST' }),
+  assistantStatus: () => request<AssistantStatus>('/assistant/status'),
 }
 
 export interface Quote {
@@ -413,6 +426,40 @@ export interface InterruptedTask {
   error: string
   created_at: string
   updated_at: string
+}
+
+/** 得分追踪: 追踪中的股票(附最近一次采样) */
+export interface TrackedStock {
+  symbol: string
+  name: string
+  track_time: string
+  score_at_track: number
+  stage_at_track: string
+  status: string
+  archived_at?: string
+  archive_reason?: string
+  latest?: {
+    time: string
+    score: number
+    price: number
+    stage: string
+    signal_type: string
+    sample_kind: string
+  }
+}
+
+/** 得分追踪: 采样点 */
+export interface ScorePoint {
+  time: string
+  score: number
+  trend_score: number
+  momentum_score: number
+  volume_score: number
+  stage: string
+  price: number
+  volume_ratio: number
+  signal_type: string
+  sample_kind: string
 }
 
 /** 选股条件组合预设(指数池+板块+行业) */
@@ -722,4 +769,25 @@ export interface NotificationItem {
   title: string
   content: string
   read: boolean
+}
+
+// ---------------------------------------------------------------- AI 助理类型
+/** 手动触发单阶段流水线的返回(状态摘要) */
+export interface AssistantRunResult {
+  phase: string
+  signals: number
+  fresh: number
+  insights: number
+  notifications: Array<{ id: number; symbol: string; type: string }>
+  market: string
+}
+
+export interface AssistantStatus {
+  enabled: boolean
+  premarket: { enabled: boolean; hour: number; minute: number }
+  intraday: { enabled: boolean; interval_min: number }
+  after_close: { enabled: boolean; hour: number; minute: number }
+  push_webhook: boolean
+  jobs: Record<string, boolean>
+  recent_notifications: NotificationItem[]
 }

@@ -388,6 +388,71 @@ def test_screener_task_batch_resume_skips_done(tmp_engine, monkeypatch):
     pers.delete_task("t2")
 
 
+# ---------------------------------------------------------------- 得分追踪
+def test_tracking_add_list_stop_archive(tmp_engine):
+    """追踪: 添加(不重复) -> 列表(含最近采样) -> 手动停止 -> 观察期自动归档."""
+    from app.core.tracking import score_tracker as tr
+
+    # 添加(两次同票不重复)
+    d1 = tr.track("600000", "浦发银行", 72.0, "launch")
+    d2 = tr.track("600000", "浦发银行", 72.0, "launch")
+    assert d1["symbol"] == d2["symbol"]
+    assert len(tr.list_active()) == 1
+
+    # 采样点写入
+    from app.models.models import ScorePoint
+    from sqlmodel import select
+    from app import db
+
+    with db.session_scope() as s:
+        s.add(ScorePoint(symbol="600000", time="2026-08-11 12:30:00", score=70.5,
+                         trend_score=38.0, momentum_score=21.0, volume_score=11.5,
+                         stage="launch", price=10.2, volume_ratio=1.3, sample_kind="noon"))
+        s.commit()
+    items = tr.list_active()
+    assert items[0]["latest"]["score"] == 70.5
+    assert items[0]["latest"]["sample_kind"] == "noon"
+
+    # 时间序列
+    pts = tr.points("600000")
+    assert len(pts) == 1 and pts[0]["price"] == 10.2
+
+    # 手动停止
+    assert tr.stop("600000") is True
+    assert tr.list_active() == []
+    assert tr.stop("600000") is False  # 已归档, 再停返回 False
+
+    # 重新追踪 + 观察期自动归档(构造过期 track_time)
+    tr.track("600000", "浦发银行", 72.0, "launch")
+    with db.session_scope() as s:
+        t = s.exec(select(tr.TrackedStock).where(
+            tr.TrackedStock.symbol == "600000", tr.TrackedStock.status == "active"
+        )).first()
+        t.track_time = "2026-06-01 10:00:00"  # 超过 30 天
+        s.add(t)
+        s.commit()
+    assert tr.archive_expired() == 1
+    assert tr.list_active() == []
+
+
+def test_tracking_sample_one_skips_bad_symbol(tmp_engine, monkeypatch):
+    """采样: 评分失败(数据不足)的票跳过, 不写入采样点; 正常票写入."""
+    from app.core.tracking import score_tracker as tr
+
+    tr.track("600000", "浦发银行", 72.0, "launch")
+
+    async def fake_score(symbol, cfg):
+        return None  # 模拟数据不足
+
+    monkeypatch.setattr(tr, "_score_symbol", fake_score)
+
+    import asyncio
+
+    r = asyncio.run(tr.sample_all())
+    assert r["total"] == 1 and r["failed"] == 1
+    assert tr.points("600000") == []  # 无采样点写入
+
+
 # ---------------------------------------------------------------- 选股器评分
 def test_score_indicators_uptrend(kline_df):
     from app.core.indicators import compute_all

@@ -246,6 +246,37 @@ class ScreenerTaskBatch(SQLModel, table=True):
     created_at: str = Field(default_factory=_now)
 
 
+class TrackedStock(SQLModel, table=True):
+    """选股得分追踪(从选股结果一键追踪, 每日 3 次采样得分/价格/阶段/信号)."""
+
+    id: int | None = Field(default=None, primary_key=True)
+    symbol: str = Field(default="", index=True)
+    name: str = Field(default="")
+    track_time: str = Field(default_factory=_now)
+    score_at_track: float = Field(default=0.0)   # 追踪时的总分
+    stage_at_track: str = Field(default="")       # 追踪时的阶段(启动/加速/过热/衰竭)
+    status: str = Field(default="active", index=True)  # active / archived(30天到期或手动)
+    archived_at: str = Field(default="")
+    archive_reason: str = Field(default="")      # manual / expired
+
+
+class ScorePoint(SQLModel, table=True):
+    """追踪采样点(每次采样一条: 总分/三因子/阶段/价格/量比/信号)."""
+
+    id: int | None = Field(default=None, primary_key=True)
+    symbol: str = Field(default="", index=True)
+    time: str = Field(default_factory=_now)
+    score: float = Field(default=0.0)
+    trend_score: float = Field(default=0.0)
+    momentum_score: float = Field(default=0.0)
+    volume_score: float = Field(default=0.0)
+    stage: str = Field(default="")
+    price: float = Field(default=0.0)
+    volume_ratio: float = Field(default=0.0)
+    signal_type: str = Field(default="")  # 采样时触发的信号(无则空)
+    sample_kind: str = Field(default="")   # pre(盘前) / noon(午间) / after(盘后) / manual
+
+
 class SignalRecord(SQLModel, table=True):
     """信号记录."""
 
@@ -358,9 +389,10 @@ class Notification(SQLModel, table=True):
 
     id: int | None = Field(default=None, primary_key=True)
     time: str = Field(default_factory=_now, index=True)
-    category: str = Field(default="report")  # report / signal / risk
+    category: str = Field(default="report")  # report / signal / risk / assistant
     title: str = Field(default="")
     content: str = Field(default="")
+    fingerprint: str = Field(default="", index=True)  # 去重指纹, 如 2026-08-12:300139:SELL_REDUCE
     read: bool = Field(default=False)
 
 

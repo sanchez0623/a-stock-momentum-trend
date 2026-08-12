@@ -767,6 +767,7 @@ export default function Screener() {
                     <Th>关注度</Th>
                     <Th />
                     <Th />
+                    <Th />
                   </tr>
                 </thead>
                 <tbody>
@@ -819,12 +820,32 @@ export default function Screener() {
                               看信号
                             </button>
                           </Td>
+                          {/* 加入得分追踪: 每日 3 次采样得分, 观察分数与涨跌关系 */}
+                          <Td className="text-center">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                api.trackingAdd({
+                                  symbol: r.symbol,
+                                  name: r.name || '',
+                                  score: r.total,
+                                  stage: r.stage,
+                                }).then(() => {
+                                  toast.success(`已加入得分追踪: ${r.symbol}`)
+                                }).catch((err) => toast.error(String((err as Error).message)))
+                              }}
+                              className="cursor-pointer border-none bg-transparent text-[12px] text-ink-faint hover:text-rise"
+                            >
+                              追踪
+                            </button>
+                          </Td>
                           <Td className="text-center text-[10px] text-ink-faint">{open ? '▲' : '▼'}</Td>
                         </tr>
 
                         {/* 理由行: 标签常驻, 展开后追加三因子拆解与风险 */}
                         <tr className={cn(open ? 'bg-[#fafbfc]' : '')}>
-                          <Td colSpan={14} className="pb-2">
+                          <Td colSpan={15} className="pb-2">
                               {tags.length === 0 && !r.reason ? (
                                 <span className="text-[11px] text-ink-faint">本条结果由旧版本生成，重新扫描即可显示选股理由</span>
                               ) : (

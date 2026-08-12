@@ -460,6 +460,38 @@ def score_indicators(ind: pd.DataFrame, cfg: dict | None = None) -> dict[str, An
     return out
 
 
+async def score_symbol(symbol: str, cfg: dict[str, Any] | None = None, count: int = 120,
+                       min_amount: float = MIN_DAILY_AMOUNT,
+                       name_map: dict[str, str] | None = None) -> dict[str, Any] | None:
+    """单票评分(与扫描同口径): 取数 + 流动性过滤 + 指标 + 评分.
+
+    供得分追踪采样复用(保证追踪分数与选股扫描可比); 停牌/数据不足/失败返回 None.
+    """
+    cfg = cfg or {}
+    try:
+        df = await data_source_manager.get_kline(symbol, "daily", count)
+        if df is None or len(df) < 40:
+            return None  # 停牌/数据不足
+        avg_amount = _f(pd.to_numeric(df["amount"], errors="coerce").tail(20).mean())
+        if avg_amount < min_amount:
+            return None
+        ind = compute_all(
+            df,
+            ma_short=cfg["趋势"]["ma_short"], ma_mid=cfg["趋势"]["ma_mid"], ma_long=cfg["趋势"]["ma_long"],
+            macd_fast=cfg["动量"]["macd_fast"], macd_slow=cfg["动量"]["macd_slow"], macd_signal=cfg["动量"]["macd_signal"],
+            rsi_period=cfg["动量"]["rsi_period"], roc_period=cfg["动量"]["roc_period"],
+            volume_ma=cfg["量能"]["volume_ma"],
+        )
+        score = score_indicators(ind, cfg)
+        score["symbol"] = symbol
+        score["name"] = (name_map or {}).get(symbol, "")
+        score["amount_avg"] = round(avg_amount / 100_000_000, 2)  # 亿
+        return score
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("评分 %s 失败: %s", symbol, exc)
+        return None
+
+
 class StockScreener:
     """全市场扫描(盘后定时) / 指定池扫描."""
 
@@ -664,27 +696,11 @@ class StockScreener:
         SCAN_CONCURRENCY = 3
 
         async def _score_one(symbol: str) -> dict[str, Any] | None:
-            """取数+评分单只票; 停牌/数据不足/失败返回 None."""
+            """取数+评分单只票(与 score_symbol 同口径); 停牌/数据不足/失败返回 None."""
             try:
-                df = await data_source_manager.get_kline(symbol, "daily", count)
-                if df is None or len(df) < 40:
-                    return None  # 停牌/数据不足
-                # 流动性过滤: 近 20 日均额
-                avg_amount = _f(pd.to_numeric(df["amount"], errors="coerce").tail(20).mean())
-                if avg_amount < min_amount:
-                    return None
-                ind = compute_all(
-                    df,
-                    ma_short=cfg["趋势"]["ma_short"], ma_mid=cfg["趋势"]["ma_mid"], ma_long=cfg["趋势"]["ma_long"],
-                    macd_fast=cfg["动量"]["macd_fast"], macd_slow=cfg["动量"]["macd_slow"], macd_signal=cfg["动量"]["macd_signal"],
-                    rsi_period=cfg["动量"]["rsi_period"], roc_period=cfg["动量"]["roc_period"],
-                    volume_ma=cfg["量能"]["volume_ma"],
+                return await score_symbol(
+                    symbol, cfg, count, min_amount, name_map,
                 )
-                score = score_indicators(ind, cfg)
-                score["symbol"] = symbol
-                score["name"] = name_map.get(symbol, "")
-                score["amount_avg"] = round(avg_amount / 100_000_000, 2)  # 亿
-                return score
             except Exception as exc:  # noqa: BLE001
                 logger.debug("扫描 %s 失败: %s", symbol, exc)
                 return None

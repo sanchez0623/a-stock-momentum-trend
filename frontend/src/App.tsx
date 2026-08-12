@@ -18,6 +18,7 @@ const AiReview = lazy(() => import('./pages/AiReview'))
 const Backtest = lazy(() => import('./pages/Backtest'))
 const Settings = lazy(() => import('./pages/Settings'))
 const Guide = lazy(() => import('./pages/Guide'))
+const Tracking = lazy(() => import('./pages/Tracking'))
 
 // react-query 全局客户端(默认 15s 轮询由各页面 query 配置)
 const queryClient = new QueryClient({
@@ -28,6 +29,7 @@ const NAV = [
   { to: '/dashboard', label: '仪表盘' },
   { to: '/screener', label: '选股' },
   { to: '/watchlist', label: '自选与持仓' },
+  { to: '/tracking', label: '得分追踪' },
   { to: '/signals', label: '信号中心' },
   { to: '/plans', label: '交易计划' },
   { to: '/trades', label: '交易日志' },
@@ -87,6 +89,7 @@ function AppShell() {
                 <Route path="/dashboard" element={<Dashboard />} />
                 <Route path="/screener" element={<Screener />} />
                 <Route path="/watchlist" element={<Watchlist />} />
+                <Route path="/tracking" element={<Tracking />} />
                 <Route path="/signals" element={<Signals />} />
                 <Route path="/plans" element={<Plans />} />
                 <Route path="/trades" element={<Trades />} />
