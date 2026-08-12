@@ -809,36 +809,36 @@ export default function Screener() {
                           </Td>
                           {/* 快速进入信号流程: 跳转信号中心并自动评估该票 */}
                           <Td className="text-center">
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                navigate(`/signals?symbol=${r.symbol}&name=${encodeURIComponent(r.name || '')}`)
-                              }}
-                              className="cursor-pointer border-none bg-transparent text-[12px] text-link hover:underline"
-                            >
-                              看信号
-                            </button>
+                            <div onClick={(e) => e.stopPropagation()}>
+                              <Button
+                                kind="primary"
+                                className="h-6 px-2 text-[11px]"
+                                onClick={() => navigate(`/signals?symbol=${r.symbol}&name=${encodeURIComponent(r.name || '')}`)}
+                              >
+                                看信号
+                              </Button>
+                            </div>
                           </Td>
                           {/* 加入得分追踪: 每日 3 次采样得分, 观察分数与涨跌关系 */}
                           <Td className="text-center">
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                api.trackingAdd({
-                                  symbol: r.symbol,
-                                  name: r.name || '',
-                                  score: r.total,
-                                  stage: r.stage,
-                                }).then(() => {
-                                  toast.success(`已加入得分追踪: ${r.symbol}`)
-                                }).catch((err) => toast.error(String((err as Error).message)))
-                              }}
-                              className="cursor-pointer border-none bg-transparent text-[12px] text-ink-faint hover:text-rise"
-                            >
-                              追踪
-                            </button>
+                            <div onClick={(e) => e.stopPropagation()}>
+                              <Button
+                                kind="ghost"
+                                className="h-6 px-2 text-[11px]"
+                                onClick={() => {
+                                  api.trackingAdd({
+                                    symbol: r.symbol,
+                                    name: r.name || '',
+                                    score: r.total,
+                                    stage: r.stage,
+                                  }).then(() => {
+                                    toast.success(`已加入得分追踪: ${r.symbol}`)
+                                  }).catch((err) => toast.error(String((err as Error).message)))
+                                }}
+                              >
+                                追踪
+                              </Button>
+                            </div>
                           </Td>
                           <Td className="text-center text-[10px] text-ink-faint">{open ? '▲' : '▼'}</Td>
                         </tr>
