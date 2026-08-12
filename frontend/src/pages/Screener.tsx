@@ -101,6 +101,10 @@ export default function Screener() {
   const [stageFilter, setStageFilter] = useState<StageFilter>('all')
   // 删除二次确认(项目规则): 待删除的目标
   const [confirmDel, setConfirmDel] = useState<{ type: 'history' | 'preset'; id: number } | null>(null)
+  // 清理选股缓存(管理员密码确认; 注意: useState 必须在所有提前 return 之前)
+  const [pwdOpen, setPwdOpen] = useState(false)
+  const [pwdValue, setPwdValue] = useState('')
+  const [clearing, setClearing] = useState(false)
 
   // ---- 静态数据(挂载加载, 操作后 invalidate 刷新) ----
   const { data: latestTask, isLoading } = useQuery({
@@ -386,9 +390,6 @@ export default function Screener() {
   }
 
   // 清理选股缓存(需管理员密码, 默认 0623; 删除操作双确认: 密码即确认)
-  const [pwdOpen, setPwdOpen] = useState(false)
-  const [pwdValue, setPwdValue] = useState('')
-  const [clearing, setClearing] = useState(false)
   const clearCache = async () => {
     setClearing(true)
     try {
