@@ -14,7 +14,7 @@ from app.core.tracking import (
     track,
 )
 
-router = APIRouter(prefix="/tracking", tags=["tracking"])
+router = APIRouter(prefix="/api/tracking", tags=["tracking"])
 
 
 class TrackBody(BaseModel):
