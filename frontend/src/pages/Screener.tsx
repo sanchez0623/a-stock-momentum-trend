@@ -111,11 +111,15 @@ export default function Screener() {
     queryKey: ['screener', 'latest'],
     queryFn: api.screenerLatest,
   })
-  const { data: history = [] } = useQuery({
-    queryKey: ['screener', 'history'],
-    queryFn: api.screenerHistory,
-    select: (d) => d.items,
+  // 分析记录分页(每页 20 条; useState 在提前 return 之前)
+  const [historyPage, setHistoryPage] = useState(1)
+  const { data: historyData } = useQuery({
+    queryKey: ['screener', 'history', historyPage],
+    queryFn: () => api.screenerHistory(historyPage),
   })
+  const history = historyData?.items ?? []
+  const historyTotal = historyData?.total ?? 0
+  const HISTORY_PAGE_SIZE = 20
   const { data: universeStats, error: uniQueryError } = useQuery({
     queryKey: ['screener', 'universe-stats'],
     queryFn: api.universeStats,
@@ -726,40 +730,66 @@ export default function Screener() {
       {task?.error && <div className="mt-2 text-xs text-orange-500">任务异常: {task.error}</div>}
 
       {/* ---------- 分析记录(持久化, 点击回看) ---------- */}
-      <Card title={`分析记录(${history.length})`} className="mt-3">
+      <Card title={`分析记录(${historyTotal})`} className="mt-3">
         {history.length === 0 ? (
           <EmptyState>暂无历史记录。每次扫描完成后自动保存, 点击记录即可回看结果, 无需重新分析。</EmptyState>
         ) : (
-          <div className="max-h-56 overflow-y-auto">
-            {history.map((h) => {
-              const active = activeHistory === h.id
-              return (
-                <div
-                  key={h.id}
-                  className={cn(
-                    'group flex cursor-pointer items-center justify-between gap-2 border-b border-divider py-2 text-[13px] last:border-b-0',
-                    active ? 'bg-[#fff5f5]' : 'hover:bg-[#fafbfc]',
-                  )}
-                  onClick={() => loadHistory(h.id)}
+          <>
+            <div className="max-h-56 overflow-y-auto">
+              {history.map((h) => {
+                const active = activeHistory === h.id
+                return (
+                  <div
+                    key={h.id}
+                    className={cn(
+                      'group flex cursor-pointer items-center justify-between gap-2 border-b border-divider py-2 text-[13px] last:border-b-0',
+                      active ? 'bg-[#fff5f5]' : 'hover:bg-[#fafbfc]',
+                    )}
+                    onClick={() => loadHistory(h.id)}
+                  >
+                    <span className="flex min-w-0 items-center gap-2">
+                      <span className="shrink-0 font-semibold text-ink-secondary">{h.time.slice(5, 16)}</span>
+                      <span className="truncate text-ink-muted">{historySummary(h)}</span>
+                    </span>
+                    <span className="flex shrink-0 items-center gap-2">
+                      <span className="text-xs text-ink-faint">{h.result_count} 只</span>
+                      <button
+                        type="button"
+                        onClick={(e) => removeHistory(e, h.id)}
+                        className="text-[11px] text-ink-faint opacity-0 transition-opacity group-hover:opacity-100 hover:text-rise"
+                      >
+                        删除
+                      </button>
+                    </span>
+                  </div>
+                )
+              })}
+            </div>
+            {/* 分页控件 */}
+            <div className="mt-2 flex items-center justify-between text-[12px]">
+              <span className="text-ink-faint">
+                共 {historyTotal} 条 · 第 {historyPage}/{Math.max(1, Math.ceil(historyTotal / HISTORY_PAGE_SIZE))} 页
+              </span>
+              <span className="flex gap-1">
+                <Button
+                  kind="ghost"
+                  className="h-6 px-2 text-[11px]"
+                  disabled={historyPage <= 1}
+                  onClick={() => setHistoryPage((p) => Math.max(1, p - 1))}
                 >
-                  <span className="flex min-w-0 items-center gap-2">
-                    <span className="shrink-0 font-semibold text-ink-secondary">{h.time.slice(5, 16)}</span>
-                    <span className="truncate text-ink-muted">{historySummary(h)}</span>
-                  </span>
-                  <span className="flex shrink-0 items-center gap-2">
-                    <span className="text-xs text-ink-faint">{h.result_count} 只</span>
-                    <button
-                      type="button"
-                      onClick={(e) => removeHistory(e, h.id)}
-                      className="text-[11px] text-ink-faint opacity-0 transition-opacity group-hover:opacity-100 hover:text-rise"
-                    >
-                      删除
-                    </button>
-                  </span>
-                </div>
-              )
-            })}
-          </div>
+                  上一页
+                </Button>
+                <Button
+                  kind="ghost"
+                  className="h-6 px-2 text-[11px]"
+                  disabled={historyPage >= Math.ceil(historyTotal / HISTORY_PAGE_SIZE)}
+                  onClick={() => setHistoryPage((p) => p + 1)}
+                >
+                  下一页
+                </Button>
+              </span>
+            </div>
+          </>
         )}
       </Card>
 

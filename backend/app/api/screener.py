@@ -372,11 +372,12 @@ async def screener_task_delete(task_id: str) -> dict:
 
 
 @router.get("/screener/history")
-async def screener_history_list(limit: int = Query(50, ge=1, le=200)) -> dict:
-    """选股扫描历史列表(不含结果 JSON, 点击某条再取详情)."""
+async def screener_history_list(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100)) -> dict:
+    """选股扫描历史分页列表(不含结果 JSON, 点击某条再取详情)."""
     from app.core.screener.history import list_scan_history
 
-    return {"code": 0, "msg": "ok", "data": {"items": list_scan_history(limit)}}
+    items, total = list_scan_history(page, page_size)
+    return {"code": 0, "msg": "ok", "data": {"items": items, "total": total, "page": page, "page_size": page_size}}
 
 
 @router.get("/screener/history/{history_id}")

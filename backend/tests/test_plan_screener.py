@@ -400,9 +400,9 @@ def test_tracking_add_list_stop_archive(tmp_engine):
     assert len(tr.list_active()) == 1
 
     # 采样点写入
+    from app import db
     from app.models.models import ScorePoint
     from sqlmodel import select
-    from app import db
 
     with db.session_scope() as s:
         s.add(ScorePoint(symbol="600000", time="2026-08-11 12:30:00", score=70.5,
@@ -453,6 +453,34 @@ def test_tracking_sample_one_skips_bad_symbol(tmp_engine, monkeypatch):
     assert tr.points("600000") == []  # 无采样点写入
 
 
+def test_tracking_sample_maps_score_fields(tmp_engine, monkeypatch):
+    """采样字段与 score_indicators 返回对齐(trend_score/close 等, 防历史 0 值回归)."""
+    import asyncio
+
+    from app.core.tracking import score_tracker as tr
+
+    tr.track("600547", "山东黄金", 65.8, "launch")
+
+    async def fake_score(symbol, cfg):
+        return {
+            "total": 63.6, "trend_score": 22.5, "momentum_score": 25.0,
+            "volume_score": 8.1, "stage": "launch", "close": 42.35,
+            "volume_ratio": 1.02, "_kline": None,
+        }
+
+    monkeypatch.setattr(tr, "_score_symbol", fake_score)
+    out = asyncio.run(tr.sample_one("600547"))
+    assert out is not None
+    pts = tr.points("600547")
+    assert len(pts) == 1
+    p = pts[0]
+    assert p["trend_score"] == 22.5
+    assert p["momentum_score"] == 25.0
+    assert p["volume_score"] == 8.1
+    assert p["price"] == 42.35  # 不再为 0
+    assert p["score"] == 63.6
+
+
 # ---------------------------------------------------------------- 选股器评分
 def test_score_indicators_uptrend(kline_df):
     from app.core.indicators import compute_all
@@ -463,6 +491,44 @@ def test_score_indicators_uptrend(kline_df):
     assert score["trend_score"] > 10
     assert score["total"] > 0
     assert score["attention"] in ("强烈关注", "重点观察", "一般关注", "观察")
+
+
+def test_score_symbol_applies_fundamental_factors(tmp_engine, monkeypatch, kline_df):
+    """score_symbol 与扫描同口径: 叠加基本面/事件因子(总分与选股表格可比)."""
+    import asyncio
+
+    from app.core.config import config_manager
+    from app.core.screener import engine as engine_mod
+
+    async def fake_kline(symbol, period, count):
+        return kline_df
+
+    def fake_fund_map(symbols):
+        return {}
+
+    def fake_events(symbols, days):
+        return {}
+
+    def fake_apply(results, fund_map, event_map, q_cfg, e_cfg):
+        for r in results:
+            r["base_total"] = float(r.get("total", 0.0))
+            r["total"] = round(r["base_total"] + 2.2, 1)
+            r["factor_delta"] = 2.2
+        return results, {"applied": True}
+
+    monkeypatch.setattr(engine_mod.data_source_manager, "get_kline", fake_kline)
+    monkeypatch.setattr("app.core.fundamentals.load_fundamentals_map", fake_fund_map)
+    monkeypatch.setattr("app.core.fundamentals.load_recent_events", fake_events)
+    monkeypatch.setattr("app.core.fundamentals.apply_fundamental_factors", fake_apply)
+
+    cfg = config_manager.get()
+    cfg["基本面因子"] = {"enabled": True, "mode": "both"}
+    cfg["业绩事件"] = {"enabled": True, "lookback_days": 90}
+    score = asyncio.run(engine_mod.score_symbol("600000", cfg))
+    assert score is not None
+    assert "base_total" in score
+    assert score["factor_delta"] == 2.2
+    assert abs(score["total"] - (score["base_total"] + 2.2)) < 0.05
 
 
 def test_volume_score_linear_segments(kline_df):
@@ -524,8 +590,8 @@ def test_screener_history_roundtrip(tmp_engine):
         {"market": "all", "top_n": 30, "board": "main,star", "universe": "hs300",
          "per_industry": 5, "apply_gate": True, "apply_factors": True},
     )
-    items = list_scan_history()
-    assert len(items) == 1
+    items, total = list_scan_history()
+    assert total == 1 and len(items) == 1
     row = items[0]
     assert row["result_count"] == 2
     assert row["universe"] == "hs300"

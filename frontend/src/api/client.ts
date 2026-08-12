@@ -109,7 +109,8 @@ export const api = {
   screenerLatest: () => request<ScreenerTask | null>('/screener/result/latest'),
   screenerInterruptedTasks: () => request<{ items: InterruptedTask[] }>('/screener/tasks/interrupted'),
   deleteScreenerTask: (taskId: string) => request(`/screener/tasks/${taskId}`, { method: 'DELETE' }),
-  screenerHistory: () => request<{ items: ScreenerHistoryItem[] }>('/screener/history'),
+  screenerHistory: (page = 1, pageSize = 20) =>
+    request<{ items: ScreenerHistoryItem[]; total: number; page: number; page_size: number }>(`/screener/history?page=${page}&page_size=${pageSize}`),
   screenerHistoryDetail: (id: number) => request<ScreenerHistoryItem>(`/screener/history/${id}`),
   deleteScreenerHistory: (id: number) => request<{ id: number }>(`/screener/history/${id}`, { method: 'DELETE' }),
   /** 选股池(指数成分股)缓存概况: key=指数标识, value=数量/更新时间/名称 */

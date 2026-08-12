@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from sqlmodel import select
+from sqlmodel import func, select
 
 from app import db
 from app.models.models import ScreenerHistory
@@ -51,13 +51,15 @@ def save_scan_history(task: dict[str, Any], params: dict[str, Any]) -> int:
         return row.id or 0
 
 
-def list_scan_history(limit: int = 50) -> list[dict[str, Any]]:
-    """历史列表(不含结果 JSON, 避免一次性拉取大字段)."""
+def list_scan_history(page: int = 1, page_size: int = 20) -> tuple[list[dict[str, Any]], int]:
+    """历史列表分页(不含结果 JSON, 避免一次性拉取大字段). 返回 (items, total)."""
     with db.session_scope() as s:
+        total = s.exec(select(func.count()).select_from(ScreenerHistory)).one()
         rows = s.exec(
-            select(ScreenerHistory).order_by(ScreenerHistory.id.desc()).limit(limit)
+            select(ScreenerHistory).order_by(ScreenerHistory.id.desc())
+            .offset((page - 1) * page_size).limit(page_size)
         ).all()
-    return [_row_to_item(r) for r in rows]
+    return [_row_to_item(r) for r in rows], int(total)
 
 
 def get_scan_history(history_id: int) -> dict[str, Any] | None:
