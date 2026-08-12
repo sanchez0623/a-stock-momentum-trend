@@ -85,6 +85,9 @@ class TencentSource(DataSourceInterface):
         node = (data.get("data") or {}).get(code) or {}
         rows_raw = node.get(f"qfq{p}") or node.get(p) or []
         rows = []
+        # 腾讯 fqkline 成交量单位: 科创板(688)返回股, 其他板块返回手 —— 统一归一为股,
+        # 否则 normalize_kline 按 volume*close 估算的成交额会差 100 倍(茅台 47亿 显示 0.47亿)
+        vol_factor = 1 if symbol.startswith("688") else 100
         for r in rows_raw:
             if not r or len(r) < 6:
                 continue
@@ -94,9 +97,9 @@ class TencentSource(DataSourceInterface):
                 "close": _fnum(r[2]),
                 "high": _fnum(r[3]),
                 "low": _fnum(r[4]),
-                "volume": _fnum(r[5]),
-                # 第 7 位可能是成交额, 也可能是除权信息 dict, 用 _fnum 兜底
-                "amount": _fnum(r[6]) if len(r) > 6 else 0.0,
+                "volume": _fnum(r[5]) * vol_factor,
+                # 腾讯 fqkline 无成交额字段(r[6] 为占位符), 置 0 由 normalize_kline 估算
+                "amount": 0.0,
             })
         return normalize_kline(pd.DataFrame(rows))
 

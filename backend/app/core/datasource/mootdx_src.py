@@ -81,6 +81,10 @@ class MootdxSource(DataSourceInterface):
                 self._reset_client()
                 return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume", "amount"])
             # mootdx 返回列: datetime/open/close/high/low/volume/amount...
+            # 通达信协议: 成交量单位=手, 成交额单位=元 -> volume 归一为股
+            # (否则 normalize_kline 按 volume*close 估算与其他源口径不一致)
+            df = df.copy()
+            df["volume"] = pd.to_numeric(df["volume"], errors="coerce") * 100
             return normalize_kline(df)
         except Exception:
             self._reset_client()
@@ -106,7 +110,7 @@ class MootdxSource(DataSourceInterface):
                     high=float(row.get("high", 0) or 0),
                     low=float(row.get("low", 0) or 0),
                     prev_close=float(row.get("last_close", 0) or 0),
-                    volume=float(row.get("vol", 0) or 0),
+                    volume=float(row.get("vol", 0) or 0) * 100,  # 通达信 vol 单位=手 -> 股
                     amount=float(row.get("amount", 0) or 0),
                 ))
             except (TypeError, ValueError):
