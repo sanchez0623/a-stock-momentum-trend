@@ -131,6 +131,10 @@ export const api = {
   trackingPoints: (symbol: string) => request<{ items: ScorePoint[] }>(`/tracking/points/${symbol}`),
   trackingSampleNow: () => request<{ total: number; ok: number; failed: number }>('/tracking/sample-now', { method: 'POST' }),
 
+  // ---------------------------------------------------------------- 选股缓存管理
+  screenerClearCache: (password: string) =>
+    request<{ cleared: number }>('/screener/cache/clear', { method: 'POST', body: JSON.stringify({ password }) }),
+
   // ---------------------------------------------------------------- 回测中心(方案C: 阶段分桶)
   backtestFactor: (body: { symbols?: string[] | null; hold_days?: number[]; min_bars?: number; cost?: boolean }) =>
     request<BacktestFactorReport>('/backtest/factor', { method: 'POST', body: JSON.stringify(body) }),

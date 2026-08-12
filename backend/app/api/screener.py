@@ -326,6 +326,33 @@ async def screener_latest() -> dict:
     return {"code": 0, "msg": "ok", "data": task}
 
 
+# 管理员密码(默认 0623; 本地单机防误操作, 非安全边界)
+ADMIN_PASSWORD = "0623"
+
+
+class ClearCacheBody(BaseModel):
+    password: str = ""
+
+
+@router.post("/screener/cache/clear")
+async def screener_clear_cache(body: ClearCacheBody) -> dict:
+    """清理选股 K 线缓存(需管理员密码, 默认 0623). 下次扫描自动重新拉取."""
+    if body.password != ADMIN_PASSWORD:
+        raise HTTPException(403, "管理员密码错误")
+    from sqlmodel import select
+
+    from app import db
+    from app.models.models import KlineCache
+
+    with db.session_scope() as s:
+        rows = s.exec(select(KlineCache).where(KlineCache.period == "daily")).all()
+        n = len(rows)
+        for r in rows:
+            s.delete(r)
+        s.commit()
+    return {"code": 0, "msg": f"已清理 {n} 条日线缓存, 下次扫描自动重新拉取", "data": {"cleared": n}}
+
+
 # ---------------------------------------------------------------- 扫描历史(持久化回看)
 @router.get("/screener/tasks/interrupted")
 async def screener_interrupted_tasks() -> dict:

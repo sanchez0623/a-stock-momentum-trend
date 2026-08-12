@@ -385,6 +385,25 @@ export default function Screener() {
     }
   }
 
+  // 清理选股缓存(需管理员密码, 默认 0623; 删除操作双确认: 密码即确认)
+  const [pwdOpen, setPwdOpen] = useState(false)
+  const [pwdValue, setPwdValue] = useState('')
+  const [clearing, setClearing] = useState(false)
+  const clearCache = async () => {
+    setClearing(true)
+    try {
+      const r = await api.screenerClearCache(pwdValue)
+      toast.success(`已清理 ${r.cleared} 条日线缓存, 下次扫描自动重新拉取`)
+      setPwdOpen(false)
+      setPwdValue('')
+      queryClient.invalidateQueries({ queryKey: ['screener', 'latest'] })
+    } catch (e) {
+      toast.error(String((e as Error).message))
+    } finally {
+      setClearing(false)
+    }
+  }
+
   return (
     <div>
       <PageHeader title="选股" />
@@ -643,11 +662,47 @@ export default function Screener() {
         <Button onClick={() => run()} disabled={scanning}>
           {scanning ? '扫描中...' : '开始扫描'}
         </Button>
+        <Button kind="ghost" className="h-8 px-2 text-[12px]" onClick={() => setPwdOpen(true)}>
+          清理缓存
+        </Button>
         {task && <span className="text-xs text-ink-muted">最近任务: {task.status} · {task.done}/{task.total} · {task.progress}%</span>}
         {conditionChips.length > 0 && (
           <span className="text-xs text-ink-faint">已应用 {conditionChips.length} 个条件</span>
         )}
       </div>
+
+      {/* 清理缓存: 管理员密码确认(删除操作双确认) */}
+      {pwdOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30" onClick={() => setPwdOpen(false)}>
+          <div
+            className="w-80 rounded-lg border border-line bg-white p-4 shadow-cardHover"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-2 text-[14px] font-semibold">清理选股缓存</div>
+            <div className="mb-3 text-[11px] leading-relaxed text-ink-muted">
+              将删除全部日线 K 线缓存(选股/评分/回测使用), 下次扫描自动重新拉取。
+              此操作需要管理员密码(默认 0623)。
+            </div>
+            <input
+              type="password"
+              style={inputStyle}
+              value={pwdValue}
+              onChange={(e) => setPwdValue(e.target.value)}
+              placeholder="请输入管理员密码"
+              onKeyDown={(e) => { if (e.key === 'Enter') clearCache() }}
+              autoFocus
+            />
+            <div className="mt-3 flex justify-end gap-2">
+              <Button kind="ghost" className="h-7 px-3 text-[12px]" onClick={() => { setPwdOpen(false); setPwdValue('') }}>
+                取消
+              </Button>
+              <Button kind="danger" className="h-7 px-3 text-[12px]" onClick={clearCache} disabled={clearing || !pwdValue.trim()}>
+                {clearing ? '清理中...' : '确认清理'}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 断点续传: 中断任务提示(可继续/重扫/丢弃) */}
       {interrupted && !scanning && (
