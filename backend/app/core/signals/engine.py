@@ -134,24 +134,28 @@ class SignalEngine:
             s.indicators_snapshot = snap
             return s
 
-        # 1. 止损(优先级最高)
+        # 1. 止损(保命, 优先级最高)
         sig = self._check_stop(cfg, ind, last, prev, pos, price, name, mode_decision)
         if sig:
             return _tag(sig)
-        # 2. 减仓
+        # 2. 减仓(纪律)
         sig = self._check_reduce(cfg, ind, last, prev, pos, price, name)
         if sig:
             return _tag(sig)
-        # 3. 加仓
+        # 3. 做T卖出(顺势超买高抛): 风控性卖出优先于进攻性加仓/首仓(用户重排)
+        sig = self._check_t_trade(cfg, ind, last, pos, price, quote_high, quote_low, name, want="sell")
+        if sig:
+            return _tag(sig)
+        # 4. 加仓(回踩顺向)
         sig = self._check_add(cfg, ind, last, prev, pos, price, name, mode_decision)
         if sig:
             return _tag(sig)
-        # 4. 首仓
+        # 5. 首仓
         sig = self._check_buy_first(cfg, ind, last, prev, pos, price, name)
         if sig:
             return _tag(sig)
-        # 5. 做T(需持仓)
-        sig = self._check_t_trade(cfg, ind, last, pos, price, quote_high, quote_low, name)
+        # 6. 做T买入(低吸, 最低: 绝不抢跑加仓/首仓, 避免亏损中盲目低吸)
+        sig = self._check_t_trade(cfg, ind, last, pos, price, quote_high, quote_low, name, want="buy")
         if sig:
             return _tag(sig)
         return None
@@ -402,8 +406,13 @@ class SignalEngine:
         )
 
     # ------------------------------------------------------------ 做T信号
-    def _check_t_trade(self, cfg, ind, last, pos, price, quote_high, quote_low, name) -> Signal | None:
-        """日内波段: T_BUY 回踩布林下轨/日内支撑; T_SELL 冲布林上轨/日内阻力."""
+    def _check_t_trade(self, cfg, ind, last, pos, price, quote_high, quote_low, name,
+                       want: str = "both") -> Signal | None:
+        """日内波段: T_SELL 冲布林上轨(高抛) / T_BUY 回踩布林下轨(低吸).
+
+        want: "sell" 只判高抛 / "buy" 只判低吸 / "both" 两者(兼容旧调用).
+        优先级重排(用户): T_SELL 在加仓/首仓之前(风控性卖出), T_BUY 保持最低(逆势低吸保守).
+        """
         if not pos.has_position:
             return None
         t_cfg = cfg["做T"]
@@ -419,7 +428,7 @@ class SignalEngine:
         if swing < t_cfg["min_swing_pct"]:
             return None
         # T_SELL: 冲布林上轨
-        if price >= boll_upper * 0.995:
+        if want in ("sell", "both") and price >= boll_upper * 0.995:
             return Signal(
                 type="T_SELL", symbol=pos.symbol, name=name, direction="sell",
                 strength=70.0,
@@ -427,7 +436,7 @@ class SignalEngine:
                 price=price, indicators_snapshot=self._snapshot(last),
             )
         # T_BUY: 回踩布林下轨
-        if price <= boll_lower * 1.005:
+        if want in ("buy", "both") and price <= boll_lower * 1.005:
             return Signal(
                 type="T_BUY", symbol=pos.symbol, name=name, direction="buy",
                 strength=70.0,

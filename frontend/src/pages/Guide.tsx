@@ -11,9 +11,10 @@ const GATES = [
 const SIGNALS = [
   { type: 'SELL_STOP', name: '止损', pri: 1, desc: 'MA短穿中且ADX掉头等破位形态, 立即止损清仓' },
   { type: 'SELL_REDUCE', name: '减仓', pri: 2, desc: '冲高回落/跌破关键均线, 建议减 1/3~1/2 仓位' },
-  { type: 'BUY_ADD', name: '加仓', pri: 3, desc: '回踩企稳/沿均线强势, 按金字塔档位顺向加仓' },
-  { type: 'BUY_FIRST', name: '首仓', pri: 4, desc: '三共振入场(趋势/动量/量能), 金字塔第一档建仓' },
-  { type: 'T_BUY / T_SELL', name: '做T', pri: 5, desc: '当日低吸高抛降成本, 不留隔夜增量' },
+  { type: 'T_SELL', name: '做T卖出', pri: 3, desc: '日内冲布林上轨高抛(顺势超买兑现), 风控性卖出优先于进攻' },
+  { type: 'BUY_ADD', name: '加仓', pri: 4, desc: '回踩企稳/沿均线强势, 按金字塔档位顺向加仓' },
+  { type: 'BUY_FIRST', name: '首仓', pri: 5, desc: '三共振入场(趋势/动量/量能), 金字塔第一档建仓' },
+  { type: 'T_BUY', name: '做T买入', pri: 6, desc: '日内回踩布林下轨低吸(最低优先级, 绝不抢跑加仓)' },
 ]
 
 const MODES = [
