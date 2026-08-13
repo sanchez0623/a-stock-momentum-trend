@@ -258,6 +258,11 @@ class TrackedStock(SQLModel, table=True):
     status: str = Field(default="active", index=True)  # active / archived(30天到期或手动)
     archived_at: str = Field(default="")
     archive_reason: str = Field(default="")      # manual / expired
+    # 模拟交易状态机: 首次 BUY_FIRST 模拟建仓, 按持仓视角评估, 卖出平仓结算
+    sim_qty: int = Field(default=0)                # 模拟持仓股数(0=空仓)
+    sim_cost: float = Field(default=0.0)           # 模拟开仓成本(摊薄)
+    sim_open_at: str = Field(default="")
+    sim_realized_pnl: float = Field(default=0.0)   # 累计已实现模拟盈亏(%)
 
 
 class ScorePoint(SQLModel, table=True):
@@ -275,6 +280,11 @@ class ScorePoint(SQLModel, table=True):
     volume_ratio: float = Field(default=0.0)
     signal_type: str = Field(default="")  # 采样时触发的信号(无则空)
     sample_kind: str = Field(default="")   # pre(盘前) / noon(午间) / after(盘后) / manual
+    # 模拟交易快照(采样时点的状态)
+    sim_qty: int = Field(default=0)          # 采样后模拟持仓股数
+    sim_cost: float = Field(default=0.0)     # 采样后模拟成本
+    sim_pnl: float = Field(default=0.0)      # 模拟盈亏(持有=浮动%, 平仓=该笔实现%)
+    sim_action: str = Field(default="")     # open/add/reduce/close/hold
 
 
 class SignalRecord(SQLModel, table=True):

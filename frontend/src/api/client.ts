@@ -444,6 +444,10 @@ export interface TrackedStock {
   status: string
   archived_at?: string
   archive_reason?: string
+  sim_qty: number
+  sim_cost: number
+  sim_open_at: string
+  sim_realized_pnl: number
   latest?: {
     time: string
     score: number
@@ -451,6 +455,10 @@ export interface TrackedStock {
     stage: string
     signal_type: string
     sample_kind: string
+    sim_qty: number
+    sim_cost: number
+    sim_pnl: number
+    sim_action: string
   }
 }
 
@@ -467,6 +475,10 @@ export interface ScorePoint {
   volume_ratio: number
   signal_type: string
   sample_kind: string
+  sim_qty: number
+  sim_cost: number
+  sim_pnl: number
+  sim_action: string
 }
 
 /** 选股条件组合预设(指数池+板块+行业) */

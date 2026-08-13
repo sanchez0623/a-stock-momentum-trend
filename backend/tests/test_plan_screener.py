@@ -455,6 +455,67 @@ def test_tracking_delete_point(tmp_engine):
     assert tr.delete_point(pid) is False  # 已删, 再删 False
 
 
+def test_tracking_sim_state_machine(tmp_engine, monkeypatch):
+    """模拟交易状态机: BUY_FIRST 建仓 -> 有持仓后不再重复 BUY_FIRST -> SELL_STOP 平仓结算."""
+    import asyncio
+
+    from app.core.signals.engine import Signal
+    from app.core.tracking import score_tracker as tr
+
+    tr.track("600000", "浦发银行", 72.0, "launch")
+
+    calls = {"n": 0}
+
+    async def fake_score(symbol, cfg):
+        calls["n"] += 1
+        return {"total": 66.0, "trend_score": 25.0, "momentum_score": 30.0,
+                "volume_score": 11.0, "stage": "launch", "close": 10.0,
+                "volume_ratio": 1.2, "_kline": None}
+
+    monkeypatch.setattr(tr, "_score_symbol", fake_score)
+
+    # ① 第一次采样: 空仓 + BUY_FIRST -> 模拟建仓
+    def fake_eval1(self, symbol, kline_df=None, position=None, **kw):
+        assert position is None  # 空仓视角
+        return Signal(type="BUY_FIRST", symbol=symbol, direction="buy", strength=70.0)
+
+    monkeypatch.setattr(tr.SignalEngine, "evaluate", fake_eval1)
+    r1 = asyncio.run(tr.sample_one("600000"))
+    assert r1["sim_action"] == "open" and r1["sim_qty"] == 100 and r1["sim_cost"] == 10.0
+
+    # ② 第二次采样: 已持仓 -> 传入模拟持仓视角; 若引擎仍报 BUY_FIRST 应被忽略(不重复建仓)
+    def fake_eval2(self, symbol, kline_df=None, position=None, **kw):
+        assert position is not None and position.qty == 100  # 持仓视角
+        return Signal(type="BUY_FIRST", symbol=symbol, direction="buy", strength=70.0)
+
+    monkeypatch.setattr(tr.SignalEngine, "evaluate", fake_eval2)
+    r2 = asyncio.run(tr.sample_one("600000"))
+    assert r2["sim_action"] == "hold" and r2["sim_qty"] == 100  # 不重复建仓
+
+    # ③ SELL_STOP -> 全平结算
+    def fake_eval3(self, symbol, kline_df=None, position=None, **kw):
+        return Signal(type="SELL_STOP", symbol=symbol, direction="sell", strength=90.0)
+
+    monkeypatch.setattr(tr.SignalEngine, "evaluate", fake_eval3)
+    async def fake_score3(symbol, cfg):
+        return {"total": 50.0, "trend_score": 15.0, "momentum_score": 20.0,
+                "volume_score": 15.0, "stage": "exhaust", "close": 9.5,
+                "volume_ratio": 0.8, "_kline": None}
+
+    monkeypatch.setattr(tr, "_score_symbol", fake_score3)
+    r3 = asyncio.run(tr.sample_one("600000"))
+    assert r3["sim_action"] == "close" and r3["sim_qty"] == 0
+    assert abs(r3["sim_pnl"] - (-5.0)) < 0.01  # (9.5/10-1)*100 = -5%
+
+    # ④ 平仓后可再次开仓
+    def fake_eval4(self, symbol, kline_df=None, position=None, **kw):
+        return Signal(type="BUY_FIRST", symbol=symbol, direction="buy", strength=70.0)
+
+    monkeypatch.setattr(tr.SignalEngine, "evaluate", fake_eval4)
+    r4 = asyncio.run(tr.sample_one("600000"))
+    assert r4["sim_action"] == "open" and r4["sim_qty"] == 100
+
+
 def test_tracking_sample_one_skips_bad_symbol(tmp_engine, monkeypatch):
     """采样: 评分失败(数据不足)的票跳过, 不写入采样点; 正常票写入."""
     from app.core.tracking import score_tracker as tr

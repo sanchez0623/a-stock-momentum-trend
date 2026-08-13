@@ -12,6 +12,9 @@ const STAGE_COLOR: Record<string, string> = {
   launch: '#dc2626', accelerate: '#dc2626', overheat: '#ea580c', exhaust: '#16a34a',
 }
 const KIND_LABEL: Record<string, string> = { pre: '盘前', noon: '午间', after: '盘后', manual: '手动' }
+const SIM_ACTION_LABEL: Record<string, string> = {
+  open: '建仓', add: '加仓', reduce: '减仓', close: '平仓', hold: '持有',
+}
 
 function StockCard({ st }: { st: TrackedStock }) {
   const queryClient = useQueryClient()
@@ -53,6 +56,21 @@ function StockCard({ st }: { st: TrackedStock }) {
         {st.latest && (
           <span className="text-[11px] text-ink-faint">采样 {st.latest.time.slice(5, 16)} ({KIND_LABEL[st.latest.sample_kind] ?? st.latest.sample_kind})</span>
         )}
+        {/* 模拟交易状态 */}
+        <span className="text-[11px]">
+          {st.sim_qty > 0 ? (
+            <>
+              <span className="text-ink-muted">模拟持有 {st.sim_qty}股 @{st.sim_cost.toFixed(2)}</span>
+              {st.latest && (
+                <span className={st.latest.sim_pnl >= 0 ? 'text-rise' : 'text-fall'}>
+                  {' '}{st.latest.sim_pnl >= 0 ? '+' : ''}{st.latest.sim_pnl.toFixed(1)}%
+                </span>
+              )}
+            </>
+          ) : (
+            <span className="text-ink-faint">模拟空仓{st.sim_realized_pnl ? <span className={st.sim_realized_pnl >= 0 ? ' text-rise' : ' text-fall'}> · 累计 {st.sim_realized_pnl >= 0 ? '+' : ''}{st.sim_realized_pnl.toFixed(1)}%</span> : ''}</span>
+          )}
+        </span>
         <span className="ml-auto flex gap-2">
           {st.latest?.signal_type && <Tag color="#9333ea">{st.latest.signal_type}</Tag>}
           <button
@@ -85,6 +103,7 @@ function StockCard({ st }: { st: TrackedStock }) {
                 <th className="px-1 py-1 font-medium">价格</th>
                 <th className="px-1 py-1 font-medium">量比</th>
                 <th className="px-1 py-1 font-medium">信号</th>
+                <th className="px-1 py-1 font-medium">模拟</th>
               </tr>
             </thead>
             <tbody>
@@ -100,6 +119,16 @@ function StockCard({ st }: { st: TrackedStock }) {
                   <td className="px-1 py-1">{p.price.toFixed(2)}</td>
                   <td className="px-1 py-1">{p.volume_ratio.toFixed(2)}</td>
                   <td className="px-1 py-1">{p.signal_type || '-'}</td>
+                  <td className="px-1 py-1">
+                    <span className={p.sim_action === 'open' || p.sim_action === 'add' ? 'text-rise' : p.sim_action === 'close' || p.sim_action === 'reduce' ? 'text-fall' : 'text-ink-faint'}>
+                      {SIM_ACTION_LABEL[p.sim_action] ?? (p.sim_qty > 0 ? '持有' : '-')}
+                    </span>
+                    {p.sim_pnl !== 0 && (
+                      <span className={p.sim_pnl >= 0 ? 'text-rise' : 'text-fall'}>
+                        {' '}{p.sim_pnl >= 0 ? '+' : ''}{p.sim_pnl.toFixed(1)}%
+                      </span>
+                    )}
+                  </td>
                   <td className="px-1 py-1 text-center">
                     <button
                       type="button"

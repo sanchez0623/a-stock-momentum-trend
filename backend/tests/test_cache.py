@@ -120,6 +120,8 @@ async def test_get_kline_force_bypasses_fresh_cache(tmp_engine, monkeypatch):
         return pd.DataFrame(rows)
 
     monkeypatch.setattr(mgr_mod.data_source_manager, "_fetch_kline", fake_fetch)
+    # 固定「新鲜判定」为真: 本测试只验证 force 语义, 与交易时段无关(盘中时段规则下不缓存是设计行为)
+    monkeypatch.setattr(mgr_mod.DataSourceManager, "_intraday_ttl", staticmethod(lambda now, last, upd: True))
 
     # 默认: 缓存根数足够且新鲜(最后日期=今天) -> 直接命中, 不回源
     df = await mgr_mod.data_source_manager.get_kline("600519", "daily", 30)

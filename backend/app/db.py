@@ -63,6 +63,15 @@ def _migrate_columns() -> None:
         ("position", "opened_at", "TEXT DEFAULT ''"),
         ("position", "pyramid_stage", "INTEGER DEFAULT 0"),
         ("klinecache", "updated_at", "TEXT DEFAULT ''"),
+        ("notification", "fingerprint", "TEXT DEFAULT ''"),  # AI 助理去重指纹
+        ("trackedstock", "sim_qty", "INTEGER DEFAULT 0"),
+        ("trackedstock", "sim_cost", "REAL DEFAULT 0.0"),
+        ("trackedstock", "sim_open_at", "TEXT DEFAULT ''"),
+        ("trackedstock", "sim_realized_pnl", "REAL DEFAULT 0.0"),
+        ("scorepoint", "sim_qty", "INTEGER DEFAULT 0"),
+        ("scorepoint", "sim_cost", "REAL DEFAULT 0.0"),
+        ("scorepoint", "sim_pnl", "REAL DEFAULT 0.0"),
+        ("scorepoint", "sim_action", "TEXT DEFAULT ''"),
     ]
     added: list[tuple[str, str]] = []
     try:

@@ -19,12 +19,13 @@ from sqlmodel import select
 
 from app import db
 from app.core.config import config_manager
-from app.core.signals.engine import SignalEngine
+from app.core.signals.engine import PositionInfo, SignalEngine
 from app.models.models import ScorePoint, TrackedStock
 
 logger = logging.getLogger(__name__)
 
 OBSERVE_DAYS = 30  # 观察期: 超过自动归档
+SIM_LOT = 100      # 模拟交易每笔股数
 
 
 def _now() -> str:
@@ -93,6 +94,8 @@ def _stock_to_dict(t: TrackedStock) -> dict[str, Any]:
         "symbol": t.symbol, "name": t.name, "track_time": t.track_time,
         "score_at_track": t.score_at_track, "stage_at_track": t.stage_at_track,
         "status": t.status, "archived_at": t.archived_at, "archive_reason": t.archive_reason,
+        "sim_qty": t.sim_qty, "sim_cost": t.sim_cost, "sim_open_at": t.sim_open_at,
+        "sim_realized_pnl": t.sim_realized_pnl,
     }
 
 
@@ -112,6 +115,8 @@ def list_active() -> list[dict[str, Any]]:
                     "time": latest.time, "score": latest.score, "price": latest.price,
                     "stage": latest.stage, "signal_type": latest.signal_type,
                     "sample_kind": latest.sample_kind,
+                    "sim_qty": latest.sim_qty, "sim_cost": latest.sim_cost,
+                    "sim_pnl": latest.sim_pnl, "sim_action": latest.sim_action,
                 }
             out.append(d)
         return out
@@ -127,17 +132,74 @@ def points(symbol: str, limit: int = 200) -> list[dict[str, Any]]:
             "momentum_score": r.momentum_score, "volume_score": r.volume_score,
             "stage": r.stage, "price": r.price, "volume_ratio": r.volume_ratio,
             "signal_type": r.signal_type, "sample_kind": r.sample_kind,
+            "sim_qty": r.sim_qty, "sim_cost": r.sim_cost, "sim_pnl": r.sim_pnl,
+            "sim_action": r.sim_action,
         } for r in rows]
 
 
 async def sample_one(symbol: str, kind: str | None = None) -> dict[str, Any] | None:
-    """单票采样: 评分 + 信号, 写入一条 ScorePoint. 失败返回 None(不阻塞整体)."""
+    """单票采样: 评分 + 按模拟持仓视角评估信号 + 状态机更新. 失败返回 None(不阻塞整体).
+
+    模拟交易状态机: 空仓遇 BUY_FIRST -> 建仓; 持有遇 BUY_ADD -> 顺向加仓;
+    SELL_STOP -> 全平结算; SELL_REDUCE -> 减半; T_BUY/T_SELL 不改变仓位.
+    已持仓时引擎不再报 BUY_FIRST(持仓视角), 避免重复首仓信号.
+    """
     cfg = config_manager.get()
     score = await _score_symbol(symbol, cfg)
     if score is None:
         logger.debug("追踪采样 %s: 评分失败/数据不足, 跳过", symbol)
         return None
-    signal = SignalEngine().evaluate(symbol, kline_df=score.get("_kline"))
+    price = float(score.get("close", 0.0))
+
+    with db.session_scope() as s:
+        stock = s.exec(select(TrackedStock).where(
+            TrackedStock.symbol == symbol, TrackedStock.status == "active"
+        )).first()
+    if stock is None:
+        return None
+    sim = PositionInfo(symbol=symbol, cost=stock.sim_cost, qty=stock.sim_qty)
+    # 按持仓视角评估(无持仓传 None 等价空仓; 有持仓传模拟持仓, 引擎不再报 BUY_FIRST)
+    signal = SignalEngine().evaluate(
+        symbol, kline_df=score.get("_kline"),
+        position=sim if sim.has_position else None,
+    )
+
+    sim_pnl = 0.0
+    sim_action = "hold"
+    if signal and price > 0:
+        st = signal.type
+        if st == "BUY_FIRST" and not sim.has_position:
+            stock.sim_qty = SIM_LOT
+            stock.sim_cost = price
+            stock.sim_open_at = _now()
+            sim_action = "open"
+        elif st == "BUY_ADD" and sim.has_position:
+            total = sim.qty + SIM_LOT
+            stock.sim_cost = (sim.cost * sim.qty + price * SIM_LOT) / total  # 摊薄
+            stock.sim_qty = total
+            sim_action = "add"
+        elif st == "SELL_STOP" and sim.has_position:
+            pnl_pct = (price / sim.cost - 1) * 100
+            stock.sim_realized_pnl = round(stock.sim_realized_pnl + pnl_pct, 2)
+            stock.sim_qty = 0
+            stock.sim_cost = 0.0
+            sim_action = "close"
+            sim_pnl = round(pnl_pct, 2)
+        elif st == "SELL_REDUCE" and sim.has_position:
+            reduce_qty = sim.qty // 2
+            if reduce_qty >= SIM_LOT:  # 减半后至少保留一手
+                pnl_pct = (price / sim.cost - 1) * 100 * (reduce_qty / sim.qty)
+                stock.sim_realized_pnl = round(stock.sim_realized_pnl + pnl_pct, 2)
+                stock.sim_qty = sim.qty - reduce_qty
+                sim_action = "reduce"
+        # T_BUY/T_SELL: 做T不改变模拟仓位, 忽略
+    if stock.sim_qty > 0 and stock.sim_cost > 0 and price > 0:
+        sim_pnl = round((price / stock.sim_cost - 1) * 100, 2)  # 浮动盈亏%
+
+    with db.session_scope() as s:
+        s.add(stock)
+        s.commit()
+        s.refresh(stock)
     # 字段名与 score_indicators 返回对齐(trend_score/momentum_score/volume_score/close)
     rec = ScorePoint(
         symbol=symbol,
@@ -147,10 +209,12 @@ async def sample_one(symbol: str, kind: str | None = None) -> dict[str, Any] | N
         momentum_score=float(score.get("momentum_score", 0.0)),
         volume_score=float(score.get("volume_score", 0.0)),
         stage=str(score.get("stage", "")),
-        price=float(score.get("close", 0.0)),
+        price=price,
         volume_ratio=float(score.get("volume_ratio", 0.0)),
         signal_type=signal.type if signal else "",
         sample_kind=kind or _kind_by_time(),
+        sim_qty=stock.sim_qty, sim_cost=round(stock.sim_cost, 4), sim_pnl=sim_pnl,
+        sim_action=sim_action,
     )
     with db.session_scope() as s:
         s.add(rec)
@@ -160,6 +224,8 @@ async def sample_one(symbol: str, kind: str | None = None) -> dict[str, Any] | N
     return {
         "time": rec.time, "score": rec.score, "price": rec.price,
         "stage": rec.stage, "signal_type": rec.signal_type,
+        "sim_qty": rec.sim_qty, "sim_cost": rec.sim_cost, "sim_pnl": rec.sim_pnl,
+        "sim_action": rec.sim_action,
     }
 
 
