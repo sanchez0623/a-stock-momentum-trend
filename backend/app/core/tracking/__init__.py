@@ -3,6 +3,7 @@
 from app.core.tracking.score_tracker import (  # noqa: F401
     OBSERVE_DAYS,
     archive_expired,
+    delete_point,
     list_active,
     points,
     sample_all,

@@ -61,6 +61,17 @@ def track(symbol: str, name: str = "", score: float = 0.0, stage: str = "") -> d
         return _stock_to_dict(stock)
 
 
+def delete_point(point_id: int) -> bool:
+    """删除单条采样点(误采/异常数据清理). 返回是否删除."""
+    with db.session_scope() as s:
+        row = s.get(ScorePoint, point_id)
+        if row is None:
+            return False
+        s.delete(row)
+        s.commit()
+        return True
+
+
 def stop(symbol: str, reason: str = "manual") -> bool:
     """停止追踪(手动归档)."""
     with db.session_scope() as s:
@@ -112,7 +123,7 @@ def points(symbol: str, limit: int = 200) -> list[dict[str, Any]]:
         rows = s.exec(select(ScorePoint).where(ScorePoint.symbol == symbol)
                       .order_by(ScorePoint.time).limit(limit)).all()
         return [{
-            "time": r.time, "score": r.score, "trend_score": r.trend_score,
+            "id": r.id, "time": r.time, "score": r.score, "trend_score": r.trend_score,
             "momentum_score": r.momentum_score, "volume_score": r.volume_score,
             "stage": r.stage, "price": r.price, "volume_ratio": r.volume_ratio,
             "signal_type": r.signal_type, "sample_kind": r.sample_kind,
@@ -127,15 +138,16 @@ async def sample_one(symbol: str, kind: str | None = None) -> dict[str, Any] | N
         logger.debug("追踪采样 %s: 评分失败/数据不足, 跳过", symbol)
         return None
     signal = SignalEngine().evaluate(symbol, kline_df=score.get("_kline"))
+    # 字段名与 score_indicators 返回对齐(trend_score/momentum_score/volume_score/close)
     rec = ScorePoint(
         symbol=symbol,
         time=_now(),
         score=float(score.get("total", 0.0)),
-        trend_score=float(score.get("trend", 0.0)),
-        momentum_score=float(score.get("momentum", 0.0)),
-        volume_score=float(score.get("volume", 0.0)),
+        trend_score=float(score.get("trend_score", 0.0)),
+        momentum_score=float(score.get("momentum_score", 0.0)),
+        volume_score=float(score.get("volume_score", 0.0)),
         stage=str(score.get("stage", "")),
-        price=float(score.get("price", 0.0)),
+        price=float(score.get("close", 0.0)),
         volume_ratio=float(score.get("volume_ratio", 0.0)),
         signal_type=signal.type if signal else "",
         sample_kind=kind or _kind_by_time(),
@@ -143,6 +155,8 @@ async def sample_one(symbol: str, kind: str | None = None) -> dict[str, Any] | N
     with db.session_scope() as s:
         s.add(rec)
         s.commit()
+        s.refresh(rec)
+        s.expunge(rec)  # 脱离 session, 避免关闭后访问 rec 触发 DetachedInstanceError
     return {
         "time": rec.time, "score": rec.score, "price": rec.price,
         "stage": rec.stage, "signal_type": rec.signal_type,
@@ -207,5 +221,5 @@ def archive_expired() -> int:
 
 __all__ = [
     "track", "stop", "list_active", "points", "sample_one", "sample_all",
-    "archive_expired", "OBSERVE_DAYS",
+    "archive_expired", "delete_point", "OBSERVE_DAYS",
 ]

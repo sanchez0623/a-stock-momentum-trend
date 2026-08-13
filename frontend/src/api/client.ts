@@ -128,6 +128,7 @@ export const api = {
   trackingAdd: (body: { symbol: string; name?: string; score?: number; stage?: string }) =>
     request<{ symbol: string; score_at_track: number }>('/tracking', { method: 'POST', body: JSON.stringify(body) }),
   trackingRemove: (symbol: string) => request<{ ok: boolean }>(`/tracking/${symbol}`, { method: 'DELETE' }),
+  trackingDeletePoint: (pointId: number) => request<{ ok: boolean }>(`/tracking/points/${pointId}`, { method: 'DELETE' }),
   trackingList: () => request<{ items: TrackedStock[] }>('/tracking'),
   trackingPoints: (symbol: string) => request<{ items: ScorePoint[] }>(`/tracking/points/${symbol}`),
   trackingSampleNow: () => request<{ total: number; ok: number; failed: number }>('/tracking/sample-now', { method: 'POST' }),
@@ -455,6 +456,7 @@ export interface TrackedStock {
 
 /** 得分追踪: 采样点 */
 export interface ScorePoint {
+  id: number
   time: string
   score: number
   trend_score: number

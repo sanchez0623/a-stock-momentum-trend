@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 from app.core.tracking import (
     archive_expired,
+    delete_point,
     list_active,
     points,
     sample_all,
@@ -29,6 +30,13 @@ async def tracking_add(body: TrackBody) -> dict:
     """从选股结果添加追踪(已活跃追踪不重复)."""
     d = track(body.symbol, body.name, body.score, body.stage)
     return {"code": 0, "msg": "已加入得分追踪", "data": d}
+
+
+@router.delete("/points/{point_id}")
+async def tracking_point_delete(point_id: int) -> dict:
+    """删除单条采样点(误采/异常数据清理). 注意: 必须先于 /{symbol} 注册, 否则被通配拦截."""
+    ok = delete_point(point_id)
+    return {"code": 0 if ok else 1, "msg": "已删除采样点" if ok else "采样点不存在", "data": {"ok": ok}}
 
 
 @router.delete("/{symbol}")

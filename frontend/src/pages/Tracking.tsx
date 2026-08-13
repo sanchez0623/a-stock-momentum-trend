@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
 import type { ScorePoint, TrackedStock } from '../api/client'
-import { Button, Card, EmptyState, Loading, PageHeader, Tag, toast } from '../components/ui'
+import { Button, Card, ConfirmDialog, EmptyState, Loading, PageHeader, Tag, toast } from '../components/ui'
 import { ScoreChart } from '../components/charts/ScoreChart'
 
 const STAGE_LABEL: Record<string, string> = {
@@ -14,7 +14,9 @@ const STAGE_COLOR: Record<string, string> = {
 const KIND_LABEL: Record<string, string> = { pre: '盘前', noon: '午间', after: '盘后', manual: '手动' }
 
 function StockCard({ st }: { st: TrackedStock }) {
+  const queryClient = useQueryClient()
   const [expanded, setExpanded] = useState(false)
+  const [delPoint, setDelPoint] = useState<ScorePoint | null>(null) // 删除单条采样(二次确认)
   const { data: pts = [] } = useQuery({
     queryKey: ['tracking', 'points', st.symbol],
     queryFn: () => api.trackingPoints(st.symbol),
@@ -98,10 +100,33 @@ function StockCard({ st }: { st: TrackedStock }) {
                   <td className="px-1 py-1">{p.price.toFixed(2)}</td>
                   <td className="px-1 py-1">{p.volume_ratio.toFixed(2)}</td>
                   <td className="px-1 py-1">{p.signal_type || '-'}</td>
+                  <td className="px-1 py-1 text-center">
+                    <button
+                      type="button"
+                      onClick={() => setDelPoint(p)}
+                      className="cursor-pointer border-none bg-transparent text-[10px] text-ink-faint hover:text-rise"
+                    >
+                      删除
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
+          {delPoint && (
+            <ConfirmDialog
+              title="删除采样点"
+              message={`确定删除 ${delPoint.time.slice(5, 16)} 的采样(得分 ${delPoint.score.toFixed(1)} / 价格 ${delPoint.price.toFixed(2)})？删除后无法恢复。`}
+              confirmText="删除"
+              onConfirm={async () => {
+                await api.trackingDeletePoint(delPoint.id as number)
+                toast.success('采样点已删除')
+                setDelPoint(null)
+                queryClient.invalidateQueries({ queryKey: ['tracking', 'points', st.symbol] })
+              }}
+              onCancel={() => setDelPoint(null)}
+            />
+          )}
         </div>
       )}
     </Card>

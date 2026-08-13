@@ -435,6 +435,26 @@ def test_tracking_add_list_stop_archive(tmp_engine):
     assert tr.list_active() == []
 
 
+def test_tracking_delete_point(tmp_engine):
+    """删除单条采样点: 存在则删, 不存在返回 False."""
+    from app.core.tracking import score_tracker as tr
+
+    tr.track("600000", "浦发银行", 72.0, "launch")
+    from app.models.models import ScorePoint
+
+    with db.session_scope() as s:
+        p = ScorePoint(symbol="600000", time="2026-08-11 12:30:00", score=70.5, stage="launch",
+                       price=10.2, volume_ratio=1.3, sample_kind="noon")
+        s.add(p)
+        s.commit()
+        s.refresh(p)
+        pid = p.id
+    assert len(tr.points("600000")) == 1
+    assert tr.delete_point(pid) is True
+    assert tr.points("600000") == []
+    assert tr.delete_point(pid) is False  # 已删, 再删 False
+
+
 def test_tracking_sample_one_skips_bad_symbol(tmp_engine, monkeypatch):
     """采样: 评分失败(数据不足)的票跳过, 不写入采样点; 正常票写入."""
     from app.core.tracking import score_tracker as tr
