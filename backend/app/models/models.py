@@ -263,6 +263,7 @@ class TrackedStock(SQLModel, table=True):
     sim_cost: float = Field(default=0.0)           # 模拟开仓成本(摊薄)
     sim_open_at: str = Field(default="")
     sim_realized_pnl: float = Field(default=0.0)   # 累计已实现模拟盈亏(%)
+    sim_last_action_date: str = Field(default="")  # 最近一次模拟动作的日期(同日去重: 一天最多一个动作)
 
 
 class ScorePoint(SQLModel, table=True):

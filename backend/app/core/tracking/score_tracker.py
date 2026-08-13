@@ -166,23 +166,29 @@ async def sample_one(symbol: str, kind: str | None = None) -> dict[str, Any] | N
 
     sim_pnl = 0.0
     sim_action = "hold"
-    if signal and price > 0:
+    today = _now()[:10]
+    # 当日去重: 同一天只执行第一个模拟动作(日线信号一天只该有一次决策), 后续采样仅更新浮盈
+    acted_today = stock.sim_last_action_date == today
+    if signal and price > 0 and not acted_today:
         st = signal.type
         if st == "BUY_FIRST" and not sim.has_position:
             stock.sim_qty = SIM_LOT
             stock.sim_cost = price
             stock.sim_open_at = _now()
+            stock.sim_last_action_date = today
             sim_action = "open"
         elif st == "BUY_ADD" and sim.has_position:
             total = sim.qty + SIM_LOT
             stock.sim_cost = (sim.cost * sim.qty + price * SIM_LOT) / total  # 摊薄
             stock.sim_qty = total
+            stock.sim_last_action_date = today
             sim_action = "add"
         elif st == "SELL_STOP" and sim.has_position:
             pnl_pct = (price / sim.cost - 1) * 100
             stock.sim_realized_pnl = round(stock.sim_realized_pnl + pnl_pct, 2)
             stock.sim_qty = 0
             stock.sim_cost = 0.0
+            stock.sim_last_action_date = today
             sim_action = "close"
             sim_pnl = round(pnl_pct, 2)
         elif st == "SELL_REDUCE" and sim.has_position:
@@ -191,6 +197,7 @@ async def sample_one(symbol: str, kind: str | None = None) -> dict[str, Any] | N
                 pnl_pct = (price / sim.cost - 1) * 100 * (reduce_qty / sim.qty)
                 stock.sim_realized_pnl = round(stock.sim_realized_pnl + pnl_pct, 2)
                 stock.sim_qty = sim.qty - reduce_qty
+                stock.sim_last_action_date = today
                 sim_action = "reduce"
         # T_BUY/T_SELL: 做T不改变模拟仓位, 忽略
     if stock.sim_qty > 0 and stock.sim_cost > 0 and price > 0:

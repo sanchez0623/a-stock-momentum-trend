@@ -68,6 +68,7 @@ def _migrate_columns() -> None:
         ("trackedstock", "sim_cost", "REAL DEFAULT 0.0"),
         ("trackedstock", "sim_open_at", "TEXT DEFAULT ''"),
         ("trackedstock", "sim_realized_pnl", "REAL DEFAULT 0.0"),
+        ("trackedstock", "sim_last_action_date", "TEXT DEFAULT ''"),
         ("scorepoint", "sim_qty", "INTEGER DEFAULT 0"),
         ("scorepoint", "sim_cost", "REAL DEFAULT 0.0"),
         ("scorepoint", "sim_pnl", "REAL DEFAULT 0.0"),

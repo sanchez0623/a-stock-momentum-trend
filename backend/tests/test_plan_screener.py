@@ -483,16 +483,25 @@ def test_tracking_sim_state_machine(tmp_engine, monkeypatch):
     r1 = asyncio.run(tr.sample_one("600000"))
     assert r1["sim_action"] == "open" and r1["sim_qty"] == 100 and r1["sim_cost"] == 10.0
 
-    # ② 第二次采样: 已持仓 -> 传入模拟持仓视角; 若引擎仍报 BUY_FIRST 应被忽略(不重复建仓)
+    # ② 第二次采样(同一天): 已持仓 -> 传入模拟持仓视角; 即使引擎报 BUY_FIRST 也被当日去重拦截(一天只一个动作)
     def fake_eval2(self, symbol, kline_df=None, position=None, **kw):
         assert position is not None and position.qty == 100  # 持仓视角
         return Signal(type="BUY_FIRST", symbol=symbol, direction="buy", strength=70.0)
 
     monkeypatch.setattr(tr.SignalEngine, "evaluate", fake_eval2)
     r2 = asyncio.run(tr.sample_one("600000"))
-    assert r2["sim_action"] == "hold" and r2["sim_qty"] == 100  # 不重复建仓
+    assert r2["sim_action"] == "hold" and r2["sim_qty"] == 100  # 同日去重, 不重复建仓
 
-    # ③ SELL_STOP -> 全平结算
+    # ③ 次日(清除当日去重标记) SELL_STOP -> 全平结算
+    from app.models.models import TrackedStock
+    from sqlmodel import select
+
+    with db.session_scope() as s:
+        st = s.exec(select(TrackedStock).where(TrackedStock.symbol == "600000")).first()
+        st.sim_last_action_date = "2020-01-01"  # 模拟次日
+        s.add(st)
+        s.commit()
+
     def fake_eval3(self, symbol, kline_df=None, position=None, **kw):
         return Signal(type="SELL_STOP", symbol=symbol, direction="sell", strength=90.0)
 
@@ -507,7 +516,13 @@ def test_tracking_sim_state_machine(tmp_engine, monkeypatch):
     assert r3["sim_action"] == "close" and r3["sim_qty"] == 0
     assert abs(r3["sim_pnl"] - (-5.0)) < 0.01  # (9.5/10-1)*100 = -5%
 
-    # ④ 平仓后可再次开仓
+    # ④ 次日(清除当日去重标记): 平仓后可再次开仓
+    with db.session_scope() as s:
+        st = s.exec(select(TrackedStock).where(TrackedStock.symbol == "600000")).first()
+        st.sim_last_action_date = "2020-01-01"  # 模拟次日
+        s.add(st)
+        s.commit()
+
     def fake_eval4(self, symbol, kline_df=None, position=None, **kw):
         return Signal(type="BUY_FIRST", symbol=symbol, direction="buy", strength=70.0)
 
