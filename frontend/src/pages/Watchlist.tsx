@@ -40,6 +40,8 @@ export default function Watchlist() {
   const [confirmDel, setConfirmDel] = useState<string | null>(null)
   // 强制录入确认(加仓价低于成本时弹出)
   const [forceConfirm, setForceConfirm] = useState(false)
+  // 卖出快捷入口(点持仓行「卖出」弹出, 复用后端 reduce/close 逻辑)
+  const [sellTarget, setSellTarget] = useState<PositionItem | null>(null)
 
   // 自选/持仓/账户: 每 10s 轮询(react-query 统一管理缓存/去重/清理)
   const { data: watch = [], isLoading } = useQuery({
@@ -176,7 +178,7 @@ export default function Watchlist() {
             ) : (
               <div>
                 {portfolio.positions.map((p) => (
-                  <PosRow key={p.symbol} p={p} onChanged={refresh} />
+                  <PosRow key={p.symbol} p={p} onChanged={refresh} onSell={setSellTarget} />
                 ))}
                 <div className="flex justify-between pt-2.5 text-[13px] font-semibold">
                   <span>合计盈亏</span>
@@ -251,6 +253,97 @@ export default function Watchlist() {
           onCancel={() => setForceConfirm(false)}
         />
       )}
+      {/* 卖出快捷入口(点持仓行「卖出」弹出; 复用后端 reduce/close 逻辑) */}
+      {sellTarget && (
+        <SellDialog
+          p={sellTarget}
+          onDone={() => {
+            setSellTarget(null)
+            refresh()
+          }}
+          onClose={() => setSellTarget(null)}
+        />
+      )}
+    </div>
+  )
+}
+
+// 卖出对话框: 减仓/清仓(复用 Trades 页同款后端接口与 T+1 校验)
+function SellDialog({ p, onDone, onClose }: {
+  p: PositionItem
+  onDone: () => void
+  onClose: () => void
+}) {
+  const [mode, setMode] = useState<'reduce' | 'close'>('reduce')
+  const [qty, setQty] = useState('')
+  const [price, setPrice] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const locked = isToday(p.opened_at) // T+1: 今日买入不可减仓(后端亦校验)
+
+  const submit = async () => {
+    setErr('')
+    if (!price || Number(price) <= 0) {
+      setErr('请填写卖出价格')
+      return
+    }
+    if (mode === 'reduce' && (!qty || Number(qty) <= 0)) {
+      setErr('请填写减仓数量')
+      return
+    }
+    setBusy(true)
+    try {
+      if (mode === 'close') {
+        const r = await api.closePosition(p.symbol, Number(price))
+        toast.success(`已清仓 ${p.symbol}${r.realized_pnl ? `, 实现盈亏 ¥${r.realized_pnl.toLocaleString('zh-CN', { maximumFractionDigits: 0 })}` : ''}`)
+      } else {
+        const r = await api.reducePosition(p.symbol, Number(qty), Number(price))
+        toast.success(`已减仓 ${p.symbol} ${qty} 股${r.realized_pnl ? `, 实现盈亏 ¥${r.realized_pnl.toLocaleString('zh-CN', { maximumFractionDigits: 0 })}` : ''}`)
+      }
+      onDone()
+    } catch (e) {
+      setErr(String((e as Error).message))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30" onClick={onClose}>
+      <div className="w-80 rounded-lg border border-line bg-white p-4 shadow-cardHover" onClick={(e) => e.stopPropagation()}>
+        <div className="mb-2 text-[14px] font-semibold">
+          卖出 {p.name} <span className="font-normal text-ink-faint">{p.symbol}</span>
+        </div>
+        <div className="mb-3 text-[11px] text-ink-muted">当前持仓 {p.qty} 股 · 成本 {p.cost.toFixed(2)}(含费) · 现价 {p.price.toFixed(2)}</div>
+        <div className="mb-3 flex gap-2">
+          <Button kind={mode === 'reduce' ? 'primary' : 'ghost'} className="h-7 flex-1 px-2 text-[12px]" onClick={() => setMode('reduce')}>
+            减仓
+          </Button>
+          <Button kind={mode === 'close' ? 'primary' : 'ghost'} className="h-7 flex-1 px-2 text-[12px]" onClick={() => setMode('close')}>
+            清仓
+          </Button>
+        </div>
+        {mode === 'reduce' && (
+          <div className="mb-3">
+            <Field label={`减仓数量(最多 ${p.qty} 股)`}>
+              <input style={inputStyle} type="number" value={qty} onChange={(e) => setQty(e.target.value)} placeholder={String(p.qty)} />
+            </Field>
+          </div>
+        )}
+        <div className="mb-3">
+          <Field label="卖出价格">
+            <input style={inputStyle} type="number" value={price} onChange={(e) => setPrice(e.target.value)} placeholder={String(p.price)} />
+          </Field>
+        </div>
+        {locked && <div className="mb-2 text-[11px] text-[#d48806]">T+1: 今日买入, 后端将拒绝卖出(明日可操作)</div>}
+        {err && <div className="mb-2 text-[11px] text-rise">{err}</div>}
+        <div className="flex justify-end gap-2">
+          <Button kind="ghost" className="h-7 px-3 text-[12px]" onClick={onClose}>取消</Button>
+          <Button kind="danger" className="h-7 px-3 text-[12px]" onClick={submit} disabled={busy || locked}>
+            {busy ? '提交中...' : mode === 'close' ? '确认清仓' : '确认减仓'}
+          </Button>
+        </div>
+      </div>
     </div>
   )
 }
@@ -278,7 +371,11 @@ function WatchRow({ symbol, name, quote, onRemove }: {
   )
 }
 
-function PosRow({ p, onChanged }: { p: PositionItem; onChanged: () => void }) {
+function PosRow({ p, onChanged, onSell }: {
+  p: PositionItem
+  onChanged: () => void
+  onSell: (p: PositionItem) => void
+}) {
   const [editing, setEditing] = useState(false)
   const [val, setVal] = useState(toLocalInput(p.opened_at))
   const [saving, setSaving] = useState(false)
@@ -343,6 +440,12 @@ function PosRow({ p, onChanged }: { p: PositionItem; onChanged: () => void }) {
             <span>{p.opened_at || '—'}</span>
             <button className="cursor-pointer border-none bg-transparent text-[11px] text-ink hover:underline" onClick={startEdit}>
               修改
+            </button>
+            <button
+              className="cursor-pointer border-none bg-transparent text-[11px] text-fall hover:underline"
+              onClick={() => onSell(p)}
+            >
+              卖出
             </button>
             {locked && <Tag color="#d48806">T+1 今日买入·不可减仓</Tag>}
           </>
