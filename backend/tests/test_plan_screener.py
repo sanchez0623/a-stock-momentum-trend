@@ -481,16 +481,16 @@ def test_tracking_sim_state_machine(tmp_engine, monkeypatch):
 
     monkeypatch.setattr(tr.SignalEngine, "evaluate", fake_eval1)
     r1 = asyncio.run(tr.sample_one("600000"))
-    assert r1["sim_action"] == "open" and r1["sim_qty"] == 100 and r1["sim_cost"] == 10.0
+    assert r1["sim_action"] == "open" and r1["sim_qty"] == 10000 and r1["sim_cost"] == 10.0
 
     # ② 第二次采样(同一天): 已持仓 -> 传入模拟持仓视角; 即使引擎报 BUY_FIRST 也被当日去重拦截(一天只一个动作)
     def fake_eval2(self, symbol, kline_df=None, position=None, **kw):
-        assert position is not None and position.qty == 100  # 持仓视角
+        assert position is not None and position.qty == 10000  # 持仓视角
         return Signal(type="BUY_FIRST", symbol=symbol, direction="buy", strength=70.0)
 
     monkeypatch.setattr(tr.SignalEngine, "evaluate", fake_eval2)
     r2 = asyncio.run(tr.sample_one("600000"))
-    assert r2["sim_action"] == "hold" and r2["sim_qty"] == 100  # 同日去重, 不重复建仓
+    assert r2["sim_action"] == "hold" and r2["sim_qty"] == 10000  # 同日去重, 不重复建仓
 
     # ③ 次日(清除当日去重标记) SELL_STOP -> 全平结算
     from app.models.models import TrackedStock
@@ -522,13 +522,14 @@ def test_tracking_sim_state_machine(tmp_engine, monkeypatch):
         st.sim_last_action_date = "2020-01-01"  # 模拟次日
         s.add(st)
         s.commit()
+    monkeypatch.setattr(tr, "_score_symbol", fake_score)  # 恢复 10 元价格
 
     def fake_eval4(self, symbol, kline_df=None, position=None, **kw):
         return Signal(type="BUY_FIRST", symbol=symbol, direction="buy", strength=70.0)
 
     monkeypatch.setattr(tr.SignalEngine, "evaluate", fake_eval4)
     r4 = asyncio.run(tr.sample_one("600000"))
-    assert r4["sim_action"] == "open" and r4["sim_qty"] == 100
+    assert r4["sim_action"] == "open" and r4["sim_qty"] == 10000
 
 
 def test_tracking_sample_one_skips_bad_symbol(tmp_engine, monkeypatch):
@@ -703,3 +704,4 @@ def test_screener_history_roundtrip(tmp_engine):
     assert delete_scan_history(hid) is True
     assert get_scan_history(hid) is None
     assert delete_scan_history(hid) is False  # 重复删除返回 False
+

@@ -25,7 +25,50 @@ from app.models.models import ScorePoint, TrackedStock
 logger = logging.getLogger(__name__)
 
 OBSERVE_DAYS = 30  # 观察期: 超过自动归档
-SIM_LOT = 100      # 模拟交易每笔股数
+SIM_AMOUNT = 100_000  # 模拟交易每笔金额(元): 按一个股票 10w 买入更真实
+
+
+def _sim_lot_qty(price: float, symbol: str) -> int:
+    """模拟每笔按 SIM_AMOUNT 金额买入, 按板块申报规则取整(至少一手)."""
+    from app.core.lot_rules import min_buy_unit, round_buy_qty
+
+    qty = round_buy_qty(int(SIM_AMOUNT / price) if price > 0 else 0, symbol)
+    return max(qty, min_buy_unit(symbol))
+
+
+def _sim_transition(qty: int, cost: float, realized: float, last_action_date: str,
+                    signal_type: str, price: float, symbol: str, today: str) -> dict[str, Any]:
+    """模拟交易状态机纯函数(采样与历史回放共用): 输入当前状态+信号 -> 新状态+动作+盈亏.
+
+    当日去重: 同一天只执行第一个动作(日线信号粒度); 浮动盈亏随价格更新.
+    """
+    out: dict[str, Any] = {"qty": qty, "cost": cost, "realized": realized,
+                           "last_action_date": last_action_date, "action": "hold", "pnl": 0.0}
+    acted = last_action_date == today
+    if signal_type and price > 0 and not acted:
+        if signal_type == "BUY_FIRST" and qty <= 0:
+            lot = _sim_lot_qty(price, symbol)
+            out.update(qty=lot, cost=price, last_action_date=today, action="open")
+        elif signal_type == "BUY_ADD" and qty > 0:
+            lot = _sim_lot_qty(price, symbol)
+            out.update(cost=(cost * qty + price * lot) / (qty + lot),  # 摊薄
+                       qty=qty + lot, last_action_date=today, action="add")
+        elif signal_type == "SELL_STOP" and qty > 0 and cost > 0:
+            pnl_pct = (price / cost - 1) * 100
+            out.update(qty=0, cost=0.0, realized=round(realized + pnl_pct, 2),
+                       last_action_date=today, action="close", pnl=round(pnl_pct, 2))
+        elif signal_type == "SELL_REDUCE" and qty > 0 and cost > 0:
+            from app.core.lot_rules import min_buy_unit
+
+            reduce_qty = qty // 2
+            if reduce_qty >= min_buy_unit(symbol):  # 减半后至少保留一手
+                pnl_pct = (price / cost - 1) * 100 * (reduce_qty / qty)
+                out.update(qty=qty - reduce_qty, realized=round(realized + pnl_pct, 2),
+                           last_action_date=today, action="reduce")
+        # T_BUY/T_SELL: 做T不改变模拟仓位, 忽略
+    if out["qty"] > 0 and out["cost"] > 0 and price > 0:
+        out["pnl"] = round((price / out["cost"] - 1) * 100, 2)  # 浮动盈亏%
+    return out
 
 
 def _now() -> str:
@@ -163,45 +206,19 @@ async def sample_one(symbol: str, kind: str | None = None) -> dict[str, Any] | N
         symbol, kline_df=score.get("_kline"),
         position=sim if sim.has_position else None,
     )
-
-    sim_pnl = 0.0
-    sim_action = "hold"
+    # 状态机(纯函数): 含当日去重, 一天最多一个动作
     today = _now()[:10]
-    # 当日去重: 同一天只执行第一个模拟动作(日线信号一天只该有一次决策), 后续采样仅更新浮盈
-    acted_today = stock.sim_last_action_date == today
-    if signal and price > 0 and not acted_today:
-        st = signal.type
-        if st == "BUY_FIRST" and not sim.has_position:
-            stock.sim_qty = SIM_LOT
-            stock.sim_cost = price
-            stock.sim_open_at = _now()
-            stock.sim_last_action_date = today
-            sim_action = "open"
-        elif st == "BUY_ADD" and sim.has_position:
-            total = sim.qty + SIM_LOT
-            stock.sim_cost = (sim.cost * sim.qty + price * SIM_LOT) / total  # 摊薄
-            stock.sim_qty = total
-            stock.sim_last_action_date = today
-            sim_action = "add"
-        elif st == "SELL_STOP" and sim.has_position:
-            pnl_pct = (price / sim.cost - 1) * 100
-            stock.sim_realized_pnl = round(stock.sim_realized_pnl + pnl_pct, 2)
-            stock.sim_qty = 0
-            stock.sim_cost = 0.0
-            stock.sim_last_action_date = today
-            sim_action = "close"
-            sim_pnl = round(pnl_pct, 2)
-        elif st == "SELL_REDUCE" and sim.has_position:
-            reduce_qty = sim.qty // 2
-            if reduce_qty >= SIM_LOT:  # 减半后至少保留一手
-                pnl_pct = (price / sim.cost - 1) * 100 * (reduce_qty / sim.qty)
-                stock.sim_realized_pnl = round(stock.sim_realized_pnl + pnl_pct, 2)
-                stock.sim_qty = sim.qty - reduce_qty
-                stock.sim_last_action_date = today
-                sim_action = "reduce"
-        # T_BUY/T_SELL: 做T不改变模拟仓位, 忽略
-    if stock.sim_qty > 0 and stock.sim_cost > 0 and price > 0:
-        sim_pnl = round((price / stock.sim_cost - 1) * 100, 2)  # 浮动盈亏%
+    st = _sim_transition(stock.sim_qty, stock.sim_cost, stock.sim_realized_pnl,
+                         stock.sim_last_action_date, signal.type if signal else "",
+                         price, symbol, today)
+    stock.sim_qty = st["qty"]
+    stock.sim_cost = round(st["cost"], 4)
+    stock.sim_realized_pnl = st["realized"]
+    stock.sim_last_action_date = st["last_action_date"]
+    if st["action"] == "open":
+        stock.sim_open_at = _now()
+    sim_pnl = st["pnl"]
+    sim_action = st["action"]
 
     with db.session_scope() as s:
         s.add(stock)
