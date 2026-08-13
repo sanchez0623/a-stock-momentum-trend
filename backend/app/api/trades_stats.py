@@ -26,6 +26,13 @@ class ReduceBody(BaseModel):
     reason: str = ""
 
 
+class CloseBody(BaseModel):
+    """清仓: 数量取持仓全部, 无需 qty 字段(reduce 的 qty=0 会触发 ge=1 校验)."""
+
+    price: float = Field(gt=0)
+    reason: str = "清仓"
+
+
 class TradeBody(BaseModel):
     symbol: str
     name: str = ""
@@ -104,7 +111,7 @@ async def reduce_position(symbol: str, body: ReduceBody, session: Session = Depe
 
 
 @router.post("/positions/{symbol}/close")
-async def close_position(symbol: str, body: ReduceBody, session: Session = Depends(get_session)) -> dict:
+async def close_position(symbol: str, body: CloseBody, session: Session = Depends(get_session)) -> dict:
     try:
         pnl = position_manager.close(symbol, body.price, body.reason, session)
         return {"code": 0, "msg": "清仓成功", "data": {"realized_pnl": pnl}}

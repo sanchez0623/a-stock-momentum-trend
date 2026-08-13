@@ -159,7 +159,7 @@ export const api = {
   reducePosition: (symbol: string, qty: number, price: number, reason = '') =>
     request<{ realized_pnl: number }>(`/positions/${symbol}/reduce`, { method: 'POST', body: JSON.stringify({ qty, price, reason }) }),
   closePosition: (symbol: string, price: number, reason = '清仓') =>
-    request<{ realized_pnl: number }>(`/positions/${symbol}/close`, { method: 'POST', body: JSON.stringify({ qty: 0, price, reason }) }),
+    request<{ realized_pnl: number }>(`/positions/${symbol}/close`, { method: 'POST', body: JSON.stringify({ price, reason }) }),
   statsSummary: () => request<StatsSummary>('/stats/summary'),
   statsEquityCurve: () => request<{ curve: EquityPoint[] }>('/stats/equity-curve'),
   statsMonthly: () => request<{ months: MonthStat[] }>('/stats/monthly-heatmap'),
