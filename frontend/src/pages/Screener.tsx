@@ -355,7 +355,17 @@ export default function Screener() {
       parts.push(h.universe.split(',').map((u) => universeLabelOf(u)).join('+'))
     }
     if (h.board) parts.push(h.board.split(',').map((b) => BOARDS.find((x) => x.value === b)?.label ?? b).join('/'))
-    if (h.industry) parts.push(`${h.industry.split(',').length} 个行业`)
+    // 行业显示实际名称(多值取前 2 个 + 等N个), 提升辨识度
+    if (h.industry) {
+      const inds = h.industry.split(',').filter(Boolean)
+      if (inds.length === 1) {
+        parts.push(inds[0])
+      } else if (inds.length <= 2) {
+        parts.push(inds.join('/'))
+      } else {
+        parts.push(`${inds.slice(0, 2).join('/')} 等${inds.length}个`)
+      }
+    }
     parts.push(`Top${h.top_n}`)
     if (!h.apply_gate) parts.push('闸门关')
     if (!h.apply_factors) parts.push('因子关')
