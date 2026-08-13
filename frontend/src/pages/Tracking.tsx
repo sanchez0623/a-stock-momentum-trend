@@ -161,7 +161,7 @@ export default function Tracking() {
       <PageHeader title="得分追踪" />
       <Card className="mb-3">
         <div className="flex flex-wrap items-center gap-2 text-[12px] text-ink-muted">
-          <span>从「选股」结果点击追踪后, 每日自动采样 3 次得分(盘前 8:50 / 午间 12:30 / 盘后 16:00), 观察得分与股价走势关系, 验证动量筛选的可操作性。</span>
+          <span>从「选股」结果点击追踪后, 每日自动采样 2 次得分(午间 12:30 / 盘后 16:00), 观察得分与股价走势关系, 验证动量筛选的可操作性。</span>
           <Button onClick={sampleNow} disabled={sampling} className="ml-auto h-7 px-2 text-xs">
             {sampling ? '采集中...' : '立即采样'}
           </Button>

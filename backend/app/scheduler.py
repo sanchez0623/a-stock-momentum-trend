@@ -126,8 +126,7 @@ def setup_jobs() -> None:
             coalesce=True,
             max_instances=1,
         )
-    # 得分追踪每日 3 次采样(盘前/午间/盘后)
-    _add_tracking_job("tracking_sample_0850", 8, 50)
+    # 得分追踪每日 2 次采样(午间 12:30 / 盘后 16:00; 盘前 8:50 与盘后数据重复, 已去掉)
     _add_tracking_job("tracking_sample_1230", 12, 30)
     _add_tracking_job("tracking_sample_1600", 16, 0)
     # AI 助理(独立模块): 开关驱动注册/注销, 配置变化热生效
