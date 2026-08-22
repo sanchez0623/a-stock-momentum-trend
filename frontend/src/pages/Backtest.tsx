@@ -283,7 +283,6 @@ const COMPARE_PRESETS: { key: string; label: string; cooldown_days: number; defe
   { key: 'cool', label: '仅冷却10日', cooldown_days: 10, defense: 'off' },
   { key: 'soft', label: '仅软防守', cooldown_days: 0, defense: 'soft' },
   { key: 'full', label: '软防守+冷却10日(当前默认)', cooldown_days: 10, defense: 'soft' },
-  { key: 'hard', label: '硬防守+冷却10日(旧实盘口径)', cooldown_days: 10, defense: 'hard' },
 ]
 const DEFENSE_LABEL: Record<string, string> = { soft: '软防守', hard: '硬防守', off: '关闭' }
 const COMPARE_COLORS = ['#94a3b8', '#0369a1', '#dc2626', '#f59e0b', '#16a34a', '#7c3aed']
@@ -646,7 +645,6 @@ function CompareTab({ taskId, setTaskId }: { taskId: string | null; setTaskId: (
             className="rounded border border-line bg-white px-2 py-1 text-[12px]"
           >
             <option value="soft">软防守</option>
-            <option value="hard">硬防守</option>
             <option value="off">防守关闭</option>
           </select>
           <button className="text-[12px] text-link hover:underline" onClick={addCustom}>+ 添加</button>

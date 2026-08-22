@@ -23,7 +23,6 @@ PRESETS: list[dict[str, Any]] = [
     {"key": "cool", "label": "仅冷却10日", "cooldown_days": 10, "defense": "off"},
     {"key": "soft", "label": "仅软防守", "cooldown_days": 0, "defense": "soft"},
     {"key": "full", "label": "软防守+冷却10日(当前默认)", "cooldown_days": 10, "defense": "soft"},
-    {"key": "hard", "label": "硬防守+冷却10日(旧实盘口径)", "cooldown_days": 10, "defense": "hard"},
 ]
 
 # 请求未指定变体时的默认组合(讲"冷却闸门值多少钱"的故事)
