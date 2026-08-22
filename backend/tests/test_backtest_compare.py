@@ -253,7 +253,49 @@ def test_kline_stats_api(tmp_engine):
     assert data["days_behind"] is not None
 
 
-# ---------------------------------------------------------------- API 端点
+# ---------------------------------------------------------------- API 端点(单任务守卫)
+def test_compare_api_single_task_guard(tmp_engine, monkeypatch):
+    """单任务守卫: 已有 running 任务时拒绝新任务; 僵死任务(>10min 无心跳)自动放行."""
+    from fastapi.testclient import TestClient
+
+    from app.api.backtest import _tasks, _tasks_lock
+    from app.main import app
+
+    _fake_store(monkeypatch, n_syms=6)
+    c = TestClient(app)
+    tid: str | None = None
+    try:
+        # 1. 注入一个"活着"的运行中任务 -> 新任务被拒
+        with _tasks_lock:
+            _tasks["fakealive"] = {"status": "running", "progress": 45, "result": None,
+                                   "error": "", "last_active": time.time()}
+        r = c.post("/api/backtest/strategy-compare", json={"pool_size": 10, "seed": 1})
+        d = r.json()
+        assert d["code"] == 1 and "已有回测任务" in d["msg"]
+
+        # 2. 任务心跳超 10 分钟(僵死) -> 放行新任务, 旧任务标记 error
+        with _tasks_lock:
+            _tasks["fakealive"]["last_active"] = time.time() - 700
+        r2 = c.post("/api/backtest/strategy-compare", json={"pool_size": 10, "seed": 1})
+        d2 = r2.json()
+        assert d2["code"] == 0, d2
+        with _tasks_lock:
+            assert _tasks["fakealive"]["status"] == "error"
+        # 清理: 轮询至新任务完成, 避免污染其他测试
+        tid = d2["data"]["task_id"]
+        for _ in range(120):
+            t = c.get(f"/api/backtest/tasks/{tid}").json()["data"]
+            if t["status"] in ("done", "error"):
+                break
+            time.sleep(0.5)
+    finally:
+        with _tasks_lock:
+            _tasks.pop("fakealive", None)
+            if tid:
+                _tasks.pop(tid, None)
+
+
+
 def test_compare_api(tmp_engine, monkeypatch):
     """API 层: POST /api/backtest/strategy-compare -> task_id -> 轮询至 done."""
     from fastapi.testclient import TestClient

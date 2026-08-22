@@ -313,6 +313,17 @@ async def run_strategy_compare(body: StrategyCompareBody) -> dict:
 
     task_id = uuid.uuid4().hex[:12]
     with _tasks_lock:
+        # 单任务守卫: 同一进程内只允许一个回测在跑(多线程抢 GIL 会互相拖慢到"假死"级).
+        # 僵死任务(>10 分钟无心跳)自动标记 error 放行, 不阻塞新任务.
+        now = time.time()
+        for tid, t in _tasks.items():
+            if t.get("status") != "running":
+                continue
+            if now - t.get("last_active", now) > 600:
+                t["status"] = "error"
+                t["error"] = "任务超时无活动(>10分钟), 已自动放弃"
+                continue
+            return {"code": 1, "msg": f"已有回测任务在运行中({t.get('progress', 0)}%), 请等待完成后再启动", "data": None}
         _tasks[task_id] = {"status": "running", "progress": 0, "result": None,
                            "error": "", "last_active": time.time()}
 
