@@ -45,13 +45,14 @@ def test_ensure_range_first_fetch_writes_snapshot(tmp_engine, monkeypatch):
 
     r = data.backtest_data.ensure_range("600000", "2024-01-01", "2024-06-30")
     assert r["source"] == "baostock"
-    assert r["fetched"] > 0 and r["rows"] == r["fetched"]
+    assert r["fetched"] > 0 and r["row_count"] == r["fetched"]
+    assert len(r["rows"]) == r["row_count"], "rows 应为行数据列表"
     assert len(calls) == 1
     assert calls[0][0] == "600000" and calls[0][1] == "2024-01-01" and calls[0][2] == "2024-06-30"
 
     with data.db.session_scope() as s:
         n = s.exec(select(func.count()).select_from(BacktestKline)).one()
-    assert n == r["rows"]
+    assert n == r["row_count"]
     assert n > 100  # 半年工作日量级
 
 
@@ -64,7 +65,7 @@ def test_frozen_snapshot_no_refetch(tmp_engine, monkeypatch):
     r1 = ds.ensure_range("600000", "2024-01-01", "2024-06-30")
     r2 = ds.ensure_range("600000", "2024-01-01", "2024-06-30")
     assert r2["source"] == "backtest_kline"
-    assert r2["fetched"] == 0 and r2["rows"] == r1["rows"]
+    assert r2["fetched"] == 0 and r2["row_count"] == r1["row_count"]
     assert len(calls) == 1
 
 
@@ -78,7 +79,7 @@ def test_extended_range_refetch_keeps_frozen_prices(tmp_engine, monkeypatch):
     r2 = ds.ensure_range("600000", "2024-01-01", "2024-06-30")   # 第 2 次拉(seed=200)
 
     assert r2["source"] == "baostock"
-    assert r2["rows"] > r1["rows"], "区间扩大后行数应增加"
+    assert r2["row_count"] > r1["row_count"], "区间扩大后行数应增加"
     assert len(calls) == 2
 
     with data.db.session_scope() as s:
@@ -134,7 +135,7 @@ def test_fallback_to_kline_cache(tmp_engine, monkeypatch):
 
     r = data.backtest_data.ensure_range("600000", "2024-01-01", "2024-06-30")
     assert r["source"] == "kline_cache"
-    assert r["rows"] > 100
+    assert r["row_count"] > 100
     assert "未冻结" in r["note"]
 
 
@@ -143,7 +144,7 @@ def test_no_data_any_source(tmp_engine, monkeypatch):
     monkeypatch.setattr(data, "fetch_daily_range",
                         lambda *_a, **_k: pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume", "amount"]))
     r = data.backtest_data.ensure_range("600000", "2024-01-01", "2024-06-30")
-    assert r["source"] == "none" and r["rows"] == 0
+    assert r["source"] == "none" and r["row_count"] == 0
 
 
 def test_warmup_multi_and_status(tmp_engine, monkeypatch):
@@ -184,7 +185,7 @@ def test_load_index_uses_idx_symbol(tmp_engine, monkeypatch):
     monkeypatch.setattr(data, "fetch_daily_range", fetch)
 
     r = data.backtest_data.load_index("0.000300", "2024-01-01", "2024-06-30")
-    assert r["source"] == "baostock" and r["rows"] > 100
+    assert r["source"] == "baostock" and r["row_count"] > 100
     assert calls[0][0] == "idx:0.000300"
     assert calls[0][4] == "0.000300", "secid 应转发给 baostock 指数代码转换"
 

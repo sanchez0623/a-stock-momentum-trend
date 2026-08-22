@@ -114,19 +114,26 @@ class BacktestDataStore:
                      period: str = "daily", adjust: str = ADJUST_DEFAULT,
                      force: bool = False, secid: str | None = None) -> dict[str, Any]:
         """确保 [start, end] 区间数据可用, 返回:
-        {symbol, start, end, rows, source, fetched, note}
+        {symbol, start, end, rows, row_count, source, fetched, note}
+        rows: 行数据(list[dict], 供回测引擎直接消费)
+        row_count: 行数(兼容旧调用方按数量判断)
         source: backtest_kline(冻结快照命中) / baostock(本次补拉) / kline_cache(降级)
         secid: 指数场景传入(如 0.000300), 内部转发给 baostock 指数代码转换.
         """
+
+        def _out(existing: pd.DataFrame | None, source: str, fetched: int, note: str) -> dict[str, Any]:
+            rows = existing.to_dict("records") if existing is not None and not existing.empty else []
+            return {"symbol": symbol, "start": start, "end": end,
+                    "rows": rows, "row_count": len(rows),
+                    "source": source, "fetched": fetched, "note": note}
+
         start, end = resolve_range(start, end)
         if start >= end:
-            return {"symbol": symbol, "start": start, "end": end, "rows": 0,
-                    "source": "empty", "fetched": 0, "note": "区间非法(start>=end)"}
+            return _out(None, "empty", 0, "区间非法(start>=end)")
 
         existing = self.load_range(symbol, start, end, period, adjust)
         if not force and self._covered(existing, start, end):
-            return {"symbol": symbol, "start": start, "end": end, "rows": len(existing),
-                    "source": "backtest_kline", "fetched": 0, "note": "冻结快照命中"}
+            return _out(existing, "backtest_kline", 0, "冻结快照命中")
 
         # ---- 快照缺失/覆盖不足: baostock 整段补拉(已存在日期保留)
         fetched = 0
@@ -142,17 +149,14 @@ class BacktestDataStore:
         if existing is not None and not existing.empty:
             source = "baostock" if fetched > 0 else "backtest_kline"
             note = f"本次补拉 {fetched} 行" if fetched > 0 else "快照已有覆盖, 无新增"
-            return {"symbol": symbol, "start": start, "end": end, "rows": len(existing),
-                    "source": source, "fetched": fetched, "note": note}
+            return _out(existing, source, fetched, note)
 
         # ---- 降级: 实盘缓存(未冻结, 标注风险)
         cached = self._fallback_cache(symbol, start, end, period)
         if cached is not None:
-            return {"symbol": symbol, "start": start, "end": end, "rows": len(cached),
-                    "source": "kline_cache", "fetched": 0,
-                    "note": "baostock 无数据, 降级实盘缓存(未冻结, 可能有复权污染)"}
-        return {"symbol": symbol, "start": start, "end": end, "rows": 0,
-                "source": "none", "fetched": 0, "note": "所有数据源均无数据"}
+            return _out(cached, "kline_cache", 0,
+                        "baostock 无数据, 降级实盘缓存(未冻结, 可能有复权污染)")
+        return _out(None, "none", 0, "所有数据源均无数据")
 
     def _fallback_cache(self, symbol: str, start: str, end: str, period: str) -> pd.DataFrame | None:
         """降级读实盘 kline_cache 区间(仅在 baostock 失败时使用)."""
@@ -241,7 +245,7 @@ class BacktestDataStore:
             r = self.ensure_range(sym, start, end, force=force)
             results[sym] = r
             src_count[r["source"]] = src_count.get(r["source"], 0) + 1
-            total_rows += r["rows"]
+            total_rows += r.get("row_count", 0)
         meta = {
             "start": start, "end": end, "symbols": len(results),
             "source_distribution": src_count, "total_rows": total_rows,

@@ -22,21 +22,25 @@ from __future__ import annotations
 import logging
 import math
 import statistics
+import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
 import pandas as pd
 
+from app.core.backtest.path_sim import DEFAULT_MINUTES, build_intraday_path
 from app.core.config import config_manager
 from app.core.datasource import kline_store
 from app.core.fees import compute_trade_fee
 from app.core.indicators import compute_all
 from app.core.lot_rules import (
-    min_buy_unit as _min_unit,
     round_buy_qty as _round_buy_qty,
+)
+from app.core.lot_rules import (
     sell_qty as _sell_qty,
 )
-from app.core.signals.engine import PositionInfo, Signal, SignalEngine
+from app.core.modes import mode_for_ind
+from app.core.signals.engine import PositionInfo, SignalEngine
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +87,7 @@ class Position:
     qty: int = 0
     cost: float = 0.0          # 加权平均成本(不含费)
     stage: int = 0             # 已用加仓档位(0=首仓已用)
+    peak_price: float = 0.0    # 持仓期间最高收盘价(移动止损用)
 
     @property
     def has_position(self) -> bool:
@@ -105,7 +110,9 @@ class TradeRecord:
 class StrategyBacktest:
     """事件驱动策略回测(单进程, 自选+持仓池规模, 分钟级)."""
 
-    def __init__(self, initial_capital: float = 1_000_000.0) -> None:
+    def __init__(self, initial_capital: float = 1_000_000.0,
+                 intraday_minutes: int = DEFAULT_MINUTES,
+                 defense: str = "soft") -> None:
         self.engine = SignalEngine()
         self.cfg = config_manager.get()
         self.fee_cfg = self.cfg.get("手续费", {})
@@ -114,15 +121,61 @@ class StrategyBacktest:
         self.positions: dict[str, Position] = {}
         self.trades: list[TradeRecord] = []
         self.equity_curve: list[dict[str, Any]] = []
+        # 盘中路径模拟粒度(分钟): 全部信号在构造的日内路径上逐段触发(用户确认口径)
+        self.intraday_minutes = intraday_minutes if intraday_minutes in (5, 10, 15, 30) else DEFAULT_MINUTES
         # 风控状态(独立)
         self.consecutive_losses = 0
         self.peak_equity = self.initial
         self.fuse_date: str | None = None    # 日亏熔断生效日
-        self.defense_mode = False            # 回撤防守
+        # 回撤防守模式: soft=软防守(仓位减半, 修复自动解除, 对齐实盘) /
+        # hard=硬防守(触发后禁开仓只减不加, 不解除, 旧实盘口径) / off=关闭
+        self.defense_kind = defense if defense in ("soft", "hard", "off") else "soft"
+        self.defense_mode = False            # 回撤防守是否触发
+        # 止损冷却(防同票连环接刀): symbol -> 最近一次止损的交易日序号
+        risk = self.cfg.get("风控", {})
+        self.stop_cooldown_days = int(risk.get("stop_cooldown_days", 10))
+        self._drawdown_limit = float(risk.get("max_drawdown_pct", 10.0))
+        self._defense_recovery_ratio = float(risk.get("defense_recovery_ratio", 0.5))
+        self._last_stop_day: dict[str, int] = {}
+        self.cooldown_blocks = 0             # 冷却期拦截的再入场次数(symbol-日口径)
 
     # ------------------------------------------------------------ 辅助
+    def _day_path(self, ind: pd.DataFrame, i: int) -> list[dict[str, float]]:
+        """当日盘中路径(确定性 OHLC 插值, 段数 = 240 / 粒度)."""
+        return build_intraday_path(
+            _f(ind["open"].iloc[i]), _f(ind["high"].iloc[i]),
+            _f(ind["low"].iloc[i]), _f(ind["close"].iloc[i]),
+            minutes=self.intraday_minutes,
+        )
+
     def _pos_info(self, p: Position) -> PositionInfo:
-        return PositionInfo(symbol=p.symbol, cost=p.cost, qty=p.qty)
+        return PositionInfo(symbol=p.symbol, cost=p.cost, qty=p.qty, peak_price=p.peak_price)
+
+    def _cooldown_active(self, symbol: str, day_idx: int) -> bool:
+        """止损冷却: 同票止损后 N 个交易日内不再触发 BUY_FIRST(防连跌中反复接刀)."""
+        if self.stop_cooldown_days <= 0:
+            return False
+        last = self._last_stop_day.get(symbol)
+        return last is not None and (day_idx - last) < self.stop_cooldown_days
+
+    def _update_defense(self, eq: float) -> None:
+        """回撤防守状态(按 defense_kind):
+        - soft: 达阈值开启 -> 仓位减半仍可开仓; 修复至阈值 × defense_recovery_ratio 以下解除
+                (对齐实盘 risk/manager, 回测用滞回近似)
+        - hard: 达阈值开启 -> 禁开仓只减不加, 永不自动解除(旧实盘口径)
+        - off:  关闭, 永不触发
+        """
+        if self.defense_kind == "off":
+            return
+        self.peak_equity = max(self.peak_equity, eq)
+        if self.peak_equity <= 0:
+            return
+        dd = (self.peak_equity - eq) / self.peak_equity * 100
+        if dd >= self._drawdown_limit:
+            self.defense_mode = True
+        elif (self.defense_kind == "soft" and self.defense_mode
+              and dd < self._drawdown_limit * self._defense_recovery_ratio):
+            self.defense_mode = False
 
     def _buy(self, date: str, symbol: str, name: str, price: float, qty: int,
              action: str, reason: str) -> None:
@@ -135,12 +188,13 @@ class StrategyBacktest:
         self.cash -= amount + fee
         p = self.positions.get(symbol)
         if p is None:
-            p = Position(symbol=symbol, name=name)
+            p = Position(symbol=symbol, name=name, peak_price=price)
             self.positions[symbol] = p
         # 加权平均成本(不含费, 与真实系统口径一致: 费用单独计)
         total_cost = p.cost * p.qty + price * qty
         p.qty += qty
         p.cost = total_cost / p.qty if p.qty else 0.0
+        p.peak_price = max(p.peak_price, price)
         self.trades.append(TradeRecord(date, symbol, name, action, price, qty, fee, reason=reason))
 
     def _sell(self, date: str, symbol: str, name: str, price: float, qty: int,
@@ -166,8 +220,14 @@ class StrategyBacktest:
 
     # ------------------------------------------------------------ 主循环
     def run(self, symbols: list[str] | None = None,
-            progress_cb: Callable[[int, int], None] | None = None) -> dict[str, Any]:
-        """运行策略回测. symbols: 股票池(为空=自选+持仓). 返回报告."""
+            progress_cb: Callable[[int, int], None] | None = None,
+            start: str = "", end: str = "") -> dict[str, Any]:
+        """运行策略回测. symbols: 股票池(为空=自选+持仓). 返回报告.
+
+        start/end: 回测区间(YYYY-MM-DD, 含端点; 空=全部本地数据).
+        指标始终用全量数据计算(预热均线/ADX), 只裁剪交易循环区间——
+        窗口起点前的历史自动成为指标预热段, 窗口首日即可正常出信号.
+        """
         if symbols is None:
             symbols = self._default_pool()
         cfg = self.cfg
@@ -178,7 +238,6 @@ class StrategyBacktest:
         max_total = float(risk["total_position_pct"]) / 100.0
         daily_limit = float(risk["daily_loss_limit_pct"])
         loss_limit = int(risk["consecutive_loss_limit"])
-        drawdown_limit = float(risk["max_drawdown_pct"])
         pyramid = list(position_cfg.get("pyramid_ratios", [0.5, 0.3, 0.2]))
 
         # ---- 逐股预计算指标(一次性, 后续逐日判定零成本) + date->idx 映射
@@ -214,170 +273,187 @@ class StrategyBacktest:
 
         # ---- 时间轴: 全部股票交易日并集(停牌/错位自动跳过), 逐日推进
         all_dates = sorted(set().union(*(di.keys() for _, _, di in pool.values())))
+        # 时间范围裁剪(含端点; 指标已全量预热, 只裁交易循环)
+        if start:
+            all_dates = [d for d in all_dates if d >= start[:10]]
+        if end:
+            all_dates = [d for d in all_dates if d <= end[:10]]
+        if not all_dates:
+            return {"error": f"时间范围内无可用交易日({start or '不限'} ~ {end or '不限'})"}
         # 做T 未买回计数(防底仓漂移): symbol -> T_SELL 卖出未买回数量
         t_outstanding: dict[str, int] = {}
         n_days = len(all_dates)
 
-        for day_idx, date in enumerate(all_dates):
-            if progress_cb and (day_idx % 50 == 0 or day_idx == n_days - 1):
+        # 进度上报节流: 每 10 个交易日或每 2 秒一次(先到为准).
+        # 旧版每 50 天一报, 慢变体(如裸奔无冷却交易爆炸)两个进度点间隔可达 20s+,
+        # 服务器上叠加轮询抢 GIL 后更像"卡死"; 时间节流保证静默期 <= 2s.
+        _last_cb = {"t": 0.0, "day": -10}
+
+        def _report(day_idx: int) -> None:
+            if progress_cb is None:
+                return
+            now = time.monotonic()
+            if day_idx - _last_cb["day"] >= 10 or now - _last_cb["t"] >= 2.0 or day_idx == n_days - 1:
+                _last_cb["day"], _last_cb["t"] = day_idx, now
                 progress_cb(day_idx + 1, n_days)
+
+        for day_idx, date in enumerate(all_dates):
+            _report(day_idx)
 
             # ---- 风控闸门(基于昨日状态; 熔断/防守当日立即生效, 次日延续)
             gate_open = self.fuse_date is None or date > self.fuse_date
-            gate_add = gate_open and not self.defense_mode
-            if self.defense_mode:
+            # 回撤防守: soft=仓位上限砍半仍可开仓(对齐实盘) / hard=禁开仓只减不加 / off=无
+            if self.defense_kind == "hard" and self.defense_mode:
                 gate_open = False
+            defense_ratio = 0.5 if (self.defense_kind == "soft" and self.defense_mode) else 1.0
+            gate_add = gate_open
             reduced_ratio = 0.5 if self.consecutive_losses >= loss_limit else 1.0
 
-            # ---- 第一步: 对池内每只股票, 用前一交易日(T-1)收盘判定信号
-            day_signals: list[tuple[str, Signal, float, float, float, float]] = []  # (sym, sig, open, high, low)
-            day_closes: dict[str, float] = {}
+            # ---- 逐票盘中路径推进: 全部信号盘中触发(与持仓回测同口径, 用户确认)
+            # 每段: T-1 收盘指标 + 段内价格(open/high/low/close)调信号引擎, 命中即按段价成交
             for sym, (ind, name, di) in pool.items():
-                i = di.get(date)  # 执行日在个股中的索引
+                i = di.get(date)
                 if i is None or i < MIN_BARS + 1:
                     continue
-                ti = i - 1  # 信号日
-                day_closes[sym] = _f(ind["close"].iloc[i])
+                ti = i - 1  # 信号日(指标只算到 T-1 收盘, 无前视)
                 if ti < MIN_BARS:
                     continue
-                pos = self.positions.get(sym)
-                pos_info = self._pos_info(pos) if pos else PositionInfo(symbol=sym)
-                sig = self.engine.evaluate_with_ind(
-                    symbol=sym, name=name, ind=ind, position=pos_info,
-                    quote_price=None, quote_high=None, quote_low=None, end=ti,
-                )
-                if sig is None:
-                    continue
-                day_signals.append((
-                    sym, sig,
-                    _f(ind["open"].iloc[i]), _f(ind["high"].iloc[i]), _f(ind["low"].iloc[i]),
-                ))
-
-            # ---- 第二步: 执行(先卖后买, 同日内多信号按类型排序)
-            day_closes.setdefault("", 0.0)
-            # 卖出类优先(释放资金), 买入类其次, 做T 最后
-            sell_types = {"SELL_STOP", "SELL_REDUCE", "T_SELL"}
-            buy_types = {"BUY_FIRST", "BUY_ADD", "T_BUY"}
-            day_signals.sort(key=lambda x: (0 if x[1].type in sell_types else (1 if x[1].type in buy_types else 2),
-                                            x[1].type))
-
-            for sym, sig, open_px, high_px, low_px in day_signals:
-                stype = sig.type
-                name = pool[sym][1]
-                pos = self.positions.get(sym)
-                di_sym = pool[sym][2]
-                idx_now = di_sym[date]  # 执行日索引(第一步已确认存在)
-                prev_close = _f(pool[sym][0]["close"].iloc[idx_now - 1]) if idx_now >= 1 else 0.0
+                prev_close = _f(ind["close"].iloc[ti])
                 limit = _limit_pct(sym)
                 up_limit = prev_close * (1 + limit) if prev_close > 0 else 1e18
                 down_limit = prev_close * (1 - limit) if prev_close > 0 else 0.0
-                # 涨停不可买 / 跌停不可卖
-                if stype in ("BUY_FIRST", "BUY_ADD", "T_BUY") and open_px >= up_limit * 0.998:
-                    continue
-                if stype in ("SELL_STOP", "SELL_REDUCE", "T_SELL") and open_px <= down_limit * 1.002:
-                    continue
-                # 价格跳变防护: 开盘/高低价相对昨收跳变远超涨跌停(未复权除权日/脏数据) -> 当日不成交
+                # 跳变/均线偏离防护(除权/脏数据日不参与)
+                open_px = _f(ind["open"].iloc[i])
+                high_px = _f(ind["high"].iloc[i])
+                low_px = _f(ind["low"].iloc[i])
                 if prev_close > 0 and any(
                     px > 0 and abs(px / prev_close - 1) > limit * 1.6
                     for px in (open_px, high_px, low_px)
                 ):
                     continue
-                # 均线偏离防护: 相对 MA20 偏离 > 40%(除权断层/数据错乱) -> 当日不成交
-                ma20 = _f(pool[sym][0]["ma20"].iloc[idx_now]) if "ma20" in pool[sym][0].columns else 0.0
+                ma20 = _f(ind["ma20"].iloc[i]) if "ma20" in ind.columns else 0.0
                 if ma20 > 0 and any(
-                    px > 0 and abs(px / ma20 - 1) > 0.40
-                    for px in (open_px, high_px, low_px)
+                    px > 0 and abs(px / ma20 - 1) > 0.40 for px in (open_px, high_px, low_px)
                 ):
                     continue
-
-                equity_now = self.cash + sum(p2.qty * day_closes.get(s2, p2.cost) for s2, p2 in self.positions.items())
-
-                if stype == "SELL_STOP":
-                    if pos:
-                        self._sell(date, sym, name, open_px * (1 - SLIPPAGE), pos.qty, "sell_stop", sig.reason)
-                elif stype == "SELL_REDUCE":
-                    if pos:
-                        qty = _sell_qty(max(1, int(pos.qty * REDUCE_RATIO)), pos.qty, sym)
-                        if qty > 0:
-                            self._sell(date, sym, name, open_px * (1 - SLIPPAGE), qty, "sell_reduce", sig.reason)
-                elif stype == "BUY_FIRST":
-                    if not gate_open:
-                        continue
-                    used_pct = sum(p2.qty * day_closes.get(s2, p2.cost) for s2, p2 in self.positions.items()) / equity_now if equity_now else 1.0
-                    if used_pct >= max_total:
-                        continue
-                    plan_amount = min(equity_now * plan_ratio * reduced_ratio, self.cash * 0.99)
-                    qty = _round_buy_qty(int(plan_amount / (open_px * (1 + SLIPPAGE))), sym)
-                    if qty <= 0:
-                        continue
-                    self._buy(date, sym, name, open_px * (1 + SLIPPAGE), qty, "buy_first", sig.reason)
-                    if sym in self.positions:
-                        self.positions[sym].stage = 1
-                elif stype == "BUY_ADD":
-                    if not gate_add or pos is None:
-                        continue
-                    stage_idx = pos.stage
-                    if stage_idx >= len(pyramid):
-                        continue
-                    plan_amount = min(equity_now * plan_ratio * pyramid[stage_idx] * reduced_ratio, self.cash * 0.99)
-                    qty = _round_buy_qty(int(plan_amount / (open_px * (1 + SLIPPAGE))), sym)
-                    if qty <= 0:
-                        continue
-                    self._buy(date, sym, name, open_px * (1 + SLIPPAGE), qty, "buy_add", sig.reason)
-                    if sym in self.positions:
-                        self.positions[sym].stage += 1
-
-            # ---- 做T(独立于主信号): 前一日收盘布林轨判定(无前视), 当日盘中高/低价成交(用户确认口径)
-            if t_cfg.get("enable", True):
-                for sym in list(self.positions.keys()):
+                bought_today_qty = 0  # T+1: 当日买入数量(当日买入部分不可卖, 老仓可卖)
+                day_acted: set[str] = set()  # 日线信号型动作每日最多一次(减仓/加仓); 做T 不限制
+                # 模式决策每天一次(T-1 收盘, 无前视), 供盘中止损预检
+                mode_dec = mode_for_ind(ind, self.cfg, end=ti)
+                last_row = ind.iloc[ti]
+                prev_row = ind.iloc[max(ti - 1, 0)]
+                for seg in self._day_path(ind, i):
+                    seg_c = seg["close"]
+                    seg_h = seg["high"]
+                    seg_l = seg["low"]
                     pos = self.positions.get(sym)
-                    if pos is None or pos.qty <= 0:
-                        continue
-                    idx_now = pool[sym][2].get(date)
-                    if idx_now is None or idx_now < 1:
-                        continue
-                    ind_sym = pool[sym][0]
-                    ti = idx_now - 1  # 信号日(前一日收盘)
-                    boll_u = _f(ind_sym["boll_upper20"].iloc[ti]) if "boll_upper20" in ind_sym.columns else 0.0
-                    boll_l = _f(ind_sym["boll_lower20"].iloc[ti]) if "boll_lower20" in ind_sym.columns else 0.0
-                    if boll_u <= 0 or boll_l <= 0:
-                        continue
-                    open_px = _f(ind_sym["open"].iloc[idx_now])
-                    high_px = _f(ind_sym["high"].iloc[idx_now])
-                    low_px = _f(ind_sym["low"].iloc[idx_now])
-                    prev_close = _f(ind_sym["close"].iloc[ti])
-                    swing = (high_px - low_px) / prev_close * 100 if prev_close > 0 else 0.0
-                    if swing < float(t_cfg.get("min_swing_pct", 1.5)):
-                        continue
-                    limit = _limit_pct(sym)
-                    up_limit = prev_close * (1 + limit) if prev_close > 0 else 1e18
-                    down_limit = prev_close * (1 - limit) if prev_close > 0 else 0.0
-                    ma20 = _f(ind_sym["ma20"].iloc[idx_now]) if "ma20" in ind_sym.columns else 0.0
-                    if ma20 > 0 and any(
-                        px > 0 and abs(px / ma20 - 1) > 0.40 for px in (open_px, high_px, low_px)
-                    ):
-                        continue  # 除权/脏数据日不参与做T
-                    name = pool[sym][1]
-                    t_ratio = float(t_cfg.get("t_position_ratio", 0.3))
-                    min_qty = _min_unit(sym)
-                    if high_px >= boll_u * 0.995:
-                        if pos.qty <= min_qty:
-                            continue  # 底仓不足最小单位, 不做T高抛
-                        t_qty = max(1, int(pos.qty * t_ratio))
-                        t_qty = min(t_qty, pos.qty - min_qty)  # 保留足额底仓(不产生碎股)
-                        if t_qty <= 0:
+                    if pos is None:
+                        # ---- 空仓: BUY_FIRST 盘中触发 -> 自动开新仓
+                        if not gate_open or seg_c >= up_limit * 0.998:
                             continue
-                        if open_px > down_limit and high_px > 0:
-                            self._sell(date, sym, name, high_px * (1 - SLIPPAGE), t_qty, "t_sell", "日内冲布林上轨,做T高抛")
-                            t_outstanding[sym] = t_outstanding.get(sym, 0) + t_qty
-                    elif low_px <= boll_l * 1.005:
+                        # 止损冷却期内禁止同票再入场(防连跌中反复接刀)
+                        if self._cooldown_active(sym, day_idx):
+                            if "COOLDOWN" not in day_acted:
+                                day_acted.add("COOLDOWN")
+                                self.cooldown_blocks += 1
+                            continue
+                        sig = self.engine.evaluate_with_ind(
+                            symbol=sym, name=name, ind=ind, position=PositionInfo(symbol=sym),
+                            quote_price=seg_c, quote_high=seg_h, quote_low=seg_l,
+                            end=ti, skip_t=False,
+                        )
+                        if sig is None or sig.type != "BUY_FIRST":
+                            continue
+                        equity_now = self.cash + sum(
+                            p2.qty * _f(pool[s2][0]["close"].iloc[min(pool[s2][2].get(date, 0), len(pool[s2][0]) - 1)])
+                            for s2, p2 in self.positions.items()
+                        )
+                        used_pct = sum(
+                            p2.qty * _f(pool[s2][0]["close"].iloc[min(pool[s2][2].get(date, 0), len(pool[s2][0]) - 1)])
+                            for s2, p2 in self.positions.items()
+                        ) / equity_now if equity_now else 1.0
+                        if used_pct >= max_total:
+                            continue
+                        plan_amount = min(equity_now * plan_ratio * reduced_ratio * defense_ratio,
+                                          self.cash * 0.99)
+                        qty = _round_buy_qty(int(plan_amount / (seg_c * (1 + SLIPPAGE))), sym)
+                        if qty <= 0:
+                            continue
+                        self._buy(date, sym, name, seg_c * (1 + SLIPPAGE), qty, "buy_first", sig.reason)
+                        if sym in self.positions:
+                            self.positions[sym].stage = 1
+                        bought_today_qty += qty  # T+1: 当日买入部分锁定
+                        continue
+                    sellable = max(0, pos.qty - bought_today_qty)  # 老仓部分(当日买入 T+1 锁定)
+                    # ---- 盘中止损预检: 段最低价触及止损线即离场(真实盘中语义)
+                    stop_sig = self.engine._check_stop(
+                        self.cfg, ind, last_row, prev_row, self._pos_info(pos),
+                        price=seg_l, name=name, mode_decision=mode_dec,
+                    )
+                    if stop_sig is not None:
+                        if sellable > 0 and seg_l > down_limit * 1.002:
+                            self._sell(date, sym, name, seg_l * (1 - SLIPPAGE), sellable,
+                                       "sell_stop", stop_sig.reason)
+                            self._last_stop_day[sym] = day_idx  # 启动冷却计时
+                        continue  # 盘中触及止损: 当日该票结束
+                    # ---- 其余信号盘中判定(引擎按优先级返回最强信号)
+                    sig = self.engine.evaluate_with_ind(
+                        symbol=sym, name=name, ind=ind, position=self._pos_info(pos),
+                        quote_price=seg_c, quote_high=seg_h, quote_low=seg_l,
+                        end=ti, skip_t=False,
+                    )
+                    stype = sig.type if sig else ""
+                    if stype == "SELL_STOP":
+                        if sellable > 0 and seg_c > down_limit * 1.002:
+                            self._sell(date, sym, name, seg_c * (1 - SLIPPAGE), sellable, "sell_stop", sig.reason)
+                            self._last_stop_day[sym] = day_idx  # 启动冷却计时
+                        continue
+                    if stype == "SELL_REDUCE":
+                        if "SELL_REDUCE" not in day_acted and sellable > 0 and seg_c > down_limit * 1.002:
+                            qty = _sell_qty(max(1, int(sellable * REDUCE_RATIO)), sellable, sym)
+                            if qty > 0:
+                                self._sell(date, sym, name, seg_c * (1 - SLIPPAGE), qty, "sell_reduce", sig.reason)
+                                day_acted.add("SELL_REDUCE")
+                        continue
+                    if stype == "T_SELL":
+                        if sellable > 0 and seg_h > 0 and seg_c > down_limit * 1.002:
+                            t_qty = max(1, int(sellable * float(t_cfg.get("t_position_ratio", 0.3))))
+                            t_qty = min(t_qty, sellable)  # 不卖当日新买入部分
+                            t_qty = _sell_qty(t_qty, sellable, sym)  # 申报取整(防科创板碎股)
+                            if t_qty > 0:
+                                self._sell(date, sym, name, seg_h * (1 - SLIPPAGE), t_qty, "t_sell", sig.reason)
+                                t_outstanding[sym] = t_outstanding.get(sym, 0) + t_qty
+                        continue
+                    if stype == "BUY_ADD":
+                        if "BUY_ADD" not in day_acted and gate_add and seg_c < up_limit * 0.998:
+                            stage_idx = pos.stage
+                            if stage_idx < len(pyramid):
+                                equity_now = self.cash + sum(
+                                    p2.qty * _f(pool[s2][0]["close"].iloc[min(pool[s2][2].get(date, 0), len(pool[s2][0]) - 1)])
+                                    for s2, p2 in self.positions.items()
+                                )
+                                plan_amount = min(equity_now * plan_ratio * pyramid[stage_idx] * reduced_ratio
+                                                  * defense_ratio,
+                                                  self.cash * 0.99)
+                                qty = _round_buy_qty(int(plan_amount / (seg_c * (1 + SLIPPAGE))), sym)
+                                if qty > 0:
+                                    self._buy(date, sym, name, seg_c * (1 + SLIPPAGE), qty, "buy_add", sig.reason)
+                                    bought_today_qty += qty  # T+1: 当日买入部分锁定
+                                    day_acted.add("BUY_ADD")
+                                    if sym in self.positions:
+                                        self.positions[sym].stage += 1
+                        continue
+                    if stype == "T_BUY":
                         want = t_outstanding.get(sym, 0)
                         if want <= 0:
-                            want = max(1, int(pos.qty * t_ratio))
-                        t_qty = min(want, _round_buy_qty(int(self.cash / (low_px * (1 + SLIPPAGE))), sym))
-                        if t_qty > 0 and open_px < up_limit:
-                            self._buy(date, sym, name, low_px * (1 + SLIPPAGE), t_qty, "t_buy", "日内回踩布林下轨,做T低吸")
-                            t_outstanding[sym] = max(0, t_outstanding.get(sym, 0) - t_qty)
+                            want = max(1, int(pos.qty * float(t_cfg.get("t_position_ratio", 0.3))))
+                        if want > 0 and seg_l > 0 and seg_l >= down_limit * 1.002 and seg_c < up_limit * 0.998:
+                            t_qty = min(want, _round_buy_qty(int(self.cash / (seg_l * (1 + SLIPPAGE))), sym))
+                            if t_qty > 0:
+                                self._buy(date, sym, name, seg_l * (1 + SLIPPAGE), t_qty, "t_buy", sig.reason)
+                                t_outstanding[sym] = max(0, t_outstanding.get(sym, 0) - t_qty)
+                                bought_today_qty += t_qty  # T+1: 当日买入部分锁定
+                        continue
 
             # ---- 第三步: 收盘结算净值 + 风控状态更新
             closes_final = {
@@ -386,13 +462,14 @@ class StrategyBacktest:
             }
             eq = self.cash + sum(p2.qty * closes_final.get(s2, p2.cost) for s2, p2 in self.positions.items())
             self.equity_curve.append({"date": date, "equity": round(eq, 2)})
+            # 更新持仓峰值(移动止损线随峰值上移)
+            for s2, p2 in self.positions.items():
+                p2.peak_price = max(p2.peak_price, closes_final.get(s2, p2.cost))
             prev_eq = self.equity_curve[-2]["equity"] if len(self.equity_curve) >= 2 else self.initial
             day_ret = (eq / prev_eq - 1) * 100 if prev_eq > 0 else 0.0
             if day_ret <= -daily_limit:
                 self.fuse_date = date
-            self.peak_equity = max(self.peak_equity, eq)
-            if (self.peak_equity - eq) / self.peak_equity * 100 >= drawdown_limit:
-                self.defense_mode = True
+            self._update_defense(eq)  # 软防守: 达阈值开启(仓位减半), 修复后自动解除
 
         return self._report(pool, skipped, n_days)
 
@@ -449,7 +526,8 @@ class StrategyBacktest:
                 "max_drawdown_pct": round(max_dd, 2),
                 "sharpe": round(sharpe, 2),
                 "days": n_days,
-                "notes": "信号日T收盘判定->T+1开盘成交; 做T按当日最高/最低价近似(乐观口径); 已扣双边手续费; 风控三道闸门生效",
+                "notes": "信号日T收盘判定->T+1开盘成交; 做T按当日最高/最低价近似(乐观口径); 已扣双边手续费; "
+                         "风控三道闸门生效(回撤防守为软防守: 仓位减半, 修复后解除); 止损后同票冷却期生效",
             },
             "stats": {
                 "trades": t_count,
@@ -465,6 +543,8 @@ class StrategyBacktest:
                 "t_contribution": round(t_pnl, 2),
                 "fuse_triggered": self.fuse_date is not None,
                 "defense_mode": self.defense_mode,
+                "cooldown_blocks": self.cooldown_blocks,
+                "stop_cooldown_days": self.stop_cooldown_days,
             },
             "equity_curve": eq,
             "trades": [
@@ -478,6 +558,10 @@ class StrategyBacktest:
 
 def run_strategy_backtest(symbols: list[str] | None = None,
                           initial_capital: float = 1_000_000.0,
-                          progress_cb: Callable[[int, int], None] | None = None) -> dict[str, Any]:
-    """便捷入口."""
-    return StrategyBacktest(initial_capital=initial_capital).run(symbols=symbols, progress_cb=progress_cb)
+                          progress_cb: Callable[[int, int], None] | None = None,
+                          intraday_minutes: int = DEFAULT_MINUTES,
+                          start: str = "", end: str = "") -> dict[str, Any]:
+    """便捷入口. intraday_minutes: 盘中路径模拟粒度(5/10/15/30, 默认 10). start/end: 回测区间."""
+    return StrategyBacktest(initial_capital=initial_capital,
+                            intraday_minutes=intraday_minutes).run(
+        symbols=symbols, progress_cb=progress_cb, start=start, end=end)
