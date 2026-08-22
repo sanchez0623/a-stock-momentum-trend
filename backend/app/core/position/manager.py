@@ -81,7 +81,6 @@ class PositionManager:
             )
         with _session(session) as s:
             pos = self.get_position(symbol, s)
-            first_open = pos is None
             if pos is None:
                 # 首仓: 记录持仓时间(加仓不刷新, 用于 T+1 判定); 档位置 0(仅首仓)
                 pos = Position(symbol=symbol, name=name, qty=0, cost=0.0, cost_raw=0.0,
@@ -110,6 +109,8 @@ class PositionManager:
             pos.cost_raw = round((old_raw * pos.qty + amount) / new_qty, 4)
             pos.qty = new_qty
             pos.name = name or pos.name
+            # 持仓峰值(移动止损线随峰值上移); 盘中新高由信号评估侧与实时价取较大值
+            pos.peak_price = max(pos.peak_price or 0.0, price)
             pos.updated_at = _now()
             s.commit()
             s.refresh(pos)

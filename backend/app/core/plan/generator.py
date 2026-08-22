@@ -79,13 +79,22 @@ class PlanGenerator:
             )
             stop_line = "—"
         elif signal.type == "BUY_FIRST":
-            action, advice = "buy_first", self._advice_buy_first(price, mode, symbol)
+            # 止损冷却期(防连跌中反复接刀): 降级为观望, 与实盘风控闸门同源
+            cooldown_left = risk_manager.stop_cooldown_left(symbol)
+            if cooldown_left > 0:
+                action, advice = "hold", (
+                    f"止损冷却期: 该票 {cooldown_left} 个交易日内有止损记录, 暂缓新开仓"
+                    "(防连跌中反复接刀); 冷却期结束后信号仍在再重新评估"
+                )
+            else:
+                action, advice = "buy_first", self._advice_buy_first(price, mode, symbol)
             stop_line = "—"
         elif signal.type == "BUY_ADD":
             advice = self._advice_buy_add(pos, portfolio, mode, symbol)
             # 档位用尽/无法加仓时, 计划动作降级为观望(而非 buy_add), 保证动作与建议语义一致
             action = "hold" if "暂不加仓" in advice else "buy_add"
-            stop_line = f"{pos.cost * (1 - stop_pct / 100):.2f}(成本下移{stop_pct:.0f}%)"
+            stop_line = (f"{pos.cost * (1 - stop_pct / 100):.2f}(止损{stop_pct:.0f}%), "
+                         f"浮盈后峰值回撤{trailing_pct:.0f}%移动止损")
         elif signal.type in ("SELL_REDUCE", "SELL_STOP", "T_SELL"):
             if t_locked:
                 # 当日买入无法卖出/减仓, 计划顺延至下一交易日
@@ -99,7 +108,8 @@ class PlanGenerator:
                 stop_line = "—"
             elif signal.type == "SELL_STOP":
                 action, advice = "sell_stop", "立即止损清仓, 不犹豫不补仓"
-                stop_line = f"{pos.cost * (1 - stop_pct / 100):.2f}(止损线)"
+                stop_line = (f"{pos.cost * (1 - stop_pct / 100):.2f}(止损{stop_pct:.0f}%) / "
+                             f"结构破坏(MA短穿中+ADX掉头)同样立即离场")
             else:  # T_SELL
                 action, advice = "t_sell", "做T卖出: 平掉今日做T买入部分, 不留隔夜增量"
                 stop_line = "—"
@@ -306,6 +316,12 @@ class PlanGenerator:
         min_unit = min_buy_unit(symbol)
         lo = sell_qty(pos.qty // 3, pos.qty, symbol)
         hi = sell_qty(pos.qty // 2, pos.qty, symbol)
+        if lo <= 0 and hi > 0:
+            # 1/3 档不足一单(如科创板 421 股: 1/3=140 < 200), 退到 1/2 档
+            return (
+                f"按信号减仓: 建议减 {hi} 股(约 1/2 仓位), "
+                f"减后剩余不足 {min_unit} 股时建议一次性清仓"
+            )
         if lo <= 0:
             return "按信号减仓: 持仓过小, 建议直接清仓"
         if lo == hi == pos.qty:

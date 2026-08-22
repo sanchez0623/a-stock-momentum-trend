@@ -109,6 +109,63 @@ def test_t_trade_requires_position():
     assert sig is None or sig.type not in ("T_BUY", "T_SELL")
 
 
+# ------------------------------------------------------------ 结构性止损优先
+def _stop_ctx(structure: str, cost: float = 100.0, peak: float = 0.0,
+              price: float = 100.0):
+    """构造 _check_stop 直调上下文. structure: intact(趋势健康) / broken(MA穿中+ADX掉头)."""
+    from types import SimpleNamespace
+
+    from app.core.config import config_manager
+
+    if structure == "intact":
+        last = pd.Series({"ma10": 10.5, "ma20": 10.0, "adx14": 28.0})
+        prev = pd.Series({"ma10": 10.4, "ma20": 10.0, "adx14": 25.0})  # ADX 上行
+    else:
+        last = pd.Series({"ma10": 9.5, "ma20": 10.0, "adx14": 22.0})
+        prev = pd.Series({"ma10": 9.8, "ma20": 10.0, "adx14": 25.0})   # ADX 掉头
+    mode = SimpleNamespace(mode={"stop_loss_pct": 5.0, "trailing_stop_pct": 8.0})
+    pos = PositionInfo(symbol="600005", cost=cost, qty=1000, peak_price=peak)
+    cfg = config_manager.get()
+    return cfg, last, prev, pos, price, mode
+
+
+def test_stop_line_unconditional_when_structure_intact():
+    """亏损触线无条件止损: 结构未坏(趋势健康)-6% 也立即止损, 不等结构确认.
+
+    回测教训(2026-08-22): "结构未坏让趋势呼吸到-8%"使单笔亏损放大60%、
+    总收益-26.76% vs 无条件线+17.54%, 已回退为无条件静态线.
+    """
+    cfg, last, prev, pos, price, mode = _stop_ctx("intact", cost=100.0, price=94.0)
+    sig = engine._check_stop(cfg, None, last, prev, pos, price, "测试", mode)
+    assert sig is not None and sig.type == "SELL_STOP"
+    assert "跌破止损线" in sig.reason
+
+
+def test_stop_soft_line_fires_with_structure_broken():
+    """结构已坏(MA穿中+ADX掉头)且触软线: 双重确认立即止损."""
+    cfg, last, prev, pos, price, mode = _stop_ctx("broken", cost=100.0, price=94.0)
+    sig = engine._check_stop(cfg, None, last, prev, pos, price, "测试", mode)
+    assert sig is not None and sig.type == "SELL_STOP"
+    assert "MA短穿中" in sig.reason and "跌破止损线" in sig.reason
+
+
+def test_structure_stop_in_profit():
+    """纯结构性止损: 浮盈中趋势破坏也应离场(旧有行为保持)."""
+    cfg, last, prev, pos, price, mode = _stop_ctx("broken", cost=100.0, peak=120.0, price=112.0)
+    sig = engine._check_stop(cfg, None, last, prev, pos, price, "测试", mode)
+    assert sig is not None and sig.type == "SELL_STOP"
+    assert "MA短穿中" in sig.reason
+    assert "止损线" not in sig.reason  # 未触任何价格线
+
+
+def test_trailing_stop_independent_of_structure():
+    """移动止损(盈利保护)与结构无关: 浮盈回吐触线即走."""
+    cfg, last, prev, pos, price, mode = _stop_ctx("intact", cost=100.0, peak=120.0, price=108.0)
+    sig = engine._check_stop(cfg, None, last, prev, pos, price, "测试", mode)
+    assert sig is not None and sig.type == "SELL_STOP"
+    assert "移动止损" in sig.reason
+
+
 def test_atr_dynamic_take_profit_targets():
     """ATR 动态止盈档: 波动大档位远, 带下限保护."""
     import pandas as pd

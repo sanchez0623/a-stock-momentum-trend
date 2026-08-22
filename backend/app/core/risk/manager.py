@@ -25,6 +25,19 @@ def _now() -> str:
     return dt.datetime.now(dt.timezone(dt.timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _weekdays_between(d1: dt.date, d2: dt.date) -> int:
+    """d1 -> d2 之间的工作日数(不含 d1, 含 d2; 节假日近似, 略保守)."""
+    if d2 <= d1:
+        return 0
+    days = (d2 - d1).days
+    full_weeks, rem = divmod(days, 7)
+    wd = full_weeks * 5
+    for i in range(days - rem + 1, days + 1):
+        if (d1 + dt.timedelta(days=i)).weekday() < 5:
+            wd += 1
+    return wd
+
+
 @contextmanager
 def _session(session: Session | None):
     if session is not None:
@@ -84,6 +97,36 @@ class RiskManager:
         return self.status()
 
     # ------------------------------------------------------------ 闸门检查
+    def stop_cooldown_left(self, symbol: str, session: Session | None = None) -> int:
+        """止损冷却剩余交易日(0=不在冷却期).
+
+        查最近一笔止损卖出(action=sell 且 reason 含"止损"), 距今不足
+        风控.stop_cooldown_days(按工作日近似)则返回剩余天数.
+        防止连跌中反复接刀(回测: 同票连环止损占全部止损亏损 57%).
+        """
+        cfg = config_manager.get()
+        days = int(cfg["风控"].get("stop_cooldown_days", 10))
+        if days <= 0:
+            return 0
+        with _session(session) as s:
+            from app.models.models import Trade
+
+            row = s.exec(
+                select(Trade)
+                .where(Trade.symbol == symbol, Trade.action == "sell",
+                       Trade.reason.contains("止损"))
+                .order_by(Trade.time.desc())
+            ).first()
+        if row is None:
+            return 0
+        try:
+            stop_date = dt.datetime.strptime(row.time[:10], "%Y-%m-%d").date()
+        except ValueError:
+            return 0
+        today = dt.datetime.now(dt.timezone(dt.timedelta(hours=8))).date()
+        elapsed = _weekdays_between(stop_date, today)
+        return max(0, days - elapsed)
+
     def check_entry(
         self,
         symbol: str,
@@ -122,7 +165,15 @@ class RiskManager:
                 if suggest_pct <= 0:
                     reasons.append("总仓位已满, 拒绝买入")
 
-        allowed = st.day_loss_tripped is False and suggest_pct > 0
+        # 止损冷却期(防同票连跌中反复接刀): 期内拒绝新开仓
+        cooldown_left = self.stop_cooldown_left(symbol, session)
+        if cooldown_left > 0:
+            reasons.append(
+                f"⚠ 止损冷却期: 该票 {cooldown_left} 个交易日内有止损记录, 暂缓新开仓"
+                "(冷却期结束后重新评估)"
+            )
+
+        allowed = st.day_loss_tripped is False and suggest_pct > 0 and cooldown_left <= 0
         return allowed, reasons, round(suggest_pct, 2)
 
     # ------------------------------------------------------------ 动态仓位上限

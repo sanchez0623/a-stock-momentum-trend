@@ -41,8 +41,8 @@ async def list_signals(
     return {"code": 0, "msg": "ok", "data": [r.model_dump() for r in rows]}
 
 
-@router.get("/signals/{symbol}")
-async def latest_signal(symbol: str, session: Session = Depends(get_session)) -> dict:
+@router.get("/signals/{symbol}", response_model=None)
+async def latest_signal(symbol: str, session: Session = Depends(get_session)) -> dict | JSONResponse:
     stmt = select(SignalRecord).where(SignalRecord.symbol == symbol).order_by(SignalRecord.time.desc())
     row = session.exec(stmt).first()
     if row is None:
@@ -103,7 +103,8 @@ async def _evaluate_one(symbol: str, session: Session | None = None) -> dict:
             quote = quotes[0]
         with _signal_session(session) as s:
             pos = position_manager.get_position(symbol, s)
-            pos_info = PositionInfo(symbol=symbol, cost=pos.cost, qty=pos.qty) if pos else None
+            pos_info = (PositionInfo(symbol=symbol, cost=pos.cost, qty=pos.qty, peak_price=pos.peak_price)
+                        if pos else None)
             signal = engine.evaluate(
                 symbol,
                 name=quote.name if quote else "",
@@ -126,8 +127,8 @@ async def _evaluate_one(symbol: str, session: Session | None = None) -> dict:
         return {"symbol": symbol, "name": "", "price": 0.0, "signal": None, "error": str(exc)[:80]}
 
 
-@router.post("/signals/evaluate/{symbol}")
-async def evaluate_symbol(symbol: str, session: Session = Depends(get_session)) -> dict:
+@router.post("/signals/evaluate/{symbol}", response_model=None)
+async def evaluate_symbol(symbol: str, session: Session = Depends(get_session)) -> dict | JSONResponse:
     """手动评估一只票: 取K线+行情 -> 生成信号并落库(供仪表盘「最近信号」与信号记录)."""
     data = await _evaluate_one(symbol, session)
     session.commit()

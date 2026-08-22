@@ -29,6 +29,7 @@ class PositionInfo:
     symbol: str = ""
     cost: float = 0.0
     qty: int = 0
+    peak_price: float = 0.0   # 持仓期间最高价(移动止损用; 0=未记录, 退化为成本)
 
     @property
     def has_position(self) -> bool:
@@ -105,10 +106,14 @@ class SignalEngine:
         quote_high: float | None = None,
         quote_low: float | None = None,
         end: int | None = None,
+        skip_t: bool = False,
     ) -> Signal | None:
         """与 evaluate 同逻辑, 但接收已算好的指标表(回测逐日复用, 避免重复 compute_all).
 
         end: 可选判定位置(回测逐日传 i, 默认末行). 行为与 evaluate 完全一致.
+        skip_t: True 时跳过做T 分支(回测主信号用). 做T 需当日盘中高低价,
+        回测中由调用方以 _check_t_trade(want=...) 单独按 T 日高低价判定,
+        避免 T_SELL 抢占加仓/首仓, 也不把盘中价传入主信号造成前视.
         """
         if ind is None or len(ind) < 30:
             return None
@@ -143,9 +148,10 @@ class SignalEngine:
         if sig:
             return _tag(sig)
         # 3. 做T卖出(顺势超买高抛): 风控性卖出优先于进攻性加仓/首仓(用户重排)
-        sig = self._check_t_trade(cfg, ind, last, pos, price, quote_high, quote_low, name, want="sell")
-        if sig:
-            return _tag(sig)
+        if not skip_t:
+            sig = self._check_t_trade(cfg, ind, last, pos, price, quote_high, quote_low, name, want="sell")
+            if sig:
+                return _tag(sig)
         # 4. 加仓(回踩顺向)
         sig = self._check_add(cfg, ind, last, prev, pos, price, name, mode_decision)
         if sig:
@@ -155,9 +161,10 @@ class SignalEngine:
         if sig:
             return _tag(sig)
         # 6. 做T买入(低吸, 最低: 绝不抢跑加仓/首仓, 避免亏损中盲目低吸)
-        sig = self._check_t_trade(cfg, ind, last, pos, price, quote_high, quote_low, name, want="buy")
-        if sig:
-            return _tag(sig)
+        if not skip_t:
+            sig = self._check_t_trade(cfg, ind, last, pos, price, quote_high, quote_low, name, want="buy")
+            if sig:
+                return _tag(sig)
         return None
 
     def _indicators(self, df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
@@ -377,26 +384,46 @@ class SignalEngine:
 
     # ------------------------------------------------------------ 止损信号
     def _check_stop(self, cfg, ind, last, prev, pos, price, name, mode_decision) -> Signal | None:
-        """跌破止损线 / 移动止损线; 或 MA 短穿中 + ADX 掉头.
+        """止损判定(结构性优先): 趋势破坏 > 移动止损(盈利保护) > 静态止损线.
 
-        止损线优先用当前模式的 stop_loss_pct(模式自带风控), 回退到全局 风控 配置.
+        结构性: MA短穿中 + ADX掉头 -> 趋势已坏, 无论盈亏优先离场(常在浮盈中全身而退).
+        移动止损线: 持仓峰值 × (1 - trailing_stop_pct), 高于静态线时接管——
+        浮盈保护(让利润奔跑), 与结构无关, 触线即走.
+        静态止损线: 亏损触线无条件止损. (回测教训 2026-08-22: 曾试行"结构未坏时放宽到
+        硬线8%"让趋势呼吸, 单笔亏损放大60%、总收益-26.76% vs 无条件线+17.54%, 已回退;
+        结构确认滞后, 过滤不掉假止损, 只会把该止的损拖到更深.)
+        静态线取当前模式的 stop_loss_pct(模式自带风控), 回退全局 风控 配置.
+        peak 由调用方维护(回测: 逐日收盘峰值; 实盘: 成交价与实时价的较大值).
         """
         if not pos.has_position:
             return None
         risk = cfg["风控"]
         trend = cfg["趋势"]
         stop_pct = float(mode_decision.mode.get("stop_loss_pct", risk["stop_loss_pct"]))
-        stop_price = pos.cost * (1 - stop_pct / 100)
+        static_stop = pos.cost * (1 - stop_pct / 100)
+        # 移动止损: 峰值(历史最高价与当前价的较大值, 无前视) × (1 - trailing)
+        trailing_pct = float(mode_decision.mode.get("trailing_stop_pct",
+                                                    risk.get("trailing_stop_pct", stop_pct)))
+        peak = max(pos.peak_price, price) if pos.peak_price > 0 else max(pos.cost, price)
+        trail_stop = peak * (1 - trailing_pct / 100)
         ma_s = f"ma{trend['ma_short']}"
         ma_m = f"ma{trend['ma_mid']}"
         ma_s_v, ma_m_v = _f(last.get(ma_s)), _f(last.get(ma_m))
-        adx_now = _f(last.get(f"adx{trend.get('adx_period', 14)}"))
-        adx_prev = _f(prev.get(f"adx{trend.get('adx_period', 14)}")) if prev is not None else adx_now
+        adx_key = f"adx{trend.get('adx_period', 14)}"
+        adx_now = _f(last.get(adx_key))
+        adx_prev = _f(prev.get(adx_key)) if prev is not None else adx_now
         reasons = []
-        if price <= stop_price:
-            reasons.append(f"跌破止损线{stop_price:.2f}")
-        if ma_s_v < ma_m_v and adx_now < adx_prev:
+        # 结构性(趋势破坏): 最高优先, 浮盈浮亏都离场
+        structure_broken = ma_s_v < ma_m_v and adx_now < adx_prev
+        if structure_broken:
             reasons.append("MA短穿中且ADX掉头")
+        if trail_stop > static_stop:
+            # 浮盈保护: 移动止损线接管, 与结构无关, 触线即走
+            if price <= trail_stop:
+                reasons.append(f"跌破移动止损线{trail_stop:.2f}(峰值{peak:.2f})")
+        elif price <= static_stop:
+            # 亏损区: 静态线无条件止损(快砍, 不等结构确认)
+            reasons.append(f"跌破止损线{static_stop:.2f}")
         if not reasons:
             return None
         return Signal(

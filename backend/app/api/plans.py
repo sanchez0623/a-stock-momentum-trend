@@ -42,7 +42,8 @@ async def generate_plan(body: GenerateBody, session: Session = Depends(get_sessi
     quotes = await data_source_manager.get_realtime_quote([body.symbol])
     quote = quotes[0] if quotes else None
     pos = position_manager.get_position(body.symbol, session)
-    pos_info = PositionInfo(symbol=body.symbol, cost=pos.cost, qty=pos.qty) if pos else None
+    pos_info = (PositionInfo(symbol=body.symbol, cost=pos.cost, qty=pos.qty, peak_price=pos.peak_price)
+                if pos else None)
     signal = engine.evaluate(
         body.symbol,
         name=body.name or (quote.name if quote else ""),
@@ -58,7 +59,8 @@ async def generate_plan(body: GenerateBody, session: Session = Depends(get_sessi
     # 组合汇总(用于风控/仓位文案): 单票市值占总持仓市值比例 + 可用资金(Q4 资金感知)
     portfolio: dict = {"total_pct": 0.0}
     positions = position_manager.list_positions(session)
-    total_mv = sum((quote.price if p.symbol == body.symbol else p.cost) * p.qty for p in positions)
+    ref_price = quote.price if quote else 0.0
+    total_mv = sum((ref_price if p.symbol == body.symbol else p.cost) * p.qty for p in positions)
     if total_mv > 0 and pos:
         portfolio["total_pct"] = round((pos.cost * pos.qty) / total_mv * 100, 1)
     acc = account_manager.get(session)

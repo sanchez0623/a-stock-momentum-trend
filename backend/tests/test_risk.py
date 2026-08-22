@@ -61,6 +61,73 @@ def test_consecutive_losses_reduces_cap(tmp_engine):
     assert st["position_multiplier"] == 0.5
 
 
+# ------------------------------------------------------------ 止损冷却期
+def _insert_stop_trade(symbol: str, days_ago: int, reason: str = "止损: 跌破止损线95.00"):
+    """插入一笔 N 天前的止损卖出记录."""
+    import datetime as dt
+
+    from sqlmodel import Session
+
+    from app import db
+    from app.models.models import Trade
+
+    t = (dt.datetime.now(dt.timezone(dt.timedelta(hours=8))) - dt.timedelta(days=days_ago)
+         ).strftime("%Y-%m-%d %H:%M:%S")
+    with Session(db.engine) as s:
+        s.add(Trade(time=t, symbol=symbol, name="测试", action="sell",
+                    price=95.0, qty=1000, reason=reason, pnl=-5000.0))
+        s.commit()
+
+
+def test_entry_blocked_in_stop_cooldown(tmp_engine):
+    rm.reset(None)
+    _insert_stop_trade("300274", days_ago=2)  # 2 天前止损 -> 冷却期内
+    allowed, reasons, _ = rm.check_entry("300274", 20.0, _portfolio(0.0), None)
+    assert allowed is False
+    assert any("冷却" in r for r in reasons)
+
+
+def test_entry_allowed_after_cooldown_expires(tmp_engine):
+    rm.reset(None)
+    _insert_stop_trade("300274", days_ago=15)  # 15 自然日 ≈ 11 个工作日 > 10
+    assert rm.stop_cooldown_left("300274") == 0
+    allowed, reasons, _ = rm.check_entry("300274", 20.0, _portfolio(0.0), None)
+    assert allowed is True
+
+
+def test_cooldown_ignores_non_stop_sells(tmp_engine):
+    rm.reset(None)
+    _insert_stop_trade("300274", days_ago=2, reason="减仓: 触及止盈档112%")  # 非止损卖出
+    assert rm.stop_cooldown_left("300274") == 0
+    allowed, _, _ = rm.check_entry("300274", 20.0, _portfolio(0.0), None)
+    assert allowed is True
+
+
+def test_cooldown_counts_weekdays_not_calendar(tmp_engine):
+    """冷却按工作日计: 上周五止损, 周一仍在冷却(1 个工作日), 周五解禁视阈值而定."""
+    from app.core.risk.manager import _weekdays_between
+    import datetime as dt
+
+    d1 = dt.date(2026, 8, 14)  # 周五
+    d2 = dt.date(2026, 8, 17)  # 下周一
+    assert _weekdays_between(d1, d2) == 1  # 跨周末只计 1 个工作日
+    d3 = dt.date(2026, 8, 21)  # 下周五
+    assert _weekdays_between(d1, d3) == 5
+
+
+def test_cooldown_disabled_via_config(tmp_engine, monkeypatch):
+    rm.reset(None)
+    _insert_stop_trade("300274", days_ago=2)
+    from app.core.config import config_manager
+
+    cfg = config_manager.get()
+    cfg["风控"]["stop_cooldown_days"] = 0
+    monkeypatch.setattr(config_manager, "get", lambda: cfg)
+    assert rm.stop_cooldown_left("300274") == 0
+    allowed, _, _ = rm.check_entry("300274", 20.0, _portfolio(0.0), None)
+    assert allowed is True
+
+
 def test_win_resets_loss_streak(tmp_engine):
     rm.reset(None)
     rm.record_trade_result(-500.0, None)

@@ -33,14 +33,23 @@ def round_buy_qty(raw: int, symbol: str) -> int:
 
 
 def sell_qty(qty: int, pos_qty: int, symbol: str) -> int:
-    """卖出数量合规: 卖出后剩余不足最小单位(碎股)时一次性全部卖出."""
+    """卖出数量合规: 申报取整到最小单位整数倍, 卖出后剩余不足最小单位(碎股)时一次性全部卖出.
+
+    - 申报数量 >= 最小单位: 向下取整到整数倍(如 333 -> 300, 主板 100 整数倍);
+    - 申报数量 < 最小单位: 仅持仓不足最小单位(碎股清仓)才允许全卖, 否则返回 0(不卖),
+      避免出现「科创板做T 高抛 29 股」这类小于申报单位的违规成交;
+    - 卖出后剩余 0 < remain < 最小单位: 碎股必须一并卖出(清仓).
+    """
     if qty <= 0 or pos_qty <= 0:
         return 0
     qty = min(qty, pos_qty)
+    unit = min_buy_unit(symbol)
     remain = pos_qty - qty
-    if 0 < remain < min_buy_unit(symbol):
+    if 0 < remain < unit:
         return pos_qty  # 碎股必须清仓
-    return qty
+    if qty < unit:
+        return 0  # 申报不足一单且非清仓, 不卖
+    return qty // unit * unit
 
 
 def board_note(symbol: str) -> str:
