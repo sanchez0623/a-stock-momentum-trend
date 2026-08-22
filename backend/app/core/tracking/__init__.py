@@ -5,6 +5,7 @@ from app.core.tracking.score_tracker import (  # noqa: F401
     archive_expired,
     delete_point,
     list_active,
+    list_history,
     points,
     sample_all,
     sample_one,
@@ -13,6 +14,6 @@ from app.core.tracking.score_tracker import (  # noqa: F401
 )
 
 __all__ = [
-    "track", "stop", "list_active", "points", "sample_one", "sample_all",
+    "track", "stop", "list_active", "list_history", "points", "sample_one", "sample_all",
     "archive_expired", "OBSERVE_DAYS",
 ]

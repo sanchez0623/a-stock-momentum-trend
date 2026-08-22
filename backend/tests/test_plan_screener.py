@@ -236,7 +236,8 @@ def test_plan_sell_reduce_shows_compliant_qty_range(tmp_engine):
                  strength=70.0, reason="冲高回落减仓", price=326.90)
     plan = gen.generate("688146", "中船特气", sig, portfolio={"total_pct": 40.0})
     content = plan["content"]
-    assert "建议减 140 ~ 210 股" in content
+    # 1/3=140 不足科创板 200 股一单 -> 只给 1/2 档 200 股(取整到 200 整数倍)
+    assert "建议减 200 股" in content
     assert "减后剩余不足 200 股" in content
 
 
@@ -515,13 +516,15 @@ def test_tracking_sim_state_machine(tmp_engine, monkeypatch):
     r3 = asyncio.run(tr.sample_one("600000"))
     assert r3["sim_action"] == "close" and r3["sim_qty"] == 0
     assert abs(r3["sim_pnl"] - (-5.0)) < 0.01  # (9.5/10-1)*100 = -5%
+    # 衰竭期自动归档: 结算价=本次采样价(9.5), final_pnl = 已实现 -5%
+    assert r3["archived"] is True
+    hist = tr.list_history()
+    assert len(hist) == 1 and hist[0]["archive_reason"] == "exhaust"
+    assert abs(hist[0]["final_pnl"] - (-5.0)) < 0.01
+    assert hist[0]["final_stage"] == "exhaust"
+    assert abs(hist[0]["hold_pnl"] - (-5.0)) < 0.01  # 10.0 -> 9.5
 
-    # ④ 次日(清除当日去重标记): 平仓后可再次开仓
-    with db.session_scope() as s:
-        st = s.exec(select(TrackedStock).where(TrackedStock.symbol == "600000")).first()
-        st.sim_last_action_date = "2020-01-01"  # 模拟次日
-        s.add(st)
-        s.commit()
+    # ④ 归档后(观察已结束)不再采样: stock 非 active, sample_one 返回 None
     monkeypatch.setattr(tr, "_score_symbol", fake_score)  # 恢复 10 元价格
 
     def fake_eval4(self, symbol, kline_df=None, position=None, **kw):
@@ -529,7 +532,8 @@ def test_tracking_sim_state_machine(tmp_engine, monkeypatch):
 
     monkeypatch.setattr(tr.SignalEngine, "evaluate", fake_eval4)
     r4 = asyncio.run(tr.sample_one("600000"))
-    assert r4["sim_action"] == "open" and r4["sim_qty"] == 10000
+    assert r4 is None
+    assert tr.list_active() == []  # 已归档不在活跃列表
 
 
 def test_tracking_sample_one_skips_bad_symbol(tmp_engine, monkeypatch):
@@ -576,6 +580,153 @@ def test_tracking_sample_maps_score_fields(tmp_engine, monkeypatch):
     assert p["volume_score"] == 8.1
     assert p["price"] == 42.35  # 不再为 0
     assert p["score"] == 63.6
+
+
+def test_tracking_stage_sub_passthrough(tmp_engine, monkeypatch):
+    """加速期细分透传: track 存 stage_sub_at_track; 采样点/最新快照/列表均带 stage_sub 与 trend_age."""
+    import asyncio
+
+    from app.core.tracking import score_tracker as tr
+
+    d = tr.track("600000", "浦发银行", 66.0, "accelerate", stage_sub="mid")
+    assert d["stage_sub_at_track"] == "mid"
+
+    async def fake_score(symbol, cfg):
+        return {"total": 68.0, "trend_score": 26.0, "momentum_score": 30.0,
+                "volume_score": 12.0, "stage": "accelerate", "stage_sub": "mid",
+                "trend_age": 18, "close": 11.0, "volume_ratio": 1.1, "_kline": None}
+
+    def fake_eval(self, symbol, kline_df=None, position=None, **kw):
+        return None
+
+    monkeypatch.setattr(tr, "_score_symbol", fake_score)
+    monkeypatch.setattr(tr.SignalEngine, "evaluate", fake_eval)
+    out = asyncio.run(tr.sample_one("600000"))
+    assert out is not None
+
+    pts = tr.points("600000")
+    assert pts[0]["stage_sub"] == "mid" and pts[0]["trend_age"] == 18
+
+    items = tr.list_active()
+    assert items[0]["latest"]["stage_sub"] == "mid"
+    assert items[0]["latest"]["trend_age"] == 18
+    assert items[0]["stage_sub_at_track"] == "mid"
+
+
+def test_tracking_exhaust_archives_with_open_position(tmp_engine, monkeypatch):
+    """衰竭自动归档时若仍持仓: 按采样价平仓, 浮盈计入 final_pnl(不只已实现)."""
+    import asyncio
+
+    from app.core.signals.engine import Signal
+    from app.core.tracking import score_tracker as tr
+
+    tr.track("600000", "浦发银行", 72.0, "accelerate")
+
+    # 先建仓(10 元)
+    async def fake_score_open(symbol, cfg):
+        return {"total": 66.0, "trend_score": 25.0, "momentum_score": 30.0,
+                "volume_score": 11.0, "stage": "accelerate", "close": 10.0,
+                "volume_ratio": 1.2, "_kline": None}
+
+    def fake_eval_open(self, symbol, kline_df=None, position=None, **kw):
+        return Signal(type="BUY_FIRST", symbol=symbol, direction="buy", strength=70.0)
+
+    monkeypatch.setattr(tr, "_score_symbol", fake_score_open)
+    monkeypatch.setattr(tr.SignalEngine, "evaluate", fake_eval_open)
+    r1 = asyncio.run(tr.sample_one("600000"))
+    assert r1["sim_action"] == "open" and r1["sim_qty"] > 0
+
+    # 次日衰竭(无卖出信号, 持仓悬浮) -> 自动归档, 浮盈按 12 元结算
+    with db.session_scope() as s:
+        st = s.exec(select(tr.TrackedStock).where(
+            tr.TrackedStock.symbol == "600000", tr.TrackedStock.status == "active"
+        )).first()
+        st.sim_last_action_date = "2020-01-01"
+        s.add(st)
+        s.commit()
+
+    async def fake_score_exhaust(symbol, cfg):
+        return {"total": 45.0, "trend_score": 12.0, "momentum_score": 18.0,
+                "volume_score": 15.0, "stage": "exhaust", "close": 12.0,
+                "volume_ratio": 0.9, "_kline": None}
+
+    def fake_eval_none(self, symbol, kline_df=None, position=None, **kw):
+        return None
+
+    monkeypatch.setattr(tr, "_score_symbol", fake_score_exhaust)
+    monkeypatch.setattr(tr.SignalEngine, "evaluate", fake_eval_none)
+    r2 = asyncio.run(tr.sample_one("600000"))
+    assert r2["archived"] is True
+    assert r2["sim_action"] == "hold"  # 无卖出信号, 采样动作是 hold
+    # 结算: 建仓 10 -> 归档价 12 = +20% 浮盈计入 final_pnl
+    hist = tr.list_history()
+    assert abs(hist[0]["final_pnl"] - 20.0) < 0.01
+    assert hist[0]["final_stage"] == "exhaust"
+
+
+def test_tracking_exhaust_switch_off(tmp_engine, monkeypatch):
+    """配置关闭衰竭自动归档: 衰竭期采样照常, 不归档.
+
+    注意: config_manager.get() 返回 deepcopy, 直接改副本无效;
+    这里 monkeypatch get() 返回关闭开关的配置副本。
+    """
+    import asyncio
+
+    import copy as _copy
+
+    from app.core.config import config_manager
+    from app.core.tracking import score_tracker as tr
+
+    cfg_off = _copy.deepcopy(config_manager.get())
+    cfg_off["追踪"]["auto_archive_on_exhaust"] = False
+    monkeypatch.setattr(tr.config_manager, "get", lambda: cfg_off)
+
+    tr.track("600000", "浦发银行", 72.0, "accelerate")
+
+    async def fake_score(symbol, cfg):
+        return {"total": 45.0, "trend_score": 12.0, "momentum_score": 18.0,
+                "volume_score": 15.0, "stage": "exhaust", "close": 12.0,
+                "volume_ratio": 0.9, "_kline": None}
+
+    def fake_eval(self, symbol, kline_df=None, position=None, **kw):
+        return None
+
+    monkeypatch.setattr(tr, "_score_symbol", fake_score)
+    monkeypatch.setattr(tr.SignalEngine, "evaluate", fake_eval)
+    r = asyncio.run(tr.sample_one("600000"))
+    assert r is not None and r["archived"] is False
+    assert len(tr.list_active()) == 1  # 仍活跃
+
+
+def test_tracking_stop_settles_open_position(tmp_engine):
+    """手动停止: 持仓按最近采样价结算, final_pnl = 已实现 + 平仓浮盈."""
+    from app.core.tracking import score_tracker as tr
+    from app.models.models import ScorePoint
+
+    tr.track("600000", "浦发银行", 72.0, "launch")
+    with db.session_scope() as s:
+        # 两笔已实现 + 当前持仓(成本 10, 采样价 11 -> 平仓 +10%)
+        st = s.exec(select(tr.TrackedStock).where(
+            tr.TrackedStock.symbol == "600000", tr.TrackedStock.status == "active"
+        )).first()
+        st.sim_qty = 10000
+        st.sim_cost = 10.0
+        st.sim_realized_pnl = 3.0
+        s.add(st)
+        s.add(ScorePoint(symbol="600000", time="2026-08-11 12:30:00", score=70.0,
+                         stage="accelerate", price=11.0, sample_kind="noon"))
+        s.commit()
+
+    assert tr.stop("600000") is True
+    hist = tr.list_history()
+    assert len(hist) == 1 and hist[0]["archive_reason"] == "manual"
+    assert abs(hist[0]["final_pnl"] - 13.0) < 0.01  # 3% 已实现 + 10% 平仓
+    assert hist[0]["final_stage"] == "accelerate"
+    # 归档后持仓清零
+    with db.session_scope() as s:
+        st = s.exec(select(tr.TrackedStock).where(
+            tr.TrackedStock.symbol == "600000")).first()
+        assert st.sim_qty == 0 and st.sim_cost == 0.0
 
 
 # ---------------------------------------------------------------- 选股器评分

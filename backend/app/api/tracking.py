@@ -9,6 +9,7 @@ from app.core.tracking import (
     archive_expired,
     delete_point,
     list_active,
+    list_history,
     points,
     sample_all,
     stop,
@@ -23,12 +24,13 @@ class TrackBody(BaseModel):
     name: str = ""
     score: float = 0.0
     stage: str = ""
+    stage_sub: str = ""  # 加速期子阶段(early/mid/late), 与选股结果同源
 
 
 @router.post("")
 async def tracking_add(body: TrackBody) -> dict:
     """从选股结果添加追踪(已活跃追踪不重复)."""
-    d = track(body.symbol, body.name, body.score, body.stage)
+    d = track(body.symbol, body.name, body.score, body.stage, body.stage_sub)
     return {"code": 0, "msg": "已加入得分追踪", "data": d}
 
 
@@ -50,6 +52,12 @@ async def tracking_remove(symbol: str) -> dict:
 async def tracking_list() -> dict:
     """活跃追踪列表(附最近一次采样)."""
     return {"code": 0, "msg": "ok", "data": {"items": list_active()}}
+
+
+@router.get("/history")
+async def tracking_history() -> dict:
+    """历史档(已归档追踪)成绩单: 追踪区间/纯持有收益/模拟交易收益/动作统计."""
+    return {"code": 0, "msg": "ok", "data": {"items": list_history()}}
 
 
 @router.get("/points/{symbol}")
