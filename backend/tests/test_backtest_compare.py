@@ -295,6 +295,62 @@ def test_compare_api_single_task_guard(tmp_engine, monkeypatch):
                 _tasks.pop(tid, None)
 
 
+def test_compare_api_cancel(tmp_engine, monkeypatch):
+    """放弃任务: cancel 后任务标 error(用户手动取消), 守卫立即放行新任务."""
+    from fastapi.testclient import TestClient
+
+    from app.api.backtest import _tasks, _tasks_lock
+    from app.main import app
+
+    _fake_store(monkeypatch, n_syms=6)
+    c = TestClient(app)
+    tid: str | None = None
+    try:
+        r = c.post("/api/backtest/strategy-compare", json={"pool_size": 10, "seed": 1})
+        d = r.json()
+        assert d["code"] == 0, d
+        tid = d["data"]["task_id"]
+
+        # 等任务真正开跑(thread_id 就位)
+        for _ in range(60):
+            with _tasks_lock:
+                if _tasks.get(tid, {}).get("thread_id"):
+                    break
+            time.sleep(0.2)
+
+        r2 = c.post(f"/api/backtest/tasks/{tid}/cancel")
+        d2 = r2.json()
+        assert d2["code"] == 0, d2
+        with _tasks_lock:
+            assert _tasks[tid]["status"] == "error"
+            assert _tasks[tid]["error"] == "用户手动取消"
+
+        # 守卫立即放行新任务
+        r3 = c.post("/api/backtest/strategy-compare", json={"pool_size": 10, "seed": 1})
+        assert r3.json()["code"] == 0, r3.json()
+        # 清理新任务
+        tid2 = r3.json()["data"]["task_id"]
+        for _ in range(120):
+            t = c.get(f"/api/backtest/tasks/{tid2}").json()["data"]
+            if t["status"] in ("done", "error"):
+                break
+            time.sleep(0.5)
+        with _tasks_lock:
+            _tasks.pop(tid2, None)
+
+        # 取消后线程跑完不覆盖 error 状态(取消事件已置位)
+        for _ in range(120):
+            with _tasks_lock:
+                if _tasks.get(tid, {}).get("status") in ("done", "error"):
+                    break
+            time.sleep(0.5)
+        with _tasks_lock:
+            assert _tasks[tid]["status"] == "error", "取消后线程结束不应覆盖为 done"
+    finally:
+        with _tasks_lock:
+            if tid:
+                _tasks.pop(tid, None)
+
 
 def test_compare_api(tmp_engine, monkeypatch):
     """API 层: POST /api/backtest/strategy-compare -> task_id -> 轮询至 done."""

@@ -157,6 +157,9 @@ export const api = {
   /** 卡死诊断: dump 回测工作线程实时调用栈(连点两次对比栈顶, 不变=真卡死) */
   backtestTaskStack: (taskId: string) =>
     request<{ progress: number; idle_seconds: number; stack: string }>(`/backtest/tasks/${taskId}/stack`),
+  /** 放弃回测任务: 协作取消 + 立即标记 error(守卫放行新任务) */
+  cancelBacktestTask: (taskId: string) =>
+    request<{ msg: string }>(`/backtest/tasks/${taskId}/cancel`, { method: 'POST' }),
   // 持仓回测(方案 v2 §5: 三线对照 + 差异归因)
   backtestPortfolio: (body: {
     mode?: string

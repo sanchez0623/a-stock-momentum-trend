@@ -158,15 +158,24 @@ def run_compare(
     progress_cb: Callable[[float], None] | None = None,
     start: str = "",
     end: str = "",
+    cancel: "threading.Event | None" = None,
 ) -> dict[str, Any]:
     """顺序跑各变体(同池同种子), 返回 {pool, variants[]}.
 
     progress_cb 收到 0~100 的总体进度. 单变体失败不中断整体, 记为 error 条目.
     start/end: 回测区间(YYYY-MM-DD 含端点, 空=全部), 各变体共用同一窗口.
+    cancel: 取消事件, 置位后在变体边界/日循环粒度停止, 已完成变体的结果保留.
     """
+    import threading  # noqa: F401  (类型注解用)
+
     results: list[dict[str, Any]] = []
     n = len(variants)
     for i, v in enumerate(variants):
+        if cancel is not None and cancel.is_set():
+            results.append({"label": str(v.get("label") or f"变体{i + 1}"),
+                            "cooldown_days": v.get("cooldown_days", 10),
+                            "defense": v.get("defense", "soft"), "error": "已取消"})
+            continue
         label = str(v.get("label") or f"变体{i + 1}")
         cooldown = int(v.get("cooldown_days", 10))
         defense = v.get("defense", "soft")
@@ -181,7 +190,7 @@ def run_compare(
         try:
             bt = StrategyBacktest(initial_capital=initial_capital, defense=defense)
             bt.stop_cooldown_days = cooldown
-            r = bt.run(symbols=symbols, progress_cb=_cb, start=start, end=end)
+            r = bt.run(symbols=symbols, progress_cb=_cb, start=start, end=end, cancel=cancel)
             if "error" in r:
                 results.append({"label": label, "cooldown_days": cooldown,
                                 "defense": defense, "error": r["error"]})

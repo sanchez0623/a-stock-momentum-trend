@@ -265,6 +265,8 @@ async def run_factor(body: BacktestFactorBody) -> dict:
 # 内存任务表(进程内有效, 重启丢失; MVP 够用). 结构: {task_id: {status, progress, result, error}}
 _tasks: dict[str, dict] = {}
 _tasks_lock = threading.Lock()
+# 任务取消事件(单独存, 不能进 _tasks 否则 dict(t) 序列化失败): thread 无法强杀, 协作取消
+_task_cancels: dict[str, threading.Event] = {}
 
 
 @router.get("/backtest/tasks/{task_id}")
@@ -383,8 +385,10 @@ async def run_strategy_compare(body: StrategyCompareBody) -> dict:
                            "error": "", "last_active": time.time()}
 
     def _run() -> None:
+        cancel_ev = threading.Event()
         with _tasks_lock:
             _tasks[task_id]["thread_id"] = threading.get_ident()  # 供卡死诊断端点 dump 栈
+            _task_cancels[task_id] = cancel_ev
         try:
             symbols, pool_note = build_pool(
                 pool_size, int(body.seed),
@@ -406,19 +410,48 @@ async def run_strategy_compare(body: StrategyCompareBody) -> dict:
                 progress_cb=cb,
                 start=body.start.strip()[:10],
                 end=body.end.strip()[:10],
+                cancel=cancel_ev,
             )
             result["pool"] = {"size": pool_size, "seed": int(body.seed),
                               "note": pool_note, **result["pool"]}
             with _tasks_lock:
-                _tasks[task_id]["result"] = result
-                _tasks[task_id]["status"] = "done"
-                _tasks[task_id]["progress"] = 100
+                # 已被用户取消: 保留 error 状态(守卫已放行新任务), 不覆盖为 done
+                if not cancel_ev.is_set():
+                    _tasks[task_id]["result"] = result
+                    _tasks[task_id]["status"] = "done"
+                    _tasks[task_id]["progress"] = 100
                 _tasks[task_id]["last_active"] = time.time()
         except Exception as exc:  # noqa: BLE001
             with _tasks_lock:
-                _tasks[task_id]["status"] = "error"
-                _tasks[task_id]["error"] = str(exc)
+                if not cancel_ev.is_set():  # 取消引起的中断不覆盖取消文案
+                    _tasks[task_id]["status"] = "error"
+                    _tasks[task_id]["error"] = str(exc)
                 _tasks[task_id]["last_active"] = time.time()
+        finally:
+            with _tasks_lock:
+                _task_cancels.pop(task_id, None)
 
     threading.Thread(target=_run, daemon=True).start()
     return {"code": 0, "msg": "ok", "data": {"task_id": task_id, "variants": len(variants)}}
+
+
+@router.post("/backtest/tasks/{task_id}/cancel")
+async def cancel_backtest_task(task_id: str) -> dict:
+    """放弃任务: 协作取消(日循环粒度生效) + 立即标记 error(守卫放行新任务, 前端解除运行态).
+
+    线程无法强杀; 若线程已僵死则标记后由守卫/新任务共存(僵死线程不烧 CPU, 仅占内存).
+    """
+    with _tasks_lock:
+        t = _tasks.get(task_id)
+        ev = _task_cancels.get(task_id)
+    if t is None:
+        return {"code": 1, "msg": "任务不存在(进程重启后任务丢失)", "data": None}
+    if t.get("status") != "running":
+        return {"code": 0, "msg": f"任务已结束({t.get('status')}), 无需取消", "data": None}
+    if ev is not None:
+        ev.set()
+    with _tasks_lock:
+        t["status"] = "error"
+        t["error"] = "用户手动取消"
+        t["last_active"] = time.time()
+    return {"code": 0, "msg": "已取消, 可重新发起回测", "data": None}

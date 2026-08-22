@@ -221,12 +221,14 @@ class StrategyBacktest:
     # ------------------------------------------------------------ 主循环
     def run(self, symbols: list[str] | None = None,
             progress_cb: Callable[[int, int], None] | None = None,
-            start: str = "", end: str = "") -> dict[str, Any]:
+            start: str = "", end: str = "",
+            cancel: "threading.Event | None" = None) -> dict[str, Any]:
         """运行策略回测. symbols: 股票池(为空=自选+持仓). 返回报告.
 
         start/end: 回测区间(YYYY-MM-DD, 含端点; 空=全部本地数据).
         指标始终用全量数据计算(预热均线/ADX), 只裁剪交易循环区间——
         窗口起点前的历史自动成为指标预热段, 窗口首日即可正常出信号.
+        cancel: 取消事件, 置位后日循环粒度退出(返回 error 报告).
         """
         if symbols is None:
             symbols = self._default_pool()
@@ -298,6 +300,8 @@ class StrategyBacktest:
                 progress_cb(day_idx + 1, n_days)
 
         for day_idx, date in enumerate(all_dates):
+            if cancel is not None and cancel.is_set():
+                return {"error": "用户取消"}
             _report(day_idx)
 
             # ---- 风控闸门(基于昨日状态; 熔断/防守当日立即生效, 次日延续)

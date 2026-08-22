@@ -361,16 +361,38 @@ function CompareTab({ taskId, setTaskId }: { taskId: string | null; setTaskId: (
   })
 
   // 任务轮询: 触发后每 2s 拉取进度, 终态(done/error)自动停止
-  const { data: task } = useQuery({
+  const { data: task, error: taskError } = useQuery({
     queryKey: ['backtest-compare-task', taskId ?? 'none'],
     queryFn: () => api.backtestCompareTask(taskId!),
     enabled: taskId !== null,
+    retry: false,  // 任务不存在(后端重启)不需要重试, 直接走失效清理
     refetchInterval: (query) => (query.state.data?.status === 'running' ? 2000 : false),
   })
   const running = taskId !== null && task?.status !== 'done' && task?.status !== 'error'
   const progress = task?.progress ?? 0
   const report = task?.status === 'done' ? task.result : null
   const err = error || (task?.status === 'error' ? task.error || '对比回测失败' : '')
+
+  // 任务已不存在(后端重启后内存任务丢失) -> 自动解除前端运行态,
+  // 修复: 刷新恢复 taskId 但任务查询失败时永远卡在"运行中 0%"且按钮被禁用的死锁.
+  useEffect(() => {
+    if (taskId && taskError && String((taskError as Error).message || '').includes('任务不存在')) {
+      setTaskId(null)
+      setError('')
+    }
+  }, [taskId, taskError, setTaskId])
+
+  // 放弃当前任务: 协作取消 + 清前端状态(守卫立即放行新任务)
+  const abandon = async () => {
+    if (!taskId) return
+    try {
+      await api.cancelBacktestTask(taskId)
+    } catch {
+      /* 任务可能已结束/不存在, 忽略 */
+    }
+    setTaskId(null)
+    setError('')
+  }
 
   // 心跳时钟: 运行中每秒重渲染一次, 保证"距上次活动秒数"实时变化
   useEffect(() => {
@@ -658,6 +680,9 @@ function CompareTab({ taskId, setTaskId }: { taskId: string | null; setTaskId: (
               )}
               <button className="text-[11px] text-link hover:underline" onClick={diagnose}>
                 卡住了？点此诊断
+              </button>
+              <button className="text-[11px] text-red-600 hover:underline" onClick={abandon}>
+                放弃本次回测
               </button>
             </div>
             {task?.stall_stack && (
