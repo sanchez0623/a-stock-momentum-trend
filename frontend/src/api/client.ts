@@ -67,9 +67,9 @@ export const api = {
     q.set('limit', String(limit))
     return request<SignalRecord[]>(`/signals?${q.toString()}`)
   },
-  evaluateSignal: (symbol: string) => request<{ symbol: string; signal: Signal | null }>(`/signals/evaluate/${symbol}`, { method: 'POST' }),
+  evaluateSignal: (symbol: string) => request<EvaluateResult>(`/signals/evaluate/${symbol}`, { method: 'POST' }),
   evaluateBatch: (symbols: string[]) =>
-    request<Array<{ symbol: string; name: string; price: number; signal: Signal | null; error?: string }>>(
+    request<EvaluateResult[]>(
       '/signals/evaluate-batch',
       { method: 'POST', body: JSON.stringify({ symbols }) },
     ),
@@ -125,11 +125,12 @@ export const api = {
   deleteScreenerPreset: (id: number) => request<{ id: number }>(`/screener/presets/${id}`, { method: 'DELETE' }),
 
   // ---------------------------------------------------------------- 得分追踪(选股结果一键追踪, 每日3次采样)
-  trackingAdd: (body: { symbol: string; name?: string; score?: number; stage?: string }) =>
+  trackingAdd: (body: { symbol: string; name?: string; score?: number; stage?: string; stage_sub?: string }) =>
     request<{ symbol: string; score_at_track: number }>('/tracking', { method: 'POST', body: JSON.stringify(body) }),
   trackingRemove: (symbol: string) => request<{ ok: boolean }>(`/tracking/${symbol}`, { method: 'DELETE' }),
   trackingDeletePoint: (pointId: number) => request<{ ok: boolean }>(`/tracking/points/${pointId}`, { method: 'DELETE' }),
   trackingList: () => request<{ items: TrackedStock[] }>('/tracking'),
+  trackingHistory: () => request<{ items: TrackedHistory[] }>('/tracking/history'),
   trackingPoints: (symbol: string) => request<{ items: ScorePoint[] }>(`/tracking/points/${symbol}`),
   trackingSampleNow: () => request<{ total: number; ok: number; failed: number }>('/tracking/sample-now', { method: 'POST' }),
 
@@ -140,10 +141,58 @@ export const api = {
   // ---------------------------------------------------------------- 回测中心(方案C: 阶段分桶)
   backtestFactor: (body: { symbols?: string[] | null; hold_days?: number[]; min_bars?: number; cost?: boolean }) =>
     request<BacktestFactorReport>('/backtest/factor', { method: 'POST', body: JSON.stringify(body) }),
-  // 全流程策略回测(异步任务: 建仓/加仓/止盈/止损/做T + 风控)
-  backtestStrategy: (body: { symbols?: string[] | null; initial_capital?: number }) =>
-    request<{ task_id: string }>('/backtest/strategy', { method: 'POST', body: JSON.stringify(body) }),
-  backtestTask: (taskId: string) => request<BacktestTaskState>(`/backtest/tasks/${taskId}`),
+  // 变体对比回测(消融实验): 同池同种子跑多变体, 量化各风控开关贡献
+  backtestStrategyCompare: (body: {
+    pool_size?: number
+    seed?: number
+    board?: string
+    industry?: string
+    universe?: string
+    start?: string
+    end?: string
+    initial_capital?: number
+    variants?: { label?: string; cooldown_days?: number; defense?: string }[]
+  }) => request<{ task_id: string; variants: number }>('/backtest/strategy-compare', { method: 'POST', body: JSON.stringify(body) }),
+  backtestCompareTask: (taskId: string) => request<CompareTaskState>(`/backtest/tasks/${taskId}`),
+  // 持仓回测(方案 v2 §5: 三线对照 + 差异归因)
+  backtestPortfolio: (body: {
+    mode?: string
+    legs?: { symbol: string; name?: string; entry_date?: string; cost?: number; qty?: number }[]
+    manage?: string
+    symbols?: string[] | null
+    start?: string
+    end?: string
+    initial_capital?: number
+    intraday_minutes?: number
+  }) => request<PortfolioBacktestReport>('/backtest/portfolio', { method: 'POST', body: JSON.stringify(body) }),
+  portfolioPreview: () => request<PortfolioPreview>('/backtest/portfolio/preview'),
+  // 建仓腿模板(快捷复用)
+  backtestPresets: () => request<BacktestPreset[]>('/backtest/presets'),
+  saveBacktestPreset: (body: { name: string; legs: { symbol: string; name?: string; entry_date?: string; cost?: number; qty?: number }[] }) =>
+    request<{ id: number; name: string }>('/backtest/presets', { method: 'POST', body: JSON.stringify(body) }),
+  deleteBacktestPreset: (id: number) => request<{ id: number }>(`/backtest/presets/${id}`, { method: 'DELETE' }),
+  // 信号审计(真实 vs 纪律)
+  backtestAudit: (body: { symbols?: string[] | null; start?: string; end?: string }) =>
+    request<SignalAuditReport>('/backtest/audit', { method: 'POST', body: JSON.stringify(body) }),
+  // ---------------------------------------------------------------- K线数据管理(数据管理 tab)
+  /** 日线缓存新鲜度统计 */
+  klineStats: () => request<KlineStats>('/kline-cache/stats'),
+  /** 触发增量补拉(异步任务): 只补 陈旧/不足/未缓存 的票, 断点续跑 */
+  backfillStart: (opts?: { target?: number; symbols?: string[]; force?: boolean }) => {
+    const q = new URLSearchParams()
+    if (opts?.target) q.set('target', String(opts.target))
+    if (opts?.symbols?.length) q.set('symbols', opts.symbols.join(','))
+    if (opts?.force) q.set('force', 'true')
+    return request<{ task_id: string }>(`/kline/backfill?${q.toString()}`, { method: 'POST' })
+  },
+  /** 补拉任务状态(task_id 空 = 最近一次) */
+  backfillStatus: (taskId?: string) =>
+    request<BackfillTask | null>(taskId ? `/kline/backfill/status/${taskId}` : '/kline/backfill/status'),
+  /** 回测冻结快照预热(baostock 前复权, 3年): 默认池=自选+持仓 */
+  backtestWarmup: (body: { symbols?: string[] | null; start?: string; end?: string; force?: boolean }) =>
+    request<{ meta: Record<string, unknown>; results: Record<string, unknown> }>('/backtest/data/warmup', { method: 'POST', body: JSON.stringify(body) }),
+  /** 回测冻结快照状态 */
+  backtestDataStatus: () => request<BacktestDataStatus>('/backtest/data/status'),
 
   // ---------------------------------------------------------------- 三期: 交易日志/统计
   trades: (params: { symbol?: string; action?: string; limit?: number; offset?: number } = {}) => {
@@ -305,6 +354,15 @@ export interface AccountInfo {
   updated_at: string
 }
 
+/** 信号评估结果(单票/批量共用): signal 为 null 表示无信号, error 表示评估失败 */
+export interface EvaluateResult {
+  symbol: string
+  name: string
+  price: number
+  signal: Signal | null
+  error?: string
+}
+
 export interface Signal {
   type: string
   symbol: string
@@ -369,6 +427,43 @@ export interface ScreenerTag {
   kind: 'good' | 'warn' | 'bad' | 'info' | string
 }
 
+/** 选股结果行(三因子得分 + 人话理由 + 趋势阶段 + 因子叠加) */
+export interface ScreenerResult {
+  symbol: string
+  name: string
+  total: number
+  trend_score: number
+  momentum_score: number
+  volume_score: number
+  attention: string
+  close: number
+  adx: number
+  roc: number
+  rsi: number
+  volume_ratio: number
+  amount_avg: number
+  // 以下为人话理由字段(后端 _build_reason 产出; 旧任务结果可能缺失, 前端需容错)
+  bias?: number
+  reason?: string
+  risk?: string
+  tags?: ScreenerTag[]
+  detail?: Record<string, string>
+  // 趋势阶段(方案B): 启动/加速/过热/衰竭; 旧任务结果缺失, 前端需容错
+  stage?: string
+  // 加速期细分: early 前期 / mid 中期 / late 后期(仅 stage=accelerate 时有值)
+  stage_sub?: string
+  // 趋势年龄: 距最近一次短均线上穿中均线的交易日数(null=超回看窗口的老趋势)
+  trend_age?: number | null
+  stage_bonus?: number
+  stage_penalty?: number
+  stage_note?: string
+  // 基本面/事件因子叠加(apply_fundamental_factors 产出): base_total 为叠加前三因子+阶段分, factor_delta 为叠加值
+  base_total?: number
+  factor_delta?: number
+  quality_score?: number
+  event_score?: number
+}
+
 export interface ScreenerTask {
   id: string
   status: string
@@ -377,37 +472,7 @@ export interface ScreenerTask {
   total: number
   done: number
   progress: number
-  result: Array<{
-    symbol: string
-    name: string
-    total: number
-    trend_score: number
-    momentum_score: number
-    volume_score: number
-    attention: string
-    close: number
-    adx: number
-    roc: number
-    rsi: number
-    volume_ratio: number
-    amount_avg: number
-    // 以下为人话理由字段(后端 _build_reason 产出; 旧任务结果可能缺失, 前端需容错)
-    bias?: number
-    reason?: string
-    risk?: string
-    tags?: ScreenerTag[]
-    detail?: Record<string, string>
-    // 趋势阶段(方案B): 启动/加速/过热/衰竭; 旧任务结果缺失, 前端需容错
-    stage?: string
-    stage_bonus?: number
-    stage_penalty?: number
-    stage_note?: string
-    // 基本面/事件因子叠加(apply_fundamental_factors 产出): base_total 为叠加前三因子+阶段分, factor_delta 为叠加值
-    base_total?: number
-    factor_delta?: number
-    quality_score?: number
-    event_score?: number
-  }>
+  result: ScreenerResult[]
   error: string
 }
 
@@ -441,6 +506,8 @@ export interface TrackedStock {
   track_time: string
   score_at_track: number
   stage_at_track: string
+  /** 追踪时的加速期子阶段(early/mid/late; 旧数据缺失, 前端容错) */
+  stage_sub_at_track?: string
   status: string
   archived_at?: string
   archive_reason?: string
@@ -448,11 +515,17 @@ export interface TrackedStock {
   sim_cost: number
   sim_open_at: string
   sim_realized_pnl: number
+  // 归档成绩(结算后写入; 旧归档数据可能缺失, 前端按未结算兜底)
+  final_pnl?: number
+  final_stage?: string
+  final_stage_sub?: string
   latest?: {
     time: string
     score: number
     price: number
     stage: string
+    stage_sub?: string
+    trend_age?: number | null
     signal_type: string
     sample_kind: string
     sim_qty: number
@@ -460,6 +533,21 @@ export interface TrackedStock {
     sim_pnl: number
     sim_action: string
   }
+}
+
+/** 得分追踪: 历史档(已归档)成绩单(list_history 聚合产出) */
+export interface TrackedHistory extends TrackedStock {
+  first_time?: string
+  last_time?: string
+  days?: number
+  first_price?: number
+  last_price?: number
+  /** 纯持有收益%(首->末采样价), 基准 */
+  hold_pnl?: number | null
+  first_score?: number
+  last_score?: number
+  max_score?: number
+  action_counts?: { open: number; add: number; reduce: number; close: number }
 }
 
 /** 得分追踪: 采样点 */
@@ -471,6 +559,8 @@ export interface ScorePoint {
   momentum_score: number
   volume_score: number
   stage: string
+  stage_sub?: string
+  trend_age?: number | null
   price: number
   volume_ratio: number
   signal_type: string
@@ -538,9 +628,119 @@ export interface BacktestFactorReport {
   }
   by_stage: Record<string, BacktestStageResult>
   stage_distribution: Record<string, number>
+  /** 总分分桶(0-40/40-50/50-60/60-70/70+), 验证评分体系有效性 */
+  by_score: Record<string, BacktestStageResult>
+  score_distribution: Record<string, number>
 }
 
-// ---------------------------------------------------------------- 策略回测类型
+// ---------------------------------------------------------------- 持仓回测类型(方案 v2 §5)
+export interface PortfolioLegPreview {
+  symbol: string
+  name: string
+  entry_date: string
+  cost: number
+  qty: number
+  pyramid_stage?: number
+}
+
+export interface PortfolioPreview {
+  positions: PortfolioLegPreview[]
+  trades: PortfolioLegPreview[]
+  manage_options: { key: string; label: string }[]
+}
+
+export interface BacktestPreset {
+  id: number
+  name: string
+  created_at: string
+  legs: { symbol: string; name?: string; entry_date?: string; cost?: number; qty?: number }[]
+}
+
+// ---------------------------------------------------------------- 信号审计(方案 v2 §6)
+export interface SignalAuditReport {
+  meta: {
+    symbols: number
+    days: number
+    start: string
+    end: string
+    notes: string
+  }
+  curves: {
+    real: { date: string; equity: number }[]
+    discipline: { date: string; equity: number }[]
+  }
+  by_symbol: {
+    symbol: string
+    name: string
+    real_return_pct: number
+    discipline_return_pct: number
+    gap_pct: number
+  }[]
+  stats: {
+    gap_total_pct: number
+    audit_count: number
+    agree: number
+    violate: number
+    lag: number
+    early: number
+  }
+  audits: {
+    date: string
+    symbol: string
+    real_action: string
+    advice: string
+    deviation: string
+  }[]
+}
+
+export interface PortfolioBacktestReport {
+  meta: {
+    manage: string
+    manage_label: string
+    legs: number
+    skipped: number
+    initial_capital: number
+    days: number
+    benchmark: string
+    notes: string
+  }
+  curves: {
+    hold: { date: string; equity: number }[]
+    stop: { date: string; equity: number }[]
+    signal: { date: string; equity: number }[]
+    benchmark: { date: string; equity: number }[]
+  }
+  stats: {
+    hold_return_pct: number
+    stop_return_pct: number
+    signal_return_pct: number
+    signal_annual_pct: number
+    managed_max_drawdown_pct: number
+    managed_sharpe: number
+    excess_vs_hold_pct: number
+    trades: number
+    closed: number
+    win_rate: number
+    t_sell_count: number
+    t_contribution: number
+    fuse_triggered: boolean
+    defense_mode: boolean
+  }
+  legs: {
+    symbol: string
+    name: string
+    entry_date: string
+    cost: number
+    qty: number
+    hold_return_pct: number
+    managed_return_pct: number
+    excess_pct: number
+    attribution: Record<string, number>
+  }[]
+  trades: BacktestTrade[]
+}
+
+// ---------------------------------------------------------------- 回测交易明细(持仓/对比回测共用)
 export interface BacktestTrade {
   date: string
   symbol: string
@@ -553,43 +753,81 @@ export interface BacktestTrade {
   reason: string
 }
 
-export interface BacktestStrategyReport {
-  meta: {
-    pool: number
-    skipped: number
-    initial_capital: number
-    final_equity: number
-    total_return_pct: number
-    annual_return_pct: number
-    max_drawdown_pct: number
-    sharpe: number
-    days: number
-    notes: string
-  }
-  stats: {
-    trades: number
-    closed: number
-    win_rate: number
-    profit_factor: number
-    expectancy: number
-    avg_win: number
-    avg_loss: number
-    consecutive_losses_max: number
-    turnover_pct: number
-    t_sell_count: number
-    t_contribution: number
-    fuse_triggered: boolean
-    defense_mode: boolean
-  }
-  equity_curve: { date: string; equity: number }[]
-  trades: BacktestTrade[]
+// ---------------------------------------------------------------- 变体对比回测(消融实验)
+export interface CompareVariantResult {
+  label: string
+  cooldown_days: number
+  defense: string
+  error?: string
+  date_from?: string
+  date_to?: string
+  total_return_pct?: number
+  annual_return_pct?: number
+  max_drawdown_pct?: number
+  sharpe?: number
+  days?: number
+  win_rate?: number
+  profit_factor?: number
+  expectancy?: number
+  trades?: number
+  cooldown_blocks?: number
+  final_defense?: boolean
+  by_action?: Record<string, { n: number; pnl: number }>
+  equity_curve?: { date: string; equity: number }[]
 }
 
-export interface BacktestTaskState {
+export interface CompareReport {
+  pool: { size: number; seed: number; symbols: number; note?: string }
+  variants: CompareVariantResult[]
+}
+
+export interface CompareTaskState {
   status: 'running' | 'done' | 'error'
   progress: number
-  result: BacktestStrategyReport | null
+  result: CompareReport | null
   error: string
+  last_active?: number  // 任务心跳(epoch 秒): 区分"慢"与"死"
+}
+
+// ---------------------------------------------------------------- K线数据管理
+export interface KlineStats {
+  ok: number
+  stale: number
+  missing: number
+  cached: number
+  symbols: number
+  date_from: string
+  date_to: string
+  days_behind: number | null
+  target: number
+  note: string
+}
+
+export interface BackfillTask {
+  id: string
+  status: 'pending' | 'running' | 'done' | 'failed'
+  progress: number
+  total?: number
+  done?: number
+  created_at?: string
+  result?: {
+    target?: number
+    universe?: number
+    pending?: number
+    done?: number
+    insufficient?: { symbol: string; detail: string }[]
+    failed?: { symbol: string; error: string }[]
+    started_at?: string
+    finished_at?: string
+  }
+  error?: string
+}
+
+export interface BacktestDataStatus {
+  symbols: number
+  adjusts: string[]
+  last_fetched_at: string
+  note: string
 }
 
 // ---------------------------------------------------------------- 三期类型

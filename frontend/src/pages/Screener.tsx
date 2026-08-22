@@ -1,10 +1,11 @@
 import { Fragment, useEffect, useMemo, useState, type MouseEvent } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useNavigate } from 'react-router-dom'
 import { api } from '../api/client'
-import type { IndustryNode, InterruptedTask, ScreenerHistoryItem, ScreenerPreset, ScreenerTask } from '../api/client'
+import type { EvaluateResult, IndustryNode, InterruptedTask, ScreenerHistoryItem, ScreenerPreset, ScreenerResult, ScreenerTask } from '../api/client'
 import { Button, Card, ConfirmDialog, EmptyState, ErrorBox, Loading, PageHeader, Table, Td, Th, Tag, inputStyle, toast } from '../components/ui'
 import { cn } from '../components/ui'
+import { SIGNAL_META } from '../components/ui'
+import SignalModal from '../components/SignalModal'
 
 // 理由标签配色: 遵循 A 股惯例, 利多=红 / 偏空=绿 / 需注意=橙 / 中性=灰
 const TAG_COLOR: Record<string, string> = {
@@ -15,15 +16,22 @@ const TAG_COLOR: Record<string, string> = {
 }
 
 // 趋势阶段(方案B): 启动/加速=红(利多) / 过热=橙(需注意) / 衰竭=绿(偏空)
+// 加速期细分: 前期=红(首仓区) / 中期=深红(主升段) / 后期=橙(逼近过热, 衔接过热期配色)
 const STAGE_LABEL: Record<string, string> = {
   launch: '启动期',
   accelerate: '加速期',
+  'accelerate:early': '加速前期',
+  'accelerate:mid': '加速中期',
+  'accelerate:late': '加速后期',
   overheat: '过热期',
   exhaust: '衰竭期',
 }
 const STAGE_COLOR: Record<string, string> = {
   launch: '#dc2626',
   accelerate: '#dc2626',
+  'accelerate:early': '#dc2626',
+  'accelerate:mid': '#b91c1c',
+  'accelerate:late': '#ea580c',
   overheat: '#ea580c',
   exhaust: '#16a34a',
 }
@@ -32,7 +40,9 @@ const STAGE_COLOR: Record<string, string> = {
 const STAGE_FILTERS = [
   { value: 'all', label: '全部' },
   { value: 'launch', label: '启动期' },
-  { value: 'accelerate', label: '加速期' },
+  { value: 'accelerate:early', label: '加速前期' },
+  { value: 'accelerate:mid', label: '加速中期' },
+  { value: 'accelerate:late', label: '加速后期' },
   { value: 'overheat', label: '过热期' },
   { value: 'exhaust', label: '衰竭期' },
   { value: 'none', label: '无阶段' },
@@ -40,8 +50,11 @@ const STAGE_FILTERS = [
 
 type StageFilter = (typeof STAGE_FILTERS)[number]['value']
 
-/** 结果行的阶段归组键: 缺失/空/none 统一归为 'none' */
-const stageKeyOf = (stage?: string) => (stage && stage !== 'none' ? stage : 'none')
+/** 结果行的阶段归组键: 缺失/空/none 统一归为 'none'; 加速期细分为 accelerate:子阶段(旧记录无子阶段时保留原值, 仅在"全部"下可见) */
+const stageKeyOf = (stage?: string, sub?: string) => {
+  if (!stage || stage === 'none') return 'none'
+  return stage === 'accelerate' && sub ? `accelerate:${sub}` : stage
+}
 
 const FACTORS = ['趋势', '动量', '量能'] as const
 
@@ -69,7 +82,6 @@ const LEVEL_OPTIONS = [
 ]
 
 export default function Screener() {
-  const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [error, setError] = useState('')
 
@@ -99,6 +111,11 @@ export default function Screener() {
   const [activeHistory, setActiveHistory] = useState<number | null>(null)
   // 结果阶段筛选(全部/启动/加速/过热/衰竭/无阶段)
   const [stageFilter, setStageFilter] = useState<StageFilter>('all')
+  // 信号速览弹窗: 打开时的结果快照 + 当前索引(中途改筛选不影响弹窗)
+  const [signalView, setSignalView] = useState<{ rows: ScreenerResult[]; idx: number } | null>(null)
+  // 批量看信号: 预扫结果(symbol -> 评估结果) + 扫描中标记; 供表格徽章列与弹窗免请求复用
+  const [evalCache, setEvalCache] = useState<Record<string, EvaluateResult>>({})
+  const [scanBusy, setScanBusy] = useState(false)
   // 删除二次确认(项目规则): 待删除的目标
   const [confirmDel, setConfirmDel] = useState<{ type: 'history' | 'preset'; id: number } | null>(null)
   // 清理选股缓存(管理员密码确认; 注意: useState 必须在所有提前 return 之前)
@@ -166,6 +183,12 @@ export default function Screener() {
       if (liveTask.status === 'failed') toast.error(liveTask.error || '扫描失败')
     }
   }, [liveTask?.status])
+
+  // 切换任务(新扫描/历史回看)时: 信号徽章与弹窗快照失效, 一并清理
+  useEffect(() => {
+    setEvalCache({})
+    setSignalView(null)
+  }, [task?.id])
 
   // 选股池/行业树状态提示(数据到达后派生)
   useEffect(() => {
@@ -303,7 +326,7 @@ export default function Screener() {
   const stageCounts = useMemo(() => {
     const counts: Record<string, number> = { all: task?.result.length ?? 0 }
     for (const r of task?.result ?? []) {
-      const k = stageKeyOf(r.stage)
+      const k = stageKeyOf(r.stage, r.stage_sub)
       counts[k] = (counts[k] ?? 0) + 1
     }
     return counts
@@ -313,8 +336,28 @@ export default function Screener() {
   const filteredResult = useMemo(() => {
     const list = task?.result ?? []
     if (!stageFilter || stageFilter === 'all') return list
-    return list.filter((r) => stageKeyOf(r.stage) === stageFilter)
+    return list.filter((r) => stageKeyOf(r.stage, r.stage_sub) === stageFilter)
   }, [task, stageFilter])
+
+  // 批量看信号: 对当前结果调 evaluate-batch(后端并发 5), 扫完在表格显示信号徽章
+  // 结果存 evalCache, 弹窗打开已扫过的票直接出结果(秒开)
+  const scanSignals = async () => {
+    if (scanBusy || !task || task.result.length === 0) return
+    setScanBusy(true)
+    try {
+      const symbols = task.result.map((r) => r.symbol)
+      const results = await api.evaluateBatch(symbols)
+      const m: Record<string, EvaluateResult> = {}
+      for (const r of results) m[r.symbol] = r
+      setEvalCache(m)
+      const hit = results.filter((r) => r.signal).length
+      toast.success(`信号扫描完成: ${hit}/${results.length} 只有信号`)
+    } catch (e) {
+      toast.error(String((e as Error).message))
+    } finally {
+      setScanBusy(false)
+    }
+  }
 
   if (isLoading) return <Loading />
 
@@ -843,6 +886,15 @@ export default function Screener() {
                     {f.label}({stageCounts[f.value] ?? 0})
                   </button>
                 ))}
+                {/* 批量看信号: 扫完后表格显示信号徽章, 一眼看出高分+有信号的双重确认票 */}
+                <Button
+                  kind="ghost"
+                  className="ml-auto h-6 px-2 text-[11px]"
+                  onClick={scanSignals}
+                  disabled={scanBusy}
+                >
+                  {scanBusy ? '信号扫描中...' : '批量看信号'}
+                </Button>
               </div>
               <Table>
                 <thead>
@@ -861,7 +913,7 @@ export default function Screener() {
                     <Th right>量比</Th>
                     <Th right>额(亿)</Th>
                     <Th>关注度</Th>
-                    <Th />
+                    <Th>信号</Th>
                     <Th />
                     <Th />
                   </tr>
@@ -883,8 +935,16 @@ export default function Screener() {
                           <Td right className={cn('font-bold', r.total >= 60 ? 'text-rise' : 'text-ink')}>{r.total.toFixed(1)}</Td>
                           <Td>
                             {r.stage && r.stage !== 'none' ? (
-                              <span className={cn('text-[12px] font-medium', STAGE_COLOR[r.stage] ?? 'text-ink-muted')}>
-                                {STAGE_LABEL[r.stage] ?? r.stage}
+                              <span
+                                className="text-[12px] font-medium"
+                                style={{ color: STAGE_COLOR[stageKeyOf(r.stage, r.stage_sub)] ?? '#64748b' }}
+                              >
+                                {STAGE_LABEL[stageKeyOf(r.stage, r.stage_sub)] ?? r.stage}
+                                {r.stage === 'accelerate' && (
+                                  <span className="ml-0.5 font-normal text-ink-faint">
+                                    {r.trend_age != null ? `${r.trend_age}日` : '60日+'}
+                                  </span>
+                                )}
                               </span>
                             ) : (
                               <span className="text-ink-faint">-</span>
@@ -903,13 +963,27 @@ export default function Screener() {
                           <Td>
                             <Tag color={r.attention === '强烈关注' ? '#dc2626' : r.attention === '重点观察' ? '#ea580c' : '#64748b'}>{r.attention}</Tag>
                           </Td>
-                          {/* 快速进入信号流程: 跳转信号中心并自动评估该票 */}
+                          {/* 信号徽章: 批量看信号扫过才显示(未扫为空, 点击「看信号」单只评估) */}
+                          <Td>
+                            {evalCache[r.symbol] ? (
+                              evalCache[r.symbol].signal ? (
+                                <Tag color={SIGNAL_META[evalCache[r.symbol].signal!.type]?.color ?? '#64748b'}>
+                                  {SIGNAL_META[evalCache[r.symbol].signal!.type]?.label ?? evalCache[r.symbol].signal!.type}
+                                </Tag>
+                              ) : evalCache[r.symbol].error ? (
+                                <span className="text-[10px] text-rise">失败</span>
+                              ) : (
+                                <span className="text-[10px] text-ink-faint">无</span>
+                              )
+                            ) : null}
+                          </Td>
+                          {/* 信号速览: 页内弹窗直接看结果, ←/→ 切换上下只(快照=当前筛选后的列表) */}
                           <Td className="text-center">
                             <div onClick={(e) => e.stopPropagation()}>
                               <Button
                                 kind="primary"
                                 className="h-6 px-2 text-[11px]"
-                                onClick={() => navigate(`/signals?symbol=${r.symbol}&name=${encodeURIComponent(r.name || '')}`)}
+                                onClick={() => setSignalView({ rows: filteredResult, idx: i })}
                               >
                                 看信号
                               </Button>
@@ -927,6 +1001,7 @@ export default function Screener() {
                                     name: r.name || '',
                                     score: r.total,
                                     stage: r.stage,
+                                    stage_sub: r.stage_sub,
                                   }).then(() => {
                                     toast.success(`已加入得分追踪: ${r.symbol}`)
                                   }).catch((err) => toast.error(String((err as Error).message)))
@@ -941,7 +1016,7 @@ export default function Screener() {
 
                         {/* 理由行: 标签常驻, 展开后追加三因子拆解与风险 */}
                         <tr className={cn(open ? 'bg-[#fafbfc]' : '')}>
-                          <Td colSpan={15} className="pb-2">
+                          <Td colSpan={16} className="pb-2">
                               {tags.length === 0 && !r.reason ? (
                                 <span className="text-[11px] text-ink-faint">本条结果由旧版本生成，重新扫描即可显示选股理由</span>
                               ) : (
@@ -1009,6 +1084,16 @@ export default function Screener() {
           message={confirmDel.type === 'history' ? '删除后无法恢复，确定删除该条分析记录？' : '删除后无法恢复，确定删除该条件预设？'}
           onConfirm={doDelete}
           onCancel={() => setConfirmDel(null)}
+        />
+      )}
+      {/* 信号速览弹窗: 打开时对结果快照, ←/→ 导航, Esc 关闭 */}
+      {signalView && (
+        <SignalModal
+          rows={signalView.rows}
+          index={signalView.idx}
+          onClose={() => setSignalView(null)}
+          onNav={(i) => setSignalView((v) => (v ? { ...v, idx: i } : v))}
+          evalCache={evalCache}
         />
       )}
     </div>

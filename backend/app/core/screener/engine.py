@@ -64,17 +64,61 @@ def _event_cross_up(a: pd.Series, b: pd.Series) -> bool:
     return any(ta[i] > tb[i] and ta[i - 1] <= tb[i - 1] for i in range(1, len(ta)))
 
 
+def _trend_age(ind: pd.DataFrame, ma_s: str, ma_m: str, end: int, lookback: int) -> int | None:
+    """趋势年龄: 距最近一次短均线上穿中均线的交易日数.
+
+    仅在 [end-lookback, end) 窗口内回看(回测逐日复用整段指标时按 end 截取);
+    找不到(更早发生的老趋势)返回 None, 由调用方按加速后期处理.
+    """
+    start = max(0, end - lookback)
+    a = ind[ma_s].iloc[start:end].tolist()
+    b = ind[ma_m].iloc[start:end].tolist()
+    for i in range(len(a) - 1, 0, -1):
+        if a[i] > b[i] and a[i - 1] <= b[i - 1]:
+            return end - 1 - (start + i)
+    return None
+
+
+_ACCEL_SUB_LABEL = {"early": "加速前期", "mid": "加速中期", "late": "加速后期"}
+
+
+def _accel_sub_stage(sc: dict, bias: float, rsi: float, age: int | None) -> tuple[str, float, str]:
+    """加速期细分: 时间维度=趋势年龄, 空间维度=乖离/RSI 热度渐进.
+
+    前期: 趋势刚理顺且涨幅温和 -> 风报比佳, 首仓建仓区
+    中期: 主升段动量最强 -> 持有/加仓区
+    后期: 趋势成熟或热度逼近过热线(任一命中即后期, 含老趋势) -> 只持有不加仓
+    返回 (子阶段, 加分, 说明).
+    """
+    age_txt = f"{age}日" if age is not None else f"{int(sc.get('accel_age_lookback', 60))}日+"
+    if age is None or age >= int(sc.get("accel_late_min_age", 30)) \
+            or bias >= float(sc.get("accel_late_bias", 7.0)) \
+            or rsi >= float(sc.get("accel_late_rsi", 70.0)):
+        return ("late", float(sc.get("accel_late_bonus", 0.5)),
+                f"趋势已运行{age_txt}/乖离{bias:.1f}%/RSI {rsi:.0f}, 逼近过热, 只持有不加仓")
+    if age <= int(sc.get("accel_early_max_age", 12)) \
+            and bias < float(sc.get("accel_early_bias_max", 4.0)) \
+            and rsi < float(sc.get("accel_early_rsi_max", 65.0)):
+        return ("early", float(sc.get("accel_early_bonus", 2.0)),
+                f"趋势刚理顺{age_txt}, 乖离{bias:.1f}%温和, 风报比佳, 首仓建仓区")
+    return ("mid", float(sc.get("accel_mid_bonus", 3.0)),
+            f"主升段已运行{age_txt}, 乖离{bias:.1f}%, 动量最强, 持有/加仓区")
+
+
 def detect_stage(ind: pd.DataFrame, cfg: dict, end: int | None = None) -> dict[str, Any]:
     """识别趋势阶段(方案B, 纯函数, 与评分同源).
 
     阶段: launch 启动 / accelerate 加速 / overheat 过热 / exhaust 衰竭 / none 无趋势.
     判定优先级: 衰竭 > 过热 > 启动 > 加速 > 无趋势(仅对趋势向上标的判阶段).
+    加速期进一步细分为 stage_sub: early 前期 / mid 中期 / late 后期(见 _accel_sub_stage).
     end: 可选, 指定判定位置(回测逐日复用整段指标时传入, 避免反复复制).
 
-    输出: {stage, events, bonus, penalty, note}
-      events  命中的启动事件列表(macd_golden/roc_turn/ma_cross/adx_first)
-      bonus   启动加分(已按 launch_bonus_max 封顶)
-      penalty 过热/衰竭扣分
+    输出: {stage, stage_sub, trend_age, events, bonus, penalty, note}
+      events    命中的启动事件列表(macd_golden/roc_turn/ma_cross/adx_first)
+      bonus     启动加分(已按 launch_bonus_max 封顶) 或 加速子阶段加分
+      penalty   过热/衰竭扣分
+      stage_sub 加速期子阶段(其余阶段为空串)
+      trend_age 趋势年龄(距最近一次短均线上穿中均线的交易日数, 仅加速期有值)
     """
     trend = cfg["趋势"]
     momentum = cfg["动量"]
@@ -83,7 +127,8 @@ def detect_stage(ind: pd.DataFrame, cfg: dict, end: int | None = None) -> dict[s
     n = len(ind)
     if end is None:
         end = n
-    out: dict[str, Any] = {"stage": "none", "events": [], "bonus": 0.0, "penalty": 0.0, "note": ""}
+    out: dict[str, Any] = {"stage": "none", "stage_sub": "", "trend_age": None,
+                           "events": [], "bonus": 0.0, "penalty": 0.0, "note": ""}
     if not sc.get("enabled", True) or end < STAGE_WINDOW:
         return out
 
@@ -150,7 +195,9 @@ def detect_stage(ind: pd.DataFrame, cfg: dict, end: int | None = None) -> dict[s
         out["note"] = "刚起趋势: " + "、".join(_STAGE_EVENT_LABEL.get(e, e) for e in events)
     elif ma_s_v > ma_m_v:
         out["stage"] = "accelerate"
-        out["note"] = "多头排列且动量健康, 加速期"
+        age = _trend_age(ind, ma_s, ma_m, end, int(sc.get("accel_age_lookback", 60)))
+        out["stage_sub"], out["bonus"], out["note"] = _accel_sub_stage(sc, bias, rsi, age)
+        out["trend_age"] = age
     return out
 
 
@@ -308,13 +355,24 @@ def _build_reason(f: dict[str, Any], cfg: dict) -> dict[str, Any]:
         tags.append(_tag("启动期", "good"))
         parts_t.append(f"刚起趋势({f.get('stage_note', '')})")
     elif stage == "accelerate":
-        tags.append(_tag("加速期", "good"))
+        sub = f.get("stage_sub") or ""
+        if sub == "late":
+            tags.append(_tag("加速后期", "warn"))
+        else:
+            tags.append(_tag(_ACCEL_SUB_LABEL.get(sub, "加速期"), "good"))
+        if f.get("stage_note"):
+            parts_t.append(f["stage_note"])
     elif stage == "overheat":
         tags.append(_tag("过热期", "warn"))
         risks.append(f"趋势过热({f.get('stage_note', '')}), 追高风险大, 宜等回踩")
     elif stage == "exhaust":
         tags.append(_tag("衰竭期", "bad"))
         risks.append(f"趋势衰竭({f.get('stage_note', '')}), 不宜新建仓")
+
+    # ---------------------------------------------------------------- 动量确认打折(回测校准)
+    if f.get("trend_discount", 0) > 0:
+        tags.append(_tag("动量未确认", "warn"))
+        risks.append(f"趋势强但动量未确认(动量分{f['momentum_score']:.0f}), 疑似高位滞涨, 趋势分已打折")
 
     return {
         "reason": "；".join(["、".join(parts_t), "、".join(parts_m), "、".join(parts_v)]),
@@ -328,17 +386,23 @@ def _build_reason(f: dict[str, Any], cfg: dict) -> dict[str, Any]:
     }
 
 
-def score_indicators(ind: pd.DataFrame, cfg: dict | None = None) -> dict[str, Any]:
+def score_indicators(ind: pd.DataFrame, cfg: dict | None = None,
+                     end: int | None = None, with_reason: bool = True) -> dict[str, Any]:
     """三因子评分(纯函数, 输入已含指标列的 DataFrame, 主要取最后一根 bar, 并辅以近 N 根序列判断趋势持续度/加速度/连贯性).
 
     输出除各项得分外, 还含 reason/risk/tags/detail 四个人话字段(见 _build_reason)。
+    end: 可选, 评分截至第 end 根(不含), 默认末行 —— 回测逐日复用整段指标时传入,
+    避免逐日 iloc[:i] 复制全量 DataFrame。
+    with_reason: False 时跳过人话理由拼装(回测逐日高频调用提速), 输出仅含得分与指标字段。
     """
     cfg = cfg or config_manager.get()
     trend = cfg["趋势"]
     momentum = cfg["动量"]
     volume = cfg["量能"]
-    last = ind.iloc[-1]
-    prev = ind.iloc[-2] if len(ind) > 1 else last
+    if end is None:
+        end = len(ind)
+    last = ind.iloc[end - 1]
+    prev = ind.iloc[end - 2] if end > 1 else last
     adx_period = int(trend.get("adx_period", 14))
     roc_period = int(momentum["roc_period"])
     ma_s, ma_m, ma_l = f"ma{trend['ma_short']}", f"ma{trend['ma_mid']}", f"ma{trend['ma_long']}"
@@ -348,7 +412,7 @@ def score_indicators(ind: pd.DataFrame, cfg: dict | None = None) -> dict[str, An
     ma_s_v, ma_m_v, ma_l_v = _f(last.get(ma_s)), _f(last.get(ma_m)), _f(last.get(ma_l))
     bullish = ma_s_v > ma_m_v > ma_l_v
     # ② 趋势持续度: 读近 N 根判断 ADX 是否仍在走强, 达标但转弱打折
-    adx_n_ago = _f(ind[f"adx{adx_period}"].iloc[-6]) if len(ind) > 5 else adx
+    adx_n_ago = _f(ind[f"adx{adx_period}"].iloc[end - 6]) if end > 5 else adx
     adx_rising = adx >= adx_n_ago and adx >= trend["adx_threshold"]
     adx_base = min(20.0, max(0.0, (adx - trend["adx_threshold"]) / 25 * 20))
     if adx >= trend["adx_threshold"] and not adx_rising:
@@ -372,7 +436,7 @@ def score_indicators(ind: pd.DataFrame, cfg: dict | None = None) -> dict[str, An
         roc_score = max(3.0, 10 - (roc - 20) / 15 * 7)
     roc_score = round(min(15.0, max(0.0, roc_score)), 2)
     # ② 动量加速度: 近几日 ROC 变化, 减速则轻微打折
-    roc_n_ago = _f(ind[f"roc{roc_period}"].iloc[-4]) if len(ind) > 3 else roc
+    roc_n_ago = _f(ind[f"roc{roc_period}"].iloc[end - 4]) if end > 3 else roc
     if roc > 0 and (roc - roc_n_ago) < 0:
         roc_score *= 0.9
     rsi_score = 10.0 if 50 <= rsi <= 70 else (5.0 if 40 <= rsi < 50 or 70 < rsi <= 80 else 0.0)
@@ -406,13 +470,25 @@ def score_indicators(ind: pd.DataFrame, cfg: dict | None = None) -> dict[str, An
     volume_score = min(20.0, max(0.0, round(volume_score, 1)))
 
     # ② 趋势连贯性: 近 20 日收盘站在短期均线之上的占比(0~1)
-    consistency = round(float((ind["close"].tail(20) > ind[ma_s].tail(20)).mean()), 2) if len(ind) >= 20 else 0.0
+    consistency = round(float((ind["close"].iloc[end - 20:end] > ind[ma_s].iloc[end - 20:end]).mean()), 2) if end >= 20 else 0.0
 
     # ---- 趋势阶段(方案B): 启动加分 / 过热·衰竭扣分
     # 让"刚起趋势"的票浮进高分区, 把乖离过大/动能衰竭的票压下去
-    stage_info = detect_stage(ind, cfg)
+    stage_info = detect_stage(ind, cfg, end=end)
     stage_bonus = stage_info["bonus"]
     stage_penalty = stage_info["penalty"]
+
+    # ---- 动量确认打折(2026-08-22 回测校准)
+    # 回测解剖: "趋势分30+且动量分<20"(强趋势、死动量的高位滞涨/背离票) 20日期望约 -1.1%,
+    # 却能靠趋势分挤进 50-60 区间占用 Top30 名额。规则: 趋势分达标但动量分不足时,
+    # 趋势分打折降档 —— 趋势必须由动量确认才全额计分; 动量强的票不受影响。
+    trend_discount = 0.0
+    if (trend.get("momentum_confirm_enabled", True)
+            and trend_score >= float(trend.get("momentum_confirm_min_trend", 25.0))
+            and momentum_score < float(trend.get("momentum_confirm_min_momentum", 20.0))):
+        factor = float(trend.get("momentum_confirm_factor", 0.7))
+        trend_discount = round(trend_score * (1.0 - factor), 1)
+        trend_score = round(trend_score * factor, 1)
 
     total = round(trend_score + momentum_score + volume_score + stage_bonus - stage_penalty, 1)
     if total >= 70:
@@ -429,6 +505,7 @@ def score_indicators(ind: pd.DataFrame, cfg: dict | None = None) -> dict[str, An
 
     out: dict[str, Any] = {
         "trend_score": round(trend_score, 1),
+        "trend_discount": trend_discount,
         "momentum_score": round(momentum_score, 1),
         "volume_score": round(volume_score, 1),
         "total": total,
@@ -442,30 +519,65 @@ def score_indicators(ind: pd.DataFrame, cfg: dict | None = None) -> dict[str, An
         "adx_rising": adx_rising,
         "consistency": consistency,
         "date": str(last["date"]),
-        # 趋势阶段(方案B): 阶段/启动事件/加减分
+        # 趋势阶段(方案B): 阶段/启动事件/加减分; 加速期细分(方案: 前期/中期/后期)
         "stage": stage_info["stage"],
+        "stage_sub": stage_info["stage_sub"],
+        "trend_age": stage_info["trend_age"],
         "stage_events": stage_info["events"],
         "stage_bonus": round(stage_bonus, 1),
         "stage_penalty": round(stage_penalty, 1),
         "stage_note": stage_info["note"],
     }
-    # 人话理由(与上面得分同源, 不重算指标)
-    out.update(_build_reason({
-        **out,
-        "bullish": bullish,
-        "ma_s": ma_s_v, "ma_m": ma_m_v, "ma_l": ma_l_v,
-        "hist": hist, "hist_prev": hist_prev, "macd_score": macd_score,
-        "price_up": price_up,
-    }, cfg))
+    # 人话理由(与上面得分同源, 不重算指标); 回测逐日高频调用时跳过提速
+    if with_reason:
+        out.update(_build_reason({
+            **out,
+            "bullish": bullish,
+            "ma_s": ma_s_v, "ma_m": ma_m_v, "ma_l": ma_l_v,
+            "hist": hist, "hist_prev": hist_prev, "macd_score": macd_score,
+            "price_up": price_up,
+        }, cfg))
     return out
+
+
+def apply_factors_if_enabled(results: list[dict[str, Any]], cfg: dict[str, Any],
+                             enabled: bool = True) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """若基本面/事件因子启用, 对 results 叠加因子调整(扫描与追踪采样共用, 保证同口径).
+
+    返回 (results, factor_info): factor_info 含 enabled/applied/reason + 叠加统计。
+    读本地表零网络; 单票调用传 [score] 即可。
+    """
+    q_cfg = cfg.get("基本面因子", {}) or {}
+    e_cfg = cfg.get("业绩事件", {}) or {}
+    factor_enabled = bool(q_cfg.get("enabled") or e_cfg.get("enabled"))
+    if not factor_enabled:
+        return results, {"enabled": False, "applied": False, "reason": "配置未启用"}
+    if not enabled:
+        return results, {"enabled": True, "applied": False, "reason": "apply_factors=False 本次跳过"}
+    syms = [r.get("symbol", "") for r in results if r.get("symbol")]
+    if not syms:
+        return results, {"enabled": True, "applied": False, "reason": "无结果"}
+    from app.core.fundamentals import (
+        apply_fundamental_factors,
+        load_fundamentals_map,
+        load_recent_events,
+    )
+
+    fund_map = load_fundamentals_map(syms)
+    event_map = load_recent_events(syms, int(e_cfg.get("lookback_days", 90)))
+    results, factor_stats = apply_fundamental_factors(
+        results, fund_map, event_map, q_cfg, e_cfg)
+    return results, {"enabled": True, "applied": True, **factor_stats}
 
 
 async def score_symbol(symbol: str, cfg: dict[str, Any] | None = None, count: int = 120,
                        min_amount: float = MIN_DAILY_AMOUNT,
-                       name_map: dict[str, str] | None = None) -> dict[str, Any] | None:
-    """单票评分(与扫描同口径): 取数 + 流动性过滤 + 指标 + 评分.
+                       name_map: dict[str, str] | None = None,
+                       apply_factors: bool = True) -> dict[str, Any] | None:
+    """单票评分(与扫描同口径): 取数 + 流动性过滤 + 指标 + 评分 + 因子调整.
 
-    供得分追踪采样复用(保证追踪分数与选股扫描可比); 停牌/数据不足/失败返回 None.
+    供得分追踪采样复用(与选股扫描总分可比); 停牌/数据不足/失败返回 None.
+    apply_factors=False 时不做因子叠加(scan 批量路径用, 由 scan 统一叠加避免双计).
     """
     cfg = cfg or {}
     try:
@@ -485,6 +597,14 @@ async def score_symbol(symbol: str, cfg: dict[str, Any] | None = None, count: in
         score = score_indicators(ind, cfg)
         score["symbol"] = symbol
         score["name"] = (name_map or {}).get(symbol, "")
+        # 与扫描同口径: 叠加基本面/事件因子(复用公共逻辑; 失败忽略保持基础分)
+        if apply_factors:
+            try:
+                results, _ = apply_factors_if_enabled([score], cfg)
+                if results:
+                    score = results[0]
+            except Exception as exc:  # noqa: BLE001 - 因子调整失败不阻塞评分
+                logger.debug("score_symbol %s 因子调整失败(忽略): %s", symbol, exc)
         score["amount_avg"] = round(avg_amount / 100_000_000, 2)  # 亿
         return score
     except Exception as exc:  # noqa: BLE001
@@ -549,7 +669,9 @@ class StockScreener:
     @staticmethod
     def _match_board(symbol: str, board: str) -> bool:
         prefixes = BOARD_PREFIXES.get(board)
-        return bool(prefixes) and symbol.startswith(prefixes)
+        if not prefixes:
+            return False
+        return symbol.startswith(prefixes)
 
     @staticmethod
     def _split_multi(value: str | None) -> list[str]:
@@ -700,6 +822,7 @@ class StockScreener:
             try:
                 return await score_symbol(
                     symbol, cfg, count, min_amount, name_map,
+                    apply_factors=False,  # 因子由 scan 批后统一叠加, 避免双计
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.debug("扫描 %s 失败: %s", symbol, exc)
@@ -741,36 +864,18 @@ class StockScreener:
         results.sort(key=lambda r: r["total"], reverse=True)
 
         # ---- ⑦ 基本面质量 + 业绩事件因子(读本地表, 零额外网络调用) ----
+        # 与 score_symbol(追踪采样)共用 apply_factors_if_enabled, 保证扫描与采样同口径;
         # 放在行业限配之前: 质量 filter 先剔除垃圾, 限配再在"质量达标"的池子里分组
-        q_cfg = cfg.get("基本面因子", {})
-        e_cfg = cfg.get("业绩事件", {})
-        factor_enabled = bool(q_cfg.get("enabled") or e_cfg.get("enabled"))
-        factor_info: dict[str, Any] = {"enabled": factor_enabled, "applied": False}
-        if factor_enabled and apply_factors:
-            from app.core.fundamentals import (
-                apply_fundamental_factors,
-                load_fundamentals_map,
-                load_recent_events,
-            )
-            syms = [r["symbol"] for r in results]
-            fund_map = load_fundamentals_map(syms)
-            event_map = load_recent_events(syms, int(e_cfg.get("lookback_days", 90)))
-            results, factor_stats = apply_fundamental_factors(
-                results, fund_map, event_map, q_cfg, e_cfg,
-            )
-            factor_info.update({"applied": True, **factor_stats})
+        results, factor_info = apply_factors_if_enabled(results, cfg, apply_factors)
+        if factor_info.get("applied"):
             logger.info(
                 "基本面+事件因子生效: 候选%d -> %d(剔除%d, 无数据%d, 事件命中%d)",
-                factor_stats.get("before", 0), factor_stats.get("after", 0),
-                factor_stats.get("removed", 0), factor_stats.get("no_fundamental_data", 0),
-                factor_stats.get("event_hits", 0),
+                factor_info.get("before", 0), factor_info.get("after", 0),
+                factor_info.get("removed", 0), factor_info.get("no_fundamental_data", 0),
+                factor_info.get("event_hits", 0),
             )
-        elif factor_enabled and not apply_factors:
-            factor_info["reason"] = "apply_factors=False 本次跳过"
-            logger.info("apply_factors=False, 跳过基本面+事件因子")
         else:
-            factor_info["reason"] = "配置未启用"
-            logger.info("基本面+事件因子未启用(配置 enabled=false)")
+            logger.info("基本面+事件因子: %s", factor_info.get("reason", "跳过"))
 
         # ---- ⑤ 每行业限配(内存后处理, 零额外调用) ----
         cap_cfg = cfg.get("行业限配", {})
@@ -789,7 +894,7 @@ class StockScreener:
         if per_industry > 0:
             cap_enabled = True
             class_map = load_classification_map([r["symbol"] for r in results])
-            before = results
+            before_cap = results
             results = apply_per_industry_cap(results, class_map, per_industry, industry_level)
 
             # 统计每组截断情况(验证/日志/汇总用)
@@ -797,13 +902,13 @@ class StockScreener:
                 cls = class_map.get(r.get("symbol", ""))
                 key = str(getattr(cls, industry_level, "") or getattr(cls, "industry", "") or "").strip()
                 return key or "_未知_"
-            before_groups = Counter(_grp(r) for r in before)
+            before_groups = Counter(_grp(r) for r in before_cap)
             after_groups = Counter(_grp(r) for r in results)
             capped = {k: (b, after_groups.get(k, 0))
                       for k, b in before_groups.items() if after_groups.get(k, 0) < b}
-            cap_before = len(before)
+            cap_before = len(before_cap)
             cap_after = len(results)
-            cap_removed = len(before) - len(results)
+            cap_removed = len(before_cap) - len(results)
             cap_capped = [{"industry": k, "before": b, "after": a}
                           for k, (b, a) in sorted(capped.items(), key=lambda x: -x[1][0])]
             if capped:
