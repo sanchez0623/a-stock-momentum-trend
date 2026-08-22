@@ -277,6 +277,43 @@ async def get_task(task_id: str) -> dict:
     return {"code": 0, "msg": "ok", "data": dict(t)}
 
 
+@router.get("/backtest/tasks/{task_id}/stack")
+async def get_task_stack(task_id: str) -> dict:
+    """卡死诊断: dump 该任务工作线程的实时调用栈(前端"诊断卡住"按钮调用).
+
+    连续调用两次对比栈顶是否变化: 不变=真卡死(栈顶即卡点); 变化=在慢段运行.
+    """
+    import linecache
+    import sys
+
+    with _tasks_lock:
+        t = _tasks.get(task_id)
+    if t is None:
+        return {"code": 1, "msg": "任务不存在", "data": None}
+    if t.get("status") != "running":
+        return {"code": 0, "msg": f"任务已结束({t.get('status')}), 无需诊断", "data": None}
+
+    tid = t.get("thread_id")
+    frame = sys._current_frames().get(tid)
+    if frame is None:
+        return {"code": 1, "msg": "工作线程已不存在(进程重启?)", "data": None}
+
+    # 手动构造栈文本(兼容 3.11, 无 format_frame_summary)
+    frames: list[str] = []
+    f = frame
+    while f is not None and len(frames) < 12:
+        co = f.f_code
+        line = linecache.getline(co.co_filename, f.f_lineno).strip()
+        frames.append(f'  {co.co_filename}:{f.f_lineno} in {co.co_name}\n    {line}')
+        f = f.f_back
+    idle = time.time() - t.get("last_active", time.time())
+    return {"code": 0, "msg": "ok", "data": {
+        "progress": t.get("progress"),
+        "idle_seconds": round(idle, 1),
+        "stack": "\n".join(reversed(frames)),
+    }}
+
+
 # ---------------------------------------------------------------- 变体对比回测(消融实验)
 class CompareVariantIn(BaseModel):
     label: str = ""                    # 空 = 自动命名
@@ -328,6 +365,8 @@ async def run_strategy_compare(body: StrategyCompareBody) -> dict:
                            "error": "", "last_active": time.time()}
 
     def _run() -> None:
+        with _tasks_lock:
+            _tasks[task_id]["thread_id"] = threading.get_ident()  # 供卡死诊断端点 dump 栈
         try:
             symbols, pool_note = build_pool(
                 pool_size, int(body.seed),

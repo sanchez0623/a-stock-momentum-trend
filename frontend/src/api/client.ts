@@ -154,6 +154,9 @@ export const api = {
     variants?: { label?: string; cooldown_days?: number; defense?: string }[]
   }) => request<{ task_id: string; variants: number }>('/backtest/strategy-compare', { method: 'POST', body: JSON.stringify(body) }),
   backtestCompareTask: (taskId: string) => request<CompareTaskState>(`/backtest/tasks/${taskId}`),
+  /** 卡死诊断: dump 回测工作线程实时调用栈(连点两次对比栈顶, 不变=真卡死) */
+  backtestTaskStack: (taskId: string) =>
+    request<{ progress: number; idle_seconds: number; stack: string }>(`/backtest/tasks/${taskId}/stack`),
   // 持仓回测(方案 v2 §5: 三线对照 + 差异归因)
   backtestPortfolio: (body: {
     mode?: string

@@ -333,6 +333,25 @@ function CompareTab({ taskId, setTaskId }: { taskId: string | null; setTaskId: (
   const [error, setError] = useState('')
   // 心跳时钟: 每秒重算"距上次活动秒数"(修复数据不变时不重渲染导致的提示冻结)
   const [nowTs, setNowTs] = useState(() => Date.now())
+  // 卡死诊断: 两次采样对比栈顶(不变=真卡死)
+  const [diagStack, setDiagStack] = useState<{ top: string; idle: number; stack: string; at: string } | null>(null)
+
+  const diagnose = async () => {
+    if (!taskId) return
+    try {
+      const d = await api.backtestTaskStack(taskId)
+      const top = d.stack.trim().split('\n').slice(-1)[0] ?? ''
+      const at = new Date().toLocaleTimeString()
+      if (diagStack && diagStack.top === top) {
+        // 两次栈顶相同 → 真卡死, 展示完整栈
+        setDiagStack({ top, idle: d.idle_seconds, stack: d.stack, at: `${diagStack.at} → ${at} 栈顶未变(疑似卡死)` })
+      } else {
+        setDiagStack({ top, idle: d.idle_seconds, stack: d.stack, at: `${at} 第1次采样, 再点一次对比` })
+      }
+    } catch (e) {
+      setError(String((e as Error).message || e))
+    }
+  }
 
   // 行业选项(与选股中心同源接口)
   const { data: industries } = useQuery({
@@ -627,14 +646,29 @@ function CompareTab({ taskId, setTaskId }: { taskId: string | null; setTaskId: (
             <div className="h-1.5 w-full overflow-hidden rounded bg-divider">
               <div className="h-full bg-link transition-all" style={{ width: `${progress}%` }} />
             </div>
-            {task?.last_active ? (
-              <div className="mt-1 text-[11px] text-ink-faint">
-                {nowTs / 1000 - task.last_active < 10
-                  ? '✓ 任务进行中（最近数秒内有活动）'
-                  : `⚠ 已 ${Math.round(nowTs / 1000 - task.last_active)} 秒无活动 —— 正在慢段运行或任务已停止`}
+            <div className="mt-1 flex flex-wrap items-center gap-2">
+              {task?.last_active ? (
+                <span className="text-[11px] text-ink-faint">
+                  {nowTs / 1000 - task.last_active < 10
+                    ? '✓ 任务进行中（最近数秒内有活动）'
+                    : `⚠ 已 ${Math.round(nowTs / 1000 - task.last_active)} 秒无活动 —— 正在慢段运行或任务已停止`}
+                </span>
+              ) : (
+                <span className="text-[11px] text-ink-faint">等待进度上报…</span>
+              )}
+              <button className="text-[11px] text-link hover:underline" onClick={diagnose}>
+                卡住了？点此诊断
+              </button>
+            </div>
+            {diagStack && (
+              <div className="mt-2 rounded-lg border border-line bg-white p-2">
+                <div className="text-[11px] text-ink-muted">
+                  {diagStack.at} · 无活动 {diagStack.idle}s
+                </div>
+                <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-all font-mono text-[10px] leading-relaxed text-ink-faint">
+                  {diagStack.stack}
+                </pre>
               </div>
-            ) : (
-              <div className="mt-1 text-[11px] text-ink-faint">等待进度上报…</div>
             )}
           </div>
         )}
