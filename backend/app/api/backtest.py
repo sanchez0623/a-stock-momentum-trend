@@ -269,12 +269,43 @@ _tasks_lock = threading.Lock()
 
 @router.get("/backtest/tasks/{task_id}")
 async def get_task(task_id: str) -> dict:
-    """查询异步回测任务进度/结果(对比回测等)."""
+    """查询异步回测任务进度/结果(对比回测等). 兼看门狗: 心跳停滞>30s自动采样栈."""
     with _tasks_lock:
         t = _tasks.get(task_id)
     if t is None:
         return {"code": 1, "msg": "任务不存在(进程重启后任务丢失)", "data": None}
+    # 看门狗: 任务仍在跑但心跳停滞超 30s -> 自动 dump 工作线程栈存入任务(每 60s 刷新一次),
+    # 前端轮询即可拿到卡点现场, 无需用户手动诊断.
+    if t.get("status") == "running" and t.get("thread_id"):
+        idle = time.time() - t.get("last_active", time.time())
+        last_dump = t.get("stall_at", 0)
+        if idle > 30 and time.time() - last_dump > 60:
+            stack = _dump_thread_stack(t["thread_id"])
+            if stack:
+                with _tasks_lock:
+                    if _tasks.get(task_id) is t:  # 状态未变才写
+                        t["stall_stack"] = stack
+                        t["stall_at"] = time.time()
+                        t["stall_progress"] = t.get("progress")
     return {"code": 0, "msg": "ok", "data": dict(t)}
+
+
+def _dump_thread_stack(thread_id: int) -> str:
+    """dump 指定线程的实时调用栈(空串=线程不存在)."""
+    import linecache
+    import sys
+
+    frame = sys._current_frames().get(thread_id)
+    if frame is None:
+        return ""
+    frames: list[str] = []
+    f = frame
+    while f is not None and len(frames) < 12:
+        co = f.f_code
+        line = linecache.getline(co.co_filename, f.f_lineno).strip()
+        frames.append(f'  {co.co_filename}:{f.f_lineno} in {co.co_name}\n    {line}')
+        f = f.f_back
+    return "\n".join(reversed(frames))
 
 
 @router.get("/backtest/tasks/{task_id}/stack")
@@ -283,9 +314,6 @@ async def get_task_stack(task_id: str) -> dict:
 
     连续调用两次对比栈顶是否变化: 不变=真卡死(栈顶即卡点); 变化=在慢段运行.
     """
-    import linecache
-    import sys
-
     with _tasks_lock:
         t = _tasks.get(task_id)
     if t is None:
@@ -293,24 +321,14 @@ async def get_task_stack(task_id: str) -> dict:
     if t.get("status") != "running":
         return {"code": 0, "msg": f"任务已结束({t.get('status')}), 无需诊断", "data": None}
 
-    tid = t.get("thread_id")
-    frame = sys._current_frames().get(tid)
-    if frame is None:
+    stack = _dump_thread_stack(t.get("thread_id", 0))
+    if not stack:
         return {"code": 1, "msg": "工作线程已不存在(进程重启?)", "data": None}
-
-    # 手动构造栈文本(兼容 3.11, 无 format_frame_summary)
-    frames: list[str] = []
-    f = frame
-    while f is not None and len(frames) < 12:
-        co = f.f_code
-        line = linecache.getline(co.co_filename, f.f_lineno).strip()
-        frames.append(f'  {co.co_filename}:{f.f_lineno} in {co.co_name}\n    {line}')
-        f = f.f_back
     idle = time.time() - t.get("last_active", time.time())
     return {"code": 0, "msg": "ok", "data": {
         "progress": t.get("progress"),
         "idle_seconds": round(idle, 1),
-        "stack": "\n".join(reversed(frames)),
+        "stack": stack,
     }}
 
 

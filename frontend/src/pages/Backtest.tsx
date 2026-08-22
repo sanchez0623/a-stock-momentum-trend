@@ -660,6 +660,17 @@ function CompareTab({ taskId, setTaskId }: { taskId: string | null; setTaskId: (
                 卡住了？点此诊断
               </button>
             </div>
+            {task?.stall_stack && (
+              <div className="mt-2 rounded-lg border border-amber-300 bg-amber-50 p-2">
+                <div className="text-[11px] font-semibold text-amber-700">
+                  ⏱ 看门狗：任务在 {task.stall_progress}% 处停滞超 30 秒，已自动抓取线程栈（每分钟刷新）——
+                  请截图此内容反馈
+                </div>
+                <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-all font-mono text-[10px] leading-relaxed text-ink-muted">
+                  {task.stall_stack}
+                </pre>
+              </div>
+            )}
             {diagStack && (
               <div className="mt-2 rounded-lg border border-line bg-white p-2">
                 <div className="text-[11px] text-ink-muted">

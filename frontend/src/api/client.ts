@@ -790,6 +790,9 @@ export interface CompareTaskState {
   result: CompareReport | null
   error: string
   last_active?: number  // 任务心跳(epoch 秒): 区分"慢"与"死"
+  stall_stack?: string  // 看门狗自动抓取的停滞栈(心跳>30s无活动时)
+  stall_at?: number
+  stall_progress?: number
 }
 
 // ---------------------------------------------------------------- K线数据管理
