@@ -366,8 +366,8 @@ def test_plan_generate_includes_mode_line(tmp_engine):
                         portfolio={"total_pct": 65.0}, mode=mode)
     assert "当前模式" in plan["content"]
     assert "趋势回踩" in plan["content"]
-    # 止损线取模式 5%(成本含费约 100.06 -> 95.06), 文案标注"成本下移5%"
-    assert "(成本下移5%)" in plan["content"]
+    # 止损线取模式 5%(成本含费约 100.06 -> 95.06), 文案标注"止损5%"
+    assert "(止损5%)" in plan["content"]
 
 
 def test_pyramid_plan_uses_mode_ratios(tmp_engine):

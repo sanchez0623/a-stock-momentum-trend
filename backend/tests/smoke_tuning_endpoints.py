@@ -13,7 +13,7 @@ def test_tuning_policy_and_changes():
     assert d["max_drift_pct"] == 50
     assert d["cooldown_days"] == 7
     assert d["max_accept_per_review"] == 3
-    assert d["field_count"] == 21
+    assert d["field_count"] == 44
     assert "风控" in d["forbidden_groups"]
     assert "趋势" in d["allowed_groups"]
 
