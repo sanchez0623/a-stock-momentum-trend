@@ -62,6 +62,7 @@ def _migrate_columns() -> None:
         ("position", "cost_raw", "REAL DEFAULT 0.0"),
         ("position", "opened_at", "TEXT DEFAULT ''"),
         ("position", "pyramid_stage", "INTEGER DEFAULT 0"),
+        ("position", "peak_price", "REAL DEFAULT 0.0"),
         ("klinecache", "updated_at", "TEXT DEFAULT ''"),
         ("notification", "fingerprint", "TEXT DEFAULT ''"),  # AI 助理去重指纹
         ("trackedstock", "sim_qty", "INTEGER DEFAULT 0"),
@@ -69,10 +70,19 @@ def _migrate_columns() -> None:
         ("trackedstock", "sim_open_at", "TEXT DEFAULT ''"),
         ("trackedstock", "sim_realized_pnl", "REAL DEFAULT 0.0"),
         ("trackedstock", "sim_last_action_date", "TEXT DEFAULT ''"),
+        ("trackedstock", "final_pnl", "REAL DEFAULT 0.0"),
+        ("trackedstock", "final_stage", "TEXT DEFAULT ''"),
+        ("trackedstock", "final_stage_sub", "TEXT DEFAULT ''"),
+        ("trackedstock", "stage_sub_at_track", "TEXT DEFAULT ''"),
         ("scorepoint", "sim_qty", "INTEGER DEFAULT 0"),
         ("scorepoint", "sim_cost", "REAL DEFAULT 0.0"),
         ("scorepoint", "sim_pnl", "REAL DEFAULT 0.0"),
         ("scorepoint", "sim_action", "TEXT DEFAULT ''"),
+        ("scorepoint", "stage_sub", "TEXT DEFAULT ''"),
+        ("scorepoint", "trend_age", "INTEGER"),
+        ("aireview", "prompt_version", "TEXT DEFAULT ''"),   # AI 复盘 prompt 版本
+        ("reviewmemory", "dirty", "INTEGER DEFAULT 0"),      # RAG 记忆脏标记(建议状态变更后待重建)
+        ("dailyreport", "prompt_version", "TEXT DEFAULT ''"),  # 日报 prompt 版本
     ]
     added: list[tuple[str, str]] = []
     try:

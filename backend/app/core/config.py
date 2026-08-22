@@ -39,6 +39,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "ma_long": 60,
         "trend_filter": "ADX",
         "adx_threshold": 25,
+        # 动量确认(2026-08-22 总分分桶回测校准): "趋势分30+且动量分<20"的高位滞涨/背离票
+        # 20日期望约 -1.1%, 却仍能挤进 50-60 分区间占用 Top30 名额 —— 强趋势必须由动量确认,
+        # 否则趋势分打折降档; 动量强的票(≥20)不受影响
+        "momentum_confirm_enabled": True,
+        "momentum_confirm_min_trend": 25.0,     # 趋势分达到此值才检查动量确认
+        "momentum_confirm_min_momentum": 20.0,  # 动量分低于此值视为"趋势无动量确认"
+        "momentum_confirm_factor": 0.7,         # 打折保留系数(趋势分 × 0.7)
     },
     "动量": {
         "roc_period": 12,
@@ -68,6 +75,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "total_position_pct": 80.0,
         "stop_loss_pct": 5.0,
         "trailing_stop_pct": 8.0,
+        # 止损后同票冷却期(交易日): 期内禁止 BUY_FIRST 再入场, 防止连跌中反复接刀(0=关闭)
+        "stop_cooldown_days": 10,
+        # 回撤防守解除线: 回撤修复至 max_drawdown_pct × 该比例以下时自动解除防守
+        # (实盘为人工重置, 回测/模拟用滞回近似)
+        "defense_recovery_ratio": 0.5,
     },
     "仓位": {
         "strategy": "pyramid",  # pyramid | kelly | fixed
@@ -254,6 +266,18 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "exhaust_penalty": 5.0,      # 衰竭期扣分(RSI 超买 + MACD 红柱缩短)
         "rsi_overheat": 75.0,        # 阶段判定: RSI >= 此值视为过热
         "rsi_exhaust": 80.0,         # 阶段判定: RSI >= 此值且红柱缩短视为衰竭
+        # 加速期细分(前/中/后): 时间维度=趋势年龄(距最近一次短均线上穿中均线的交易日数),
+        # 空间维度=热度渐进(乖离率/RSI 向过热线逼近的程度)
+        "accel_age_lookback": 60,    # 趋势年龄回看窗口(日): 窗口内无金叉的老趋势按后期处理
+        "accel_early_max_age": 12,   # 加速前期: 趋势年龄 <= 此值(日)且乖离/RSI 温和
+        "accel_early_bias_max": 4.0, # 加速前期: 乖离率 < 此值(%)
+        "accel_early_rsi_max": 65.0, # 加速前期: RSI < 此值
+        "accel_early_bonus": 2.0,    # 加速前期加分(趋势刚理顺风报比佳, 首仓建仓区)
+        "accel_mid_bonus": 3.0,      # 加速中期加分(主升段动量最强, 持有/加仓区)
+        "accel_late_min_age": 30,    # 加速后期: 趋势年龄 >= 此值(日)
+        "accel_late_bias": 7.0,      # 加速后期: 乖离率 >= 此值(%)(过热线 10% 的预警带)
+        "accel_late_rsi": 70.0,      # 加速后期: RSI >= 此值(过热线 75 的预警带)
+        "accel_late_bonus": 0.5,     # 加速后期加分(逼近过热, 只持有不加仓)
     },
     "数据源": {
         "priority": ["mootdx", "tencent", "baostock", "eastmoney", "lixinger", "akshare"],
@@ -291,12 +315,26 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "timeout_sec": 30,
         },
     },
+    # 得分追踪: 采样/归档行为控制
+    "追踪": {
+        # 衰竭期自动结束追踪并结算(趋势终结=观察完成); 过热期仅预警不退出, 留人工裁量
+        "auto_archive_on_exhaust": True,
+    },
     # 盘后 AI 日报: 定时生成「当日回顾 + 明日行动清单」, 全只读, 不产生配置变更
     "日报": {
         "enabled": True,
         "hour": 16,
         "minute": 30,
         "push_webhook": "",  # 企业微信机器人 URL, 留空仅站内通知
+    },
+    # AI 助理: 独立编排模块(LangGraph 流水线), 盘前观察清单/盘中信号提醒/盘后日报
+    "ai_assistant": {
+        "enabled": False,  # 总开关(热生效, 开启后由 APScheduler 注册任务)
+        "premarket": {"enabled": True, "hour": 8, "minute": 30},
+        "intraday": {"enabled": True, "interval_min": 5},
+        "after_close": {"enabled": True, "hour": 16, "minute": 30},
+        "push_webhook": "",  # 企业微信机器人 URL, 留空仅站内
+        "scope": "positions_watchlist",  # 观察范围: 持仓+自选(与日报一致)
     },
     "手续费": {
         "commission_rate": 0.00005,      # 佣金: 万 0.5
@@ -415,7 +453,7 @@ class ConfigManager:
         self._listeners: list[Callable[[dict[str, Any]], None]] = []
         self._cfg: dict[str, Any] = copy.deepcopy(DEFAULT_CONFIG)
         self._db = None  # sqlmodel Session 工厂, 由 app 启动时注入
-        data_dir = data_dir or os.getenv("DATA_DIR", "data")
+        data_dir = data_dir or os.getenv("DATA_DIR") or "data"
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = self.data_dir / "trading.db"

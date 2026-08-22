@@ -1,3 +1,6 @@
+# mypy: ignore-errors
+# SQLModel 声明式(table=True / Field)无法被 mypy 正确建模, 表结构由运行时校验,
+# 类型检查对本文件无收益(标准做法)。
 """SQLModel 表定义(方案 §5)."""
 
 from __future__ import annotations
@@ -172,6 +175,7 @@ class Position(SQLModel, table=True):
     qty: int = Field(default=0)  # 股
     cost: float = Field(default=0.0)  # 含费摊薄成本(加权, 已摊入买入手续费), 券商 APP 口径
     cost_raw: float = Field(default=0.0)  # 纯成交均价(不含费), 仅用于顺向加仓判断
+    peak_price: float = Field(default=0.0)  # 持仓期间最高价(移动止损线随峰值上移)
     status: str = Field(default="holding", index=True)  # holding / closed
     # 金字塔加仓档位: 已完成的分档数(0=仅首仓, 1=已加1档, 2=已加2档).
     # 取代原先「由成交笔数倒推」的脆弱逻辑, 由 open_or_add 显式维护. 新增列, 旧库迁移默认 0.
@@ -210,6 +214,15 @@ class ScreenerPreset(SQLModel, table=True):
     universe: str = Field(default="")      # 逗号分隔多值
     board: str = Field(default="")         # 板块多值(逗号分隔)
     industry: str = Field(default="")      # 行业多值(逗号分隔)
+    created_at: str = Field(default_factory=_now)
+
+
+class BacktestPreset(SQLModel, table=True):
+    """持仓回测建仓腿模板(方案 v2 §11 快捷复用): 命名组合一键加载."""
+
+    id: int | None = Field(default=None, primary_key=True)
+    name: str = Field(default="", index=True)
+    legs_json: str = Field(default="[]")  # [{symbol, name, entry_date, cost, qty}]
     created_at: str = Field(default_factory=_now)
 
 
@@ -255,6 +268,7 @@ class TrackedStock(SQLModel, table=True):
     track_time: str = Field(default_factory=_now)
     score_at_track: float = Field(default=0.0)   # 追踪时的总分
     stage_at_track: str = Field(default="")       # 追踪时的阶段(启动/加速/过热/衰竭)
+    stage_sub_at_track: str = Field(default="")   # 追踪时的加速期子阶段(early/mid/late, 仅加速期有值)
     status: str = Field(default="active", index=True)  # active / archived(30天到期或手动)
     archived_at: str = Field(default="")
     archive_reason: str = Field(default="")      # manual / expired
@@ -264,6 +278,10 @@ class TrackedStock(SQLModel, table=True):
     sim_open_at: str = Field(default="")
     sim_realized_pnl: float = Field(default=0.0)   # 累计已实现模拟盈亏(%)
     sim_last_action_date: str = Field(default="")  # 最近一次模拟动作的日期(同日去重: 一天最多一个动作)
+    # 归档成绩(结算后写入, 供历史档展示; 旧归档数据无此二字段, 前端按未结算兜底)
+    final_pnl: float = Field(default=0.0)          # 归档结算后总收益(%): 已实现 + 平仓时浮盈
+    final_stage: str = Field(default="")           # 归档时的趋势阶段
+    final_stage_sub: str = Field(default="")       # 归档时的加速期子阶段(仅加速期有值)
 
 
 class ScorePoint(SQLModel, table=True):
@@ -277,6 +295,8 @@ class ScorePoint(SQLModel, table=True):
     momentum_score: float = Field(default=0.0)
     volume_score: float = Field(default=0.0)
     stage: str = Field(default="")
+    stage_sub: str = Field(default="")       # 加速期子阶段(early/mid/late, 仅 stage=accelerate 有值)
+    trend_age: int | None = Field(default=None)  # 趋势年龄(交易日; None=超回看窗口的老趋势)
     price: float = Field(default=0.0)
     volume_ratio: float = Field(default=0.0)
     signal_type: str = Field(default="")  # 采样时触发的信号(无则空)
@@ -361,6 +381,28 @@ class Account(SQLModel, table=True):
 
 
 # ---------------------------------------------------------------- 复盘与评分
+class LlmCall(SQLModel, table=True):
+    """LLM 调用日志(记账/观测): 每次实际 LLM 调用(含失败)一条.
+
+    用途: token/成本/延迟/降级路径可见, 供后续预算控制与评测做数据底座。
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    time: str = Field(default_factory=_now, index=True)
+    feature: str = Field(default="", index=True)   # ai_review.step1/step2 / ai_review.legacy / daily_report / assistant.narrate
+    model: str = Field(default="")                 # 实际调用模型名
+    provider: str = Field(default="")              # base_url 主机名(api.deepseek.com 等)
+    prompt_hash: str = Field(default="", index=True)  # sha256(system+user) 前 16 位, 识别 prompt 变更/重复调用
+    prompt_version: str = Field(default="")        # 该 prompt 的版本号(与 AiReview/DailyReport 对应)
+    input_tokens: int = Field(default=0)           # usage.prompt_tokens
+    output_tokens: int = Field(default=0)          # usage.completion_tokens
+    total_tokens: int = Field(default=0)           # usage.total_tokens
+    latency_ms: int = Field(default=0)             # 单次调用耗时(不含解析)
+    degraded: bool = Field(default=False)          # 是否降级路径的调用(如旧单步 prompt)
+    ok: bool = Field(default=True)                 # 本次调用是否成功(解析失败/网络错误为 False)
+    error: str = Field(default="")                 # 失败原因(截断)
+
+
 class AiReview(SQLModel, table=True):
     """AI 复盘记录."""
 
@@ -371,6 +413,7 @@ class AiReview(SQLModel, table=True):
     suggestions_json: str = Field(default="[]")  # [{text, status}]
     model: str = Field(default="")
     rule_result_json: str = Field(default="{}")
+    prompt_version: str = Field(default="")  # 生成该复盘所用 prompt 版本(复现/回归用)
 
 
 class ReviewMemory(SQLModel, table=True):
@@ -382,6 +425,7 @@ class ReviewMemory(SQLModel, table=True):
     text: str = Field(default="")              # 记忆条目文本(问题+建议+采纳结果+效果)
     embedding_json: str = Field(default="[]")  # 向量(JSON 数组)
     model: str = Field(default="")             # embedding 模型名
+    dirty: int = Field(default=0)              # 1=建议状态已变更, 文本过期, 待增量重建
 
 
 class DailyReport(SQLModel, table=True):
@@ -393,6 +437,7 @@ class DailyReport(SQLModel, table=True):
     model: str = Field(default="")
     status: str = Field(default="ok")                       # ok / degraded / failed
     created_at: str = Field(default_factory=_now)
+    prompt_version: str = Field(default="")  # 生成该日报所用 prompt 版本(复现/回归用)
 
 
 class Notification(SQLModel, table=True):
