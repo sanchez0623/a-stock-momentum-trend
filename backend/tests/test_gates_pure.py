@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-
 from app.core.classification import apply_per_industry_cap
 from app.core.market_gate import compute_market_gate
 

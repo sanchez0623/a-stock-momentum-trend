@@ -29,8 +29,8 @@ from app.api import risk as risk_api
 from app.api import screener as screener_api
 from app.api import signals as signals_api
 from app.api import system as system_api
-from app.api import trades_stats as trades_stats_api
 from app.api import tracking as tracking_api
+from app.api import trades_stats as trades_stats_api
 from app.core.config import config_manager
 from app.core.datasource import build_sources, data_source_manager
 

@@ -39,7 +39,13 @@ asyncio_mode = "auto"
 filterwarnings = ["ignore::DeprecationWarning"]
 
 [tool.mypy]
-python_version = "3.11"
+# 静态目标 3.12: numpy>=2.3 的 stubs 使用 3.12+ 语法, 3.11 目标会 syntax error;
+# 业务代码保持 3.11 运行时兼容(requires-python >=3.11), mypy 目标版本仅是静态检查口径
+python_version = "3.12"
 ignore_missing_imports = true
 check_untyped_defs = true
 exclude = ["tests/"]
+# sqlmodel 声明式字段(如 Model.time)在 stub 中被建模为普通类型, .desc()/.in_() 等方法
+# 与字段级联的 None 解引用无法被 mypy 识别, 属已知 stub 噪音, 统一关闭这两个错误码;
+# 其余错误码(含 operator/assignment/arg-type 等)保持严格
+disable_error_code = ["attr-defined", "union-attr"]

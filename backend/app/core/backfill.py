@@ -146,8 +146,8 @@ async def backfill_history(
             pending = [s for s in pending]
     else:
         universe = list(symbols)
-        status = _load_cache_status(target)
-        pending = [s for s in symbols if force or status.get(s) != "ok"]
+        cache_status = _load_cache_status(target)
+        pending = [s for s in symbols if force or cache_status.get(s) != "ok"]
 
     total = len(pending)
     stats: dict[str, Any] = {

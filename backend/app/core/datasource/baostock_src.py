@@ -488,7 +488,8 @@ class BaostockSource(DataSourceInterface):
             fund.pe_ttm = val.get("pe_ttm")
             fund.pb_mrq = val.get("pb_mrq")
             fund.ps_ttm = val.get("ps_ttm")
-            fund.is_st = val.get("is_st")
+            is_st = val.get("is_st")
+            fund.is_st = is_st if isinstance(is_st, bool) else None
         return fund
 
     async def get_valuation(self, symbol: str) -> dict[str, float | bool | None]:

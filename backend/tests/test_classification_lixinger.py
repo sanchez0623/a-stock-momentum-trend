@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from app.core.datasource.lixinger_src import build_sw_map
 
 

@@ -91,7 +91,7 @@ def load_batches(task_id: str) -> list[dict[str, Any]]:
     with db.session_scope() as s:
         rows = s.exec(
             select(ScreenerTaskBatch).where(ScreenerTaskBatch.task_id == task_id)
-            .order_by(ScreenerTaskBatch.seq)
+            .order_by(ScreenerTaskBatch.seq)  # type: ignore[arg-type]
         ).all()
     out: list[dict[str, Any]] = []
     for r in rows:

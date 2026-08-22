@@ -33,7 +33,6 @@ def compute_market_gate(index_dfs: dict[str, pd.DataFrame], cfg: dict[str, Any] 
     cfg = cfg or {}
     ma_long = int(cfg.get("ma_long", 200))
     ma_mid = int(cfg.get("ma_mid", 60))
-    require_all = bool(cfg.get("require_all_above_ma", False))
     bull_ratio = float(cfg.get("bull_top_n_ratio", 1.0))
     bear_ratio = float(cfg.get("bear_top_n_ratio", 0.3))
     min_bars = int(cfg.get("min_index_bars", 220))
@@ -71,11 +70,6 @@ def compute_market_gate(index_dfs: dict[str, pd.DataFrame], cfg: dict[str, Any] 
         # 全部参考指数数据不足(冷启动/缓存未命中): 闸门降级为不生效, 不误判空头
         return {"environment": "neutral", "multiplier": bull_ratio,
                 "reason": "参考指数数据不足, 闸门不生效", "details": details}
-
-    if require_all:
-        is_bull = bull_count == n_valid
-    else:
-        is_bull = bull_count >= (n_valid + 1) // 2  # 多数看涨即看多
 
     if bull_count == n_valid:
         env, mult = "bull", bull_ratio

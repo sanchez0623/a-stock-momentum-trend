@@ -50,8 +50,8 @@ def _quote_dict(q) -> dict:
     }
 
 
-@router.get("/quote/{symbol}")
-async def get_quote(symbol: str) -> dict:
+@router.get("/quote/{symbol}", response_model=None)
+async def get_quote(symbol: str) -> dict | JSONResponse:
     quotes = await data_source_manager.get_realtime_quote([symbol])
     if not quotes:
         return JSONResponse(status_code=404, content={"code": 1, "msg": "未获取到行情", "data": None})
@@ -78,12 +78,12 @@ async def get_kline(
     return {"code": 0, "msg": "ok", "data": {"symbol": symbol, "period": period, "klines": _kline_to_records(df)}}
 
 
-@router.get("/indicators/{symbol}")
+@router.get("/indicators/{symbol}", response_model=None)
 async def get_indicators(
     symbol: str,
     period: str = Query("daily", pattern="^(1m|5m|15m|30m|60m|daily|weekly)$"),
     count: int = Query(200, ge=30, le=2000),
-) -> dict:
+) -> dict | JSONResponse:
     """计算并返回该票全部指标(最后一个 bar 快照 + 序列)."""
     df = await data_source_manager.get_kline(symbol, period, count)
     if df is None or df.empty:
@@ -108,7 +108,7 @@ async def get_indicators(
 
 
 @router.websocket("/ws/quote")
-async def ws_quote(websocket: WebSocket, symbols: str = "300750,600519") -> dict | None:
+async def ws_quote(websocket: WebSocket, symbols: str = "300750,600519") -> None:
     """实时行情推送(5s 轮询源, 自选股页面订阅)."""
     await websocket.accept()
     sym_list = [s.strip() for s in symbols.split(",") if s.strip()]

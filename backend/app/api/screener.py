@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -37,7 +38,7 @@ async def run_screener(
     """触发扫描(异步, 返回 task_id). 支持 market + 板块多值 + 行业多值 + 每行业限配 + 闸门 + 选股池预筛 + 因子 + 断点续传."""
     task_id = scan_tasks.create(market, top_n)
     scan_tasks.update(task_id, status="running")
-    params = {
+    params: dict[str, Any] = {
         "market": market, "board": board, "industry": industry, "top_n": top_n,
         "per_industry": per_industry, "industry_level": industry_level,
         "apply_gate": apply_gate, "universe": universe, "apply_factors": apply_factors,
@@ -45,7 +46,7 @@ async def run_screener(
 
     async def _run() -> None:
         persist_task_id = resume_task_id or task_id
-        resume_data = None
+        resume_data: dict[str, Any] | None = None
         try:
             if resume_task_id:
                 # 恢复中断任务: 原参数 + 已产生结果(结果即进度, 推导已完成票集合)

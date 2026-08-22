@@ -39,7 +39,7 @@ class TradeLogger:
             data_dir = Path(os.environ.get("DATA_DIR", "data"))
             csv_path = data_dir / "trades.csv"
         self.csv_path = Path(csv_path)
-        self._pos = None
+        self._pos: Any = None
 
     # 懒加载, 避免与 position.manager 循环 import
     def _position(self):
@@ -60,7 +60,7 @@ class TradeLogger:
         self._ensure_csv()
         # 旧文件表头可能缺列(如升级前无 fee) -> 整文件按新表头重建, 避免错位
         if self.csv_path.exists():
-            with open(self.csv_path, "r", encoding="utf-8-sig", newline="") as f:
+            with open(self.csv_path, encoding="utf-8-sig", newline="") as f:
                 first = f.readline().strip()
             if first and first != ",".join(CSV_HEADER):
                 self._rebuild_csv_from_db()

@@ -25,6 +25,8 @@ jobs:
         run: ruff check app cli tests
       - name: Pytest (fixture 行情, 不打真实上游)
         run: python -m pytest -q
+      - name: Mypy (类型检查)
+        run: mypy app
 
   frontend:
     name: Frontend build

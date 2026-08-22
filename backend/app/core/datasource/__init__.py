@@ -6,6 +6,10 @@
     df = await data_source_manager.get_kline("300750")
 """
 
+from __future__ import annotations
+
+from collections.abc import Callable
+
 from app.core.datasource.base import (
     CAPABILITIES,
     SUPPORTED_PERIODS,
@@ -21,7 +25,7 @@ from app.core.datasource.cache import kline_store, quote_cache
 from app.core.datasource.manager import data_source_manager
 
 
-def build_sources() -> list[tuple[str, type[DataSourceInterface]]]:
+def build_sources() -> list[tuple[str, Callable[[], DataSourceInterface]]]:
     """按配置构造启用的数据源工厂列表(manager.setup 使用)."""
     from app.core.config import config_manager
     from app.core.datasource import akshare_src, baostock_src, eastmoney_src, lixinger_src, mootdx_src, tencent_src

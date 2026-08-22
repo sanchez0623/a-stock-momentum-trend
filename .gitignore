@@ -39,6 +39,7 @@ frontend/vite.config.ts.timestamp-*.mjs
 # IDE / OS
 .vscode/
 .idea/
+.qoder/
 .DS_Store
 Thumbs.db
 

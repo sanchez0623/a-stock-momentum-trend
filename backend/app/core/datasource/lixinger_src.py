@@ -151,11 +151,13 @@ class LixingerSource(DataSourceInterface):
         return period == "daily"
 
     async def get_kline(self, symbol: str, period: str = "daily", count: int = 120, secid: str | None = None) -> pd.DataFrame:
-        """日线 K 线(cn/company/candlestick, 前复权 fc_rights).
+        """日线 K 线(cn/company/candlestick, type=fc_rights).
 
         startDate 按 count 反推(2 倍自然日 + 缓冲, 保证非交易日也有足够数据),
         每次 1 只股票 1 次请求, 串行限速(默认 10 次/秒 < 36 次/秒限额).
         返回统一列 DataFrame, date 升序, 最多 count 条.
+        注意: 实测 type=fc_rights 与 ex_rights 返回相同价格(未复权口径, 与 baostock 一致);
+        volume 单位为股, 统一转为手(÷100); date 裁剪为 YYYY-MM-DD.
         """
         if period != "daily" or not symbol:
             return pd.DataFrame(columns=KLINE_COLUMNS)
@@ -163,7 +165,7 @@ class LixingerSource(DataSourceInterface):
         status, body = await self._post("company/candlestick", {
             "token": self.token,
             "stockCode": symbol,
-            "type": "fc_rights",  # 前复权(与动量指标口径一致)
+            "type": "fc_rights",  # 文档为前复权; 实测与不复权同价, 兜底场景可接受
             "startDate": start,
             "endDate": dt.date.today().isoformat(),
         })
@@ -172,6 +174,10 @@ class LixingerSource(DataSourceInterface):
         rows = [r for r in body["data"] if isinstance(r, dict)]
         if not rows:
             return pd.DataFrame(columns=KLINE_COLUMNS)
+        # 单位与格式统一: volume 股->手(÷100), date 去时区后缀取前 10 位
+        for r in rows:
+            r["volume"] = (r.get("volume") or 0) / 100
+            r["date"] = str(r.get("date", ""))[:10]
         df = normalize_kline(pd.DataFrame(rows))
         if df.empty:
             return df

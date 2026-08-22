@@ -40,7 +40,9 @@ def _retry(fn, times: int = 5, sleep: float = 2.0):
             last = exc
             if i < times - 1:
                 time.sleep(sleep * (2 ** i))
-    raise last
+    if last is not None:
+        raise last
+    raise RuntimeError(f"重试 {times} 次仍失败")
 
 
 # ---------------------------------------------------------------- 申万分类拉取
@@ -392,12 +394,12 @@ async def refresh_classification(progress_cb: Any = None, source: str = "auto") 
     boards = await _fetch_boards_raw()
 
     merged: dict[str, dict[str, Any]] = {}
-    for sym, v in sw.items():
-        merged[sym] = {**v, "boards_industry": [], "boards_concept": []}
-    for sym, v in boards.items():
+    for sym, sw_v in sw.items():
+        merged[sym] = {**sw_v, "boards_industry": [], "boards_concept": []}
+    for sym, bd_v in boards.items():
         e = merged.setdefault(sym, {"sw_l1": "", "sw_l2": "", "sw_l3": "", "boards_industry": [], "boards_concept": []})
-        e["boards_industry"] = v.get("boards_industry", [])
-        e["boards_concept"] = v.get("boards_concept", [])
+        e["boards_industry"] = bd_v.get("boards_industry", [])
+        e["boards_concept"] = bd_v.get("boards_concept", [])
 
     # 3) 失败安全: 拉取为空但库中已有数据 -> 保留上次有效数据, 不静默清空
     existing_count = 0

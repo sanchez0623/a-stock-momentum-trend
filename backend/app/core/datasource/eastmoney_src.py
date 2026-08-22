@@ -98,7 +98,7 @@ class EastmoneySource(DataSourceInterface):
                 await self._throttle()
                 proxy = self._next_proxy()
                 if proxy:
-                    async with httpx.AsyncClient(
+                    async with httpx.AsyncClient(  # type: ignore[call-arg]
                         headers=headers, timeout=10.0, proxy=proxy, follow_redirects=True
                     ) as client:
                         resp = await client.get(url, params=params)
@@ -120,6 +120,7 @@ class EastmoneySource(DataSourceInterface):
                 await asyncio.sleep(backoff)
             finally:
                 self._sem.release()
+        raise EastmoneyRiskError("东财请求重试耗尽")  # 理论上不可达(循环内必 return/raise)
 
     @staticmethod
     def _secid(symbol: str) -> str:

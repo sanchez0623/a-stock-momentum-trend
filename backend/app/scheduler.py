@@ -29,10 +29,9 @@ async def _after_close_warmup() -> None:
 
     try:
         with db.session_scope() as s:
-            rows = s.exec(
-                select(Watchlist.symbol).union(select(Position.symbol))
-            ).all()
-        symbols = sorted({str(r[0]) for r in rows if r and r[0]})
+            w = s.exec(select(Watchlist.symbol)).all()
+            p = s.exec(select(Position.symbol)).all()
+        symbols = sorted({str(r[0]) for r in list(w) + list(p) if r and r[0]})
     except Exception as exc:  # noqa: BLE001
         logger.warning("盘后预热: 读取自选/持仓失败: %s", exc)
         return

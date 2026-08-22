@@ -53,7 +53,7 @@ def test_setup_logging_creates_file_and_idempotent(tmp_path):
         for handler in after:
             handler.flush()
         lines = p1.read_text(encoding="utf-8").splitlines()
-        assert any(json.loads(l)["message"] == "hello" for l in lines)
+        assert any(json.loads(line)["message"] == "hello" for line in lines)
     finally:
         # 清理本次添加的 handler, 避免污染其它测试
         for h in list(root.handlers):

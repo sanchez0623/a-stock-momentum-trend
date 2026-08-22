@@ -111,7 +111,7 @@ async def update_position(symbol: str, body: UpdatePositionTimeBody,
     try:
         _dt.datetime.strptime(body.opened_at, "%Y-%m-%d %H:%M:%S")
     except ValueError:
-        raise HTTPException(status_code=400, detail="时间格式应为 YYYY-MM-DD HH:MM:SS")
+        raise HTTPException(status_code=400, detail="时间格式应为 YYYY-MM-DD HH:MM:SS") from None
     pos = position_manager.get_position(symbol, session)
     if pos is None:
         raise HTTPException(status_code=404, detail="无持仓")
