@@ -303,7 +303,21 @@ const BOARD_OPTIONS = [
   { value: 'bj', label: '北交所' },
 ]
 
-function CompareTab() {
+// 回测区间快捷选项
+function _fmtDate(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+}
+const QUICK_RANGES: { label: string; range: () => [string, string] }[] = [
+  { label: '最近一季', range: () => { const d = new Date(); d.setMonth(d.getMonth() - 3); return [_fmtDate(d), _fmtDate(new Date())] } },
+  { label: '最近半年', range: () => { const d = new Date(); d.setMonth(d.getMonth() - 6); return [_fmtDate(d), _fmtDate(new Date())] } },
+  { label: '最近一年', range: () => { const d = new Date(); d.setMonth(d.getMonth() - 12); return [_fmtDate(d), _fmtDate(new Date())] } },
+  { label: '最近两年', range: () => { const d = new Date(); d.setMonth(d.getMonth() - 24); return [_fmtDate(d), _fmtDate(new Date())] } },
+  { label: '今年', range: () => [`${new Date().getFullYear()}-01-01`, _fmtDate(new Date())] },
+  { label: '去年', range: () => { const y = new Date().getFullYear() - 1; return [`${y}-01-01`, `${y}-12-31`] } },
+]
+
+function CompareTab({ taskId, setTaskId }: { taskId: string | null; setTaskId: (id: string | null) => void }) {
   const [universe, setUniverse] = useState('all')
   const [board, setBoard] = useState('')
   const [industry, setIndustry] = useState('')
@@ -316,8 +330,9 @@ function CompareTab() {
   const [customLabel, setCustomLabel] = useState('')
   const [customCooldown, setCustomCooldown] = useState(5)
   const [customDefense, setCustomDefense] = useState('soft')
-  const [taskId, setTaskId] = useState<string | null>(null)
   const [error, setError] = useState('')
+  // 心跳时钟: 每秒重算"距上次活动秒数"(修复数据不变时不重渲染导致的提示冻结)
+  const [nowTs, setNowTs] = useState(() => Date.now())
 
   // 行业选项(与选股中心同源接口)
   const { data: industries } = useQuery({
@@ -337,6 +352,13 @@ function CompareTab() {
   const progress = task?.progress ?? 0
   const report = task?.status === 'done' ? task.result : null
   const err = error || (task?.status === 'error' ? task.error || '对比回测失败' : '')
+
+  // 心跳时钟: 运行中每秒重渲染一次, 保证"距上次活动秒数"实时变化
+  useEffect(() => {
+    if (!running) return
+    const timer = setInterval(() => setNowTs(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [running])
 
   const allVariants = [
     ...COMPARE_PRESETS
@@ -470,8 +492,8 @@ function CompareTab() {
         </div>
 
         <div className="mt-3 flex flex-wrap items-center gap-3">
-          <label className="flex items-center gap-1 text-[13px] text-ink-muted">
-            回测区间
+          <div className="flex flex-wrap items-center gap-1">
+            <span className="mr-1 text-[13px] text-ink-muted">回测区间</span>
             <input
               type="date"
               value={dateFrom}
@@ -488,7 +510,27 @@ function CompareTab() {
               title="区间结束日(含); 留空=不限"
             />
             <span className="text-[11px] text-ink-faint">（留空=全部本地数据）</span>
-          </label>
+          </div>
+          <div className="flex flex-wrap items-center gap-1">
+            {QUICK_RANGES.map((q) => (
+              <button
+                key={q.label}
+                className="rounded-full border border-line bg-white px-2 py-0.5 text-[11px] text-ink-muted hover:border-link hover:text-link"
+                onClick={() => { const [f, t] = q.range(); setDateFrom(f); setDateTo(t) }}
+              >
+                {q.label}
+              </button>
+            ))}
+            <button
+              className="rounded-full border border-line bg-white px-2 py-0.5 text-[11px] text-ink-muted hover:border-link hover:text-link"
+              onClick={() => { setDateFrom(''); setDateTo('') }}
+              title="清空区间, 回测全部本地数据"
+            >
+              全部
+            </button>
+          </div>
+        </div>
+        <div className="mt-2 flex flex-wrap items-center gap-3">
           <label className="flex items-center gap-1 text-[13px] text-ink-muted">
             随机抽样
             <input
@@ -585,12 +627,14 @@ function CompareTab() {
             <div className="h-1.5 w-full overflow-hidden rounded bg-divider">
               <div className="h-full bg-link transition-all" style={{ width: `${progress}%` }} />
             </div>
-            {task?.last_active && (
+            {task?.last_active ? (
               <div className="mt-1 text-[11px] text-ink-faint">
-                {Date.now() / 1000 - task.last_active < 10
-                  ? '✓ 任务进行中（最近2秒内有活动）'
-                  : `⚠ 已 ${Math.round(Date.now() / 1000 - task.last_active)} 秒无活动, 可能在慢段运行或已停止`}
+                {nowTs / 1000 - task.last_active < 10
+                  ? '✓ 任务进行中（最近数秒内有活动）'
+                  : `⚠ 已 ${Math.round(nowTs / 1000 - task.last_active)} 秒无活动 —— 正在慢段运行或任务已停止`}
               </div>
+            ) : (
+              <div className="mt-1 text-[11px] text-ink-faint">等待进度上报…</div>
             )}
           </div>
         )}
@@ -1502,6 +1546,24 @@ function PortfolioTab() {
 
 export default function Backtest() {
   const [tab, setTab] = useState<'portfolio' | 'audit' | 'compare' | 'factor' | 'data'>('portfolio')
+  // 对比回测任务 ID 提升到父级: 切 tab 不丢进度(React Query 缓存恢复轮询);
+  // sessionStorage 兜底: 整页刷新后也能接上(后端任务在进程内存中, 刷新不中断).
+  const [compareTaskId, setCompareTaskId] = useState<string | null>(() => {
+    try {
+      return sessionStorage.getItem('bt-compare-task') || null
+    } catch {
+      return null
+    }
+  })
+  const setCompareTask = (id: string | null) => {
+    setCompareTaskId(id)
+    try {
+      if (id) sessionStorage.setItem('bt-compare-task', id)
+      else sessionStorage.removeItem('bt-compare-task')
+    } catch {
+      /* sessionStorage 不可用: 忽略 */
+    }
+  }
 
   return (
     <div>
@@ -1541,7 +1603,7 @@ export default function Backtest() {
 
       {tab === 'portfolio' ? <PortfolioTab />
         : tab === 'audit' ? <AuditTab />
-        : tab === 'compare' ? <CompareTab />
+        : tab === 'compare' ? <CompareTab taskId={compareTaskId} setTaskId={setCompareTask} />
         : tab === 'factor' ? <FactorTab />
         : <DataTab />}
     </div>
