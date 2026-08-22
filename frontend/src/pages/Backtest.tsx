@@ -739,7 +739,7 @@ function CompareTab({ taskId, setTaskId }: { taskId: string | null; setTaskId: (
                 <tr>
                   <Th>指标</Th>
                   {variants.map((v, i) => (
-                    <Th key={i}>
+                    <Th key={i} center>
                       <span style={{ color: COMPARE_COLORS[i % COMPARE_COLORS.length] }}>●</span> {v.label}
                     </Th>
                   ))}
@@ -750,7 +750,7 @@ function CompareTab({ taskId, setTaskId }: { taskId: string | null; setTaskId: (
                   <tr key={row.label} className="border-t border-divider">
                     <Td className="whitespace-nowrap text-ink-muted">{row.label}</Td>
                     {variants.map((v, i) => (
-                      <Td key={i} right className="whitespace-nowrap">
+                      <Td key={i} center className="whitespace-nowrap">
                         {v.error ? <span className="text-red-600">失败</span> : row.render(v)}
                       </Td>
                     ))}

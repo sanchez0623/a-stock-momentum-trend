@@ -10,26 +10,32 @@ export function Table({ children, className }: { children: ReactNode; className?
   )
 }
 
-// 表头单元格: 左对齐灰字, right 用于数值列右对齐
-export function Th({ children, right, className }: { children?: ReactNode; right?: boolean; className?: string }) {
+// 表头单元格: 左对齐灰字, right/center 用于数值列对齐(用户规则: 列表数据居中显示)
+export function Th({ children, right, center, className }: { children?: ReactNode; right?: boolean; center?: boolean; className?: string }) {
   return (
-    <th className={cn('px-2 py-2 text-left font-medium whitespace-nowrap text-ink-muted', right && 'text-right', className)}>
+    <th className={cn(
+      'px-2 py-2 text-left font-medium whitespace-nowrap text-ink-muted',
+      right && 'text-right',
+      center && 'text-center',
+      className,
+    )}>
       {children}
     </th>
   )
 }
 
-// 数据单元格: 统一内边距/顶部对齐, right 用于数值列右对齐
+// 数据单元格: 统一内边距/顶部对齐, right/center 用于数值列对齐(用户规则: 列表数据居中显示)
 // 预留 style 供行内特殊样式(如涨跌色)使用
-export function Td({ children, right, className, colSpan, style }: {
+export function Td({ children, right, center, className, colSpan, style }: {
   children?: ReactNode
   right?: boolean
+  center?: boolean
   className?: string
   colSpan?: number
   style?: CSSProperties
 }) {
   return (
-    <td colSpan={colSpan} style={style} className={cn('px-2 py-2 align-top', right && 'text-right', className)}>
+    <td colSpan={colSpan} style={style} className={cn('px-2 py-2 align-top', right && 'text-right', center && 'text-center', className)}>
       {children}
     </td>
   )
