@@ -12,7 +12,7 @@ from app.core.ai_review.chain import BehaviorProfile, LangChainUnavailable, Revi
 from app.core.ai_review.llm import LLMError
 from app.core.ai_review.rules import diagnose
 from app.core.ai_review.service import ReviewService
-from app.models.models import AiReview, SignalRecord, Trade
+from app.models.models import AiReview, ReviewMemory, SignalRecord, Trade
 
 
 def _mk_trade(symbol, action, price, qty, time, pnl=None, reason=""):
@@ -233,6 +233,63 @@ def test_review_history_and_suggestion(tmp_engine):
     assert info["applied"] is False
 
 
+def test_update_suggestion_with_memory_dirty_no_detached_error(tmp_engine):
+    """存在记忆条目时, 置脏内部 commit 会过期属性; 返回对象须在会话关闭后仍可安全读取."""
+    from app import db
+    from sqlmodel import Session, select
+
+    with Session(db.engine) as s:
+        s.add(AiReview(range="week", content="测试复盘", suggestions_json='[{"text":"a","status":"pending"}]', rule_result_json="{}"))
+        s.commit()
+        rid = list(s.exec(select(AiReview).order_by(AiReview.id.desc())).all())[0].id
+        s.add(ReviewMemory(review_id=rid, text="记忆条目", embedding_json="[]"))
+        s.commit()
+    service = ReviewService()
+    updated, info = service.update_suggestion(rid, 0, "accepted")
+    # 会话已随 with 块关闭, 此处读取属性不应抛 DetachedInstanceError
+    items = json.loads(updated.suggestions_json)
+    assert items[0]["status"] == "accepted"
+    assert info["applied"] is False
+
+
+def test_review_run_persists_prompt_version(tmp_engine, monkeypatch):
+    """LLM 路径复盘 -> prompt_version 随 AiReview 落库(未启用 LLM 时为空)."""
+    import copy
+
+    from app import db
+    from app.core.ai_review import service as service_mod
+    from app.core.config import DEFAULT_CONFIG
+    from sqlmodel import Session
+
+    async def fake_llm_review(trades, signals, issues, stats, llm_cfg):
+        return "分析", [{"text": "s", "status": "pending", "source": "llm"}], "deepseek-chat", "v-test-1"
+
+    monkeypatch.setattr(service_mod.ReviewService, "_llm_review", staticmethod(fake_llm_review))
+
+    def cfg_with_llm(enabled: bool) -> dict:
+        cfg = copy.deepcopy(DEFAULT_CONFIG)
+        cfg["llm"] = {"enabled": enabled, "api_key": "x"}
+        return cfg
+
+    monkeypatch.setattr(service_mod.config_manager, "get", lambda: cfg_with_llm(True))
+
+    async def fake_klines(symbols):
+        return {}
+
+    monkeypatch.setattr(service_mod.ReviewService, "_load_klines", staticmethod(fake_klines))
+    with Session(db.engine) as s:
+        s.add(_mk_trade("300139", "buy", 10, 100, "2026-08-06 10:00:00"))
+        s.commit()
+
+    review = asyncio.run(service_mod.ReviewService().run("week"))
+    assert review.prompt_version == "v-test-1"
+
+    # 未启用 LLM 的复盘 prompt_version 为空
+    monkeypatch.setattr(service_mod.config_manager, "get", lambda: cfg_with_llm(False))
+    review2 = asyncio.run(service_mod.ReviewService().run("week"))
+    assert review2.prompt_version == ""
+
+
 # ---------------------------------------------------------------- LangChain 两步链
 def test_chain_review_output_parse():
     """PydanticOutputParser 解析 ReviewOutput, discipline_score 越界收敛到 0-100."""
@@ -282,10 +339,13 @@ def test_llm_review_chain_conversion(monkeypatch):
         ), "deepseek-chat"
 
     monkeypatch.setattr("app.core.ai_review.chain.run_review_chain", fake_run_chain)
-    content, suggestions, model = asyncio.run(
+    content, suggestions, model, pv = asyncio.run(
         service_mod.ReviewService._llm_review([], [], [], {}, {"api_key": "x"}))
     assert content == "测试分析"
     assert model == "deepseek-chat"
+    from app.core.ai_review.chain import REVIEW_PROMPT_V
+
+    assert pv == REVIEW_PROMPT_V  # 两步链路径带 prompt 版本
     by_text = {s["text"]: s for s in suggestions}
     # 白名单内 patch 保留
     assert by_text["调整ADX门槛"]["patch"]["group"] == "趋势"
@@ -306,7 +366,7 @@ def test_llm_review_fallback_legacy(monkeypatch):
     class FakeClient:
         model = "deepseek-chat"
 
-        async def chat(self, messages):
+        async def chat(self, messages, feature="", prompt_version="", degraded=False):
             return json.dumps({
                 "analysis": "降级分析",
                 "suggestions": [{"text": "降级建议"}],
@@ -316,11 +376,12 @@ def test_llm_review_fallback_legacy(monkeypatch):
     monkeypatch.setattr("app.core.ai_review.chain.run_review_chain", fake_run_chain)
     monkeypatch.setattr(service_mod, "build_client_from_config", lambda cfg: FakeClient())
     stats = {"closed": 0, "win_rate": 0.0, "total_pnl": 0.0}
-    content, suggestions, model = asyncio.run(
+    content, suggestions, model, pv = asyncio.run(
         service_mod.ReviewService._llm_review([], [], [], stats, {"api_key": "x"}))
     assert "降级分析" in content
     assert suggestions and suggestions[0]["text"] == "降级建议"
     assert model == "deepseek-chat"
+    assert pv == service_mod.LEGACY_PROMPT_V  # 降级路径带自己的 prompt 版本
 
 
 def test_llm_review_llm_error_propagates(monkeypatch):

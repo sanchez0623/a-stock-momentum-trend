@@ -8,7 +8,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from app.api.deps import get_session
 from app.core.ai_review import review_service
@@ -23,6 +23,7 @@ from app.core.ai_review.tuning import (
     revert_change,
 )
 from app.core.config import config_manager
+from app.models.models import LlmCall
 
 router = APIRouter(prefix="/api/ai-review", tags=["ai-review"])
 
@@ -83,6 +84,20 @@ async def review_result(task_id: str) -> dict:
 async def review_history(limit: int = Query(20, ge=1, le=100), session: Session = Depends(get_session)) -> dict:
     rows = review_service.history(limit, session)
     return {"code": 0, "msg": "ok", "data": [_review_dump(r) for r in rows]}
+
+
+@router.get("/calls")
+async def llm_calls(limit: int = Query(20, ge=1, le=200),
+                    session: Session = Depends(get_session)) -> dict:
+    """LLM 调用日志(记账): 时间/功能/模型/token/延迟/降级/失败 一览."""
+    rows = list(session.exec(select(LlmCall).order_by(LlmCall.id.desc()).limit(limit)).all())
+    return {"code": 0, "msg": "ok", "data": [
+        {"id": r.id, "time": r.time, "feature": r.feature, "model": r.model,
+         "provider": r.provider, "prompt_version": r.prompt_version,
+         "input_tokens": r.input_tokens, "output_tokens": r.output_tokens,
+         "total_tokens": r.total_tokens, "latency_ms": r.latency_ms,
+         "degraded": r.degraded, "ok": r.ok, "error": r.error}
+        for r in rows]}
 
 
 @router.post("/suggestion")

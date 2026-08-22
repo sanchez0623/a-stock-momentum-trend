@@ -30,8 +30,16 @@ class LLMClient:
     def configured(self) -> bool:
         return bool(self.api_key)
 
-    async def chat(self, messages: list[dict[str, str]]) -> str:
-        """调用 chat/completions, 返回回复文本."""
+    async def chat(self, messages: list[dict[str, str]], feature: str = "",
+                   prompt_version: str = "", degraded: bool = False) -> str:
+        """调用 chat/completions, 返回回复文本.
+
+        feature/prompt_version 用于 LLM 调用记账(LlmCall): 识别功能来源与 prompt 版本;
+        degraded=True 表示这是降级路径的调用(如旧单步 prompt);
+        每次调用(含失败)都会落一条记账记录, 记账失败不影响主流程。
+        """
+        from app.core.ai_review import call_log
+
         if not self.configured:
             raise LLMError("未配置 LLM API Key")
         url = f"{self.base_url}/chat/completions"
@@ -43,21 +51,50 @@ class LLMClient:
             "stream": False,
         }
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        sys_text = "".join(str(m.get("content", "")) for m in messages if m.get("role") == "system")
+        usr_text = "".join(str(m.get("content", "")) for m in messages if m.get("role") == "user")
+        prompt_hash = call_log.hash_prompt(sys_text, usr_text)
+        provider = call_log.provider_of(self.base_url)
+        start = call_log.started()
         try:
             async with httpx.AsyncClient(timeout=self.timeout_sec) as client:
                 resp = await client.post(url, json=payload, headers=headers)
                 resp.raise_for_status()
                 data = resp.json()
         except httpx.TimeoutException as exc:
+            call_log.record_call(feature=feature, model=self.model, provider=provider,
+                                 prompt_hash=prompt_hash, prompt_version=prompt_version,
+                                 latency_ms=call_log.elapsed_ms(start), ok=False,
+                                 error=f"LLM 请求超时({self.timeout_sec}s)")
             raise LLMError(f"LLM 请求超时({self.timeout_sec}s)") from exc
         except httpx.HTTPStatusError as exc:
+            call_log.record_call(feature=feature, model=self.model, provider=provider,
+                                 prompt_hash=prompt_hash, prompt_version=prompt_version,
+                                 latency_ms=call_log.elapsed_ms(start), ok=False,
+                                 error=f"LLM 返回 {exc.response.status_code}: {exc.response.text[:120]}")
             raise LLMError(f"LLM 返回 {exc.response.status_code}: {exc.response.text[:120]}") from exc
         except Exception as exc:  # noqa: BLE001
+            call_log.record_call(feature=feature, model=self.model, provider=provider,
+                                 prompt_hash=prompt_hash, prompt_version=prompt_version,
+                                 latency_ms=call_log.elapsed_ms(start), ok=False,
+                                 error=f"LLM 请求失败: {exc}")
             raise LLMError(f"LLM 请求失败: {exc}") from exc
         try:
-            return data["choices"][0]["message"]["content"]
+            content = data["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:
+            call_log.record_call(feature=feature, model=self.model, provider=provider,
+                                 prompt_hash=prompt_hash, prompt_version=prompt_version,
+                                 latency_ms=call_log.elapsed_ms(start), ok=False,
+                                 error=f"LLM 响应格式异常: {str(data)[:120]}")
             raise LLMError(f"LLM 响应格式异常: {str(data)[:120]}") from exc
+        usage = call_log.extract_usage(data)
+        call_log.record_call(feature=feature, model=self.model, provider=provider,
+                             prompt_hash=prompt_hash, prompt_version=prompt_version,
+                             input_tokens=usage["input_tokens"],
+                             output_tokens=usage["output_tokens"],
+                             total_tokens=usage["total_tokens"],
+                             latency_ms=call_log.elapsed_ms(start), degraded=degraded)
+        return content
 
 
 def build_client_from_config(llm_cfg: dict) -> LLMClient:

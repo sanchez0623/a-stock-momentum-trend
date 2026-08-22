@@ -75,7 +75,7 @@ WHITELIST: dict[str, FieldRule] = {
     # 量能 2
     "量能.volume_ma":               FieldRule("int", 5, 60, "成交量均线周期"),
     "量能.volume_ratio_threshold":  FieldRule("float", 0.8, 5.0, "量比阈值"),
-    # 趋势阶段 13(方案B: 启动加分/过热·衰竭扣分, AI 可调以找最优解)
+    # 趋势阶段 23(方案B: 启动加分/过热·衰竭扣分 + 加速期前中后细分, AI 可调以找最优解)
     "趋势阶段.launch_macd_golden":  FieldRule("float", 0, 10, "启动加分·MACD金叉"),
     "趋势阶段.launch_roc_turn":     FieldRule("float", 0, 10, "启动加分·ROC转正"),
     "趋势阶段.launch_ma_cross":     FieldRule("float", 0, 10, "启动加分·短均线刚上穿"),
@@ -89,6 +89,16 @@ WHITELIST: dict[str, FieldRule] = {
     "趋势阶段.exhaust_penalty":     FieldRule("float", 0, 15, "衰竭扣分"),
     "趋势阶段.rsi_overheat":        FieldRule("float", 60, 90, "阶段判定RSI过热线"),
     "趋势阶段.rsi_exhaust":         FieldRule("float", 65, 95, "阶段判定RSI衰竭线"),
+    "趋势阶段.accel_age_lookback":  FieldRule("int", 20, 120, "趋势年龄回看窗口(日)"),
+    "趋势阶段.accel_early_max_age": FieldRule("int", 5, 25, "加速前期最大趋势年龄(日)"),
+    "趋势阶段.accel_early_bias_max": FieldRule("float", 1, 8, "加速前期乖离上限(%)"),
+    "趋势阶段.accel_early_rsi_max": FieldRule("float", 55, 72, "加速前期RSI上限"),
+    "趋势阶段.accel_early_bonus":   FieldRule("float", 0, 10, "加速前期加分"),
+    "趋势阶段.accel_mid_bonus":     FieldRule("float", 0, 10, "加速中期加分"),
+    "趋势阶段.accel_late_min_age":  FieldRule("int", 15, 60, "加速后期最小趋势年龄(日)"),
+    "趋势阶段.accel_late_bias":     FieldRule("float", 4, 10, "加速后期乖离阈值(%)"),
+    "趋势阶段.accel_late_rsi":      FieldRule("float", 62, 78, "加速后期RSI阈值"),
+    "趋势阶段.accel_late_bonus":    FieldRule("float", 0, 10, "加速后期加分"),
     # 评分权重 5
     "评分权重.timing":              FieldRule("float", 0.02, 0.60, "时机权重"),
     "评分权重.position":            FieldRule("float", 0.02, 0.60, "仓位权重"),
@@ -150,10 +160,10 @@ def validate_config(cfg: dict[str, Any]) -> list[str]:
                              g("仓位"), g(WEIGHT_GROUP), g("做T"))
 
     # 趋势
-    ms, mm, ml = t.get("ma_short"), t.get("ma_mid"), t.get("ma_long")
-    if all(isinstance(x, (int, float)) for x in (ms, mm, ml)):
-        if not (ms < mm < ml):
-            errs.append(f"均线周期须递增: 短{ms} < 中{mm} < 长{ml}")
+    ms, mm, ml = (t.get("ma_short"), t.get("ma_mid"), t.get("ma_long"))
+    if (isinstance(ms, (int, float)) and isinstance(mm, (int, float))
+            and isinstance(ml, (int, float)) and not (ms < mm < ml)):
+        errs.append(f"均线周期须递增: 短{ms} < 中{mm} < 长{ml}")
     # 动量
     mf, msl = m.get("macd_fast"), m.get("macd_slow")
     if isinstance(mf, (int, float)) and isinstance(msl, (int, float)) and mf >= msl:
@@ -295,11 +305,11 @@ def evaluate_patch(patch: dict[str, Any], session: Session | None = None) -> dic
     cur = float(cur_raw)
     base["from"] = _num(rule.kind, cur)
 
-    try:
-        want = float(patch.get("to"))
-    except (TypeError, ValueError):
+    to_raw = patch.get("to")
+    if not isinstance(to_raw, (int, float)):
         base.update(message="建议的目标值不是合法数值")
         return base
+    want = float(to_raw)
 
     notes: list[str] = []
 
@@ -588,10 +598,10 @@ def sanitize_llm_patch(raw: Any) -> dict[str, Any] | None:
     group, key = str(raw.get("group", "")), str(raw.get("key", ""))
     if f"{group}.{key}" not in WHITELIST:
         return None
-    try:
-        to = float(raw.get("to"))
-    except (TypeError, ValueError):
+    to_raw = raw.get("to")
+    if not isinstance(to_raw, (int, float)):
         return None
+    to = float(to_raw)
     cur = config_manager.get().get(group, {}).get(key)
     rule = WHITELIST[f"{group}.{key}"]
     return {"group": group, "key": key,

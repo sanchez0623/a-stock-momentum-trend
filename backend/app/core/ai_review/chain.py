@@ -10,13 +10,19 @@ langchain 依赖缺失时抛 LangChainUnavailable, 由 service 降级旧单步�
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, TypeVar, cast
 
 from pydantic import BaseModel, Field, field_validator
 
 from app.core.ai_review.llm import DEEPSEEK_BASE, DEFAULT_MODEL, LLMError
 
 logger = logging.getLogger(__name__)
+
+# 两步链 prompt 版本(修改本文件内 Step1/Step2 提示词时必须递增版本号;
+# 版本号随 AiReview.prompt_version 与 LlmCall.prompt_version 落库, 用于复现与回归对比)
+REVIEW_PROMPT_V = "review-2step-2026-08-14-v1"
+
+T = TypeVar("T", bound=BaseModel)
 
 try:
     from langchain_core.output_parsers import PydanticOutputParser
@@ -89,7 +95,7 @@ def build_chain_llm(llm_cfg: dict[str, Any]) -> ChatOpenAI:
     max_tokens = int(llm_cfg.get("max_tokens", 8192))
     if any(h in model.lower() for h in REASONING_MODEL_HINTS):
         max_tokens = max(max_tokens, 8192)
-    return ChatOpenAI(
+    return ChatOpenAI(  # type: ignore[call-arg]
         model=model,
         base_url=base_url,
         api_key=llm_cfg.get("api_key", ""),
@@ -112,31 +118,62 @@ def _build_prompt(system: str, user: str) -> ChatPromptTemplate:
 
 
 async def _call_parsed(system: str, user: str, llm: ChatOpenAI,
-                       parser: PydanticOutputParser, retries: int = 1) -> BaseModel:
+                       parser: PydanticOutputParser[T], retries: int = 1,
+                       feature: str = "", prompt_version: str = "") -> T:
     """调用 LLM 并解析结构化输出; 解析失败把错误反馈给模型重试一次.
 
     网络/HTTP 层异常统一包装为 LLMError, 由 service 层决定降级。
+    每次实际调用(含失败/重试)都会落一条 LlmCall 记账记录。
     """
+    from app.core.ai_review import call_log
+
+    prompt_hash = call_log.hash_prompt(system, user)
+    provider = call_log.provider_of(
+        getattr(llm, "base_url", "") or getattr(llm, "openai_api_base", "") or "")
+    model = getattr(llm, "model_name", "") or getattr(llm, "model", "") or ""
     last_err: Exception | None = None
     for attempt in range(retries + 1):
         prompt = _build_prompt(system, user)
+        start = call_log.started()
         try:
             # langchain 1.x: ainvoke 不接受 ChatPromptTemplate, 需先 format 为消息列表
             resp = await llm.ainvoke(prompt.format_messages())
         except Exception as exc:  # noqa: BLE001 - langchain 各类网络/鉴权异常
+            call_log.record_call(feature=feature, model=model, provider=provider,
+                                 prompt_hash=prompt_hash, prompt_version=prompt_version,
+                                 latency_ms=call_log.elapsed_ms(start), ok=False,
+                                 error=f"LLM 请求失败: {exc}")
             logger.warning("LLM 调用异常", exc_info=True, extra={"component": "llm_chain"})
             raise LLMError(f"LLM 请求失败: {exc}") from exc
-        text = resp.content if hasattr(resp, "content") else str(resp)
+        latency = call_log.elapsed_ms(start)
+        usage = call_log.extract_usage(resp)
+        text = cast(str, resp.content) if hasattr(resp, "content") else str(resp)
         try:
-            return parser.parse(text)
+            parsed = parser.parse(text)
         except Exception as exc:  # noqa: BLE001 - 解析失败(含 JSON/校验)
             last_err = exc
+            call_log.record_call(feature=feature, model=model, provider=provider,
+                                 prompt_hash=prompt_hash, prompt_version=prompt_version,
+                                 input_tokens=usage["input_tokens"],
+                                 output_tokens=usage["output_tokens"],
+                                 total_tokens=usage["total_tokens"],
+                                 latency_ms=latency, ok=False,
+                                 error=f"结构化输出解析失败: {exc}")
             if attempt < retries:
                 logger.warning("结构化输出解析失败, 带错误重试: %s", exc)
                 user = (
                     f"{user}\n\n警告: 上一次输出解析失败({exc})。"
                     "请只输出合法 JSON, 不要输出任何其它内容。"
                 )
+                continue
+            raise LLMError(f"LLM 结构化输出解析失败: {last_err}") from last_err
+        call_log.record_call(feature=feature, model=model, provider=provider,
+                             prompt_hash=prompt_hash, prompt_version=prompt_version,
+                             input_tokens=usage["input_tokens"],
+                             output_tokens=usage["output_tokens"],
+                             total_tokens=usage["total_tokens"],
+                             latency_ms=latency)
+        return parsed
     raise LLMError(f"LLM 结构化输出解析失败: {last_err}") from last_err
 
 
@@ -193,6 +230,8 @@ async def run_review_chain(trades: list[Any], signals: list[Any], issues: list[d
         ),
         llm=llm,
         parser=profile_parser,
+        feature="ai_review.step1",
+        prompt_version=REVIEW_PROMPT_V,
     )
     logger.info("两步链 Step1 完成: %s", profile.behavior_summary)
 
@@ -229,5 +268,7 @@ async def run_review_chain(trades: list[Any], signals: list[Any], issues: list[d
         ),
         llm=llm,
         parser=review_parser,
+        feature="ai_review.step2",
+        prompt_version=REVIEW_PROMPT_V,
     )
     return out, llm.model_name

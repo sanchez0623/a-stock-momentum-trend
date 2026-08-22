@@ -19,3 +19,8 @@ akshare>=1.14
 # === AI 复盘两步链(langchain 未安装时自动降级旧单步路径) ===
 langchain-core>=1.0
 langchain-openai>=1.0
+
+# === AI 助理流水线(LangGraph 状态图 + SQLite checkpointer) ===
+langgraph>=0.2
+langgraph-checkpoint-sqlite>=2.0
+aiosqlite>=0.20

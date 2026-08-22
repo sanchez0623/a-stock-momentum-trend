@@ -1,7 +1,7 @@
 import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
-import type { DailyReportRecord, HealthData, Portfolio, RiskStatus, SignalRecord } from '../api/client'
+import type { DailyReportRecord, HealthData, NotificationItem, Portfolio, RiskStatus, SignalRecord } from '../api/client'
 import { fmtPct } from '../const/colors'
 import { Button, Card, ErrorBox, ListRow, PageHeader, StatCard, Tag } from '../components/ui'
 
@@ -34,6 +34,21 @@ export default function Dashboard() {
     refetchInterval: POLL_MS,
   })
   const [generating, setGenerating] = useState(false)
+  const queryClient = useQueryClient()
+  const { data: notifications = [] } = useQuery<NotificationItem[]>({
+    queryKey: ['notifications'],
+    queryFn: () => api.notifications(8),
+    refetchInterval: POLL_MS,
+  })
+
+  const markRead = async (id: number) => {
+    try {
+      await api.notificationRead(id)
+      queryClient.invalidateQueries({ queryKey: ['notifications'] })
+    } catch (e) {
+      console.error('标记已读失败:', e)
+    }
+  }
 
   const generateReport = async () => {
     setGenerating(true)
@@ -193,6 +208,32 @@ export default function Dashboard() {
           )}
         </Card>
       </div>
+
+      {/* 通知中心(AI 助理提醒 / 日报) */}
+      <Card title="通知中心" className="mt-3">
+        {notifications.length === 0 ? (
+          <div className="text-[13px] text-ink-faint">暂无通知。开启「设置 → AI 助理」后,盘前观察/盘中信号提醒/盘后日报会自动推送。</div>
+        ) : (
+          <div className="space-y-1.5">
+            {notifications.map((n) => (
+              <div
+                key={n.id}
+                onClick={() => !n.read && markRead(n.id)}
+                className={`flex items-center justify-between gap-2 rounded-md px-2 py-1.5 ${n.read ? '' : 'cursor-pointer hover:bg-ink-muted/5'}`}
+              >
+                <span className="flex min-w-0 items-center gap-2">
+                  {!n.read && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-rise" />}
+                  <span className="text-[13px]">
+                    <span className="font-medium">{n.title}</span>
+                    <span className="ml-2 text-ink-secondary">{n.content}</span>
+                  </span>
+                </span>
+                <span className="shrink-0 text-[11px] text-ink-faint">{n.time.slice(5, 16)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
     </div>
   )
 }

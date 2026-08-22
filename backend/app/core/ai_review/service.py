@@ -28,6 +28,9 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_SCOPE_DAYS = 14  # 默认复盘最近 N 天
 
+# 旧单步 prompt 版本(修改 _llm_review_legacy 提示词时必须递增)
+LEGACY_PROMPT_V = "review-1step-2026-08-14-v1"
+
 
 class ReviewService:
     # ------------------------------------------------------------ 范围
@@ -82,10 +85,13 @@ class ReviewService:
 
         # LLM 深度复盘(可关)
         llm_cfg = config_manager.get().get("llm", {})
-        content, llm_suggestions, model = "", [], ""
+        content: str = ""
+        llm_suggestions: list[dict[str, Any]] = []
+        model: str = ""
+        prompt_version: str = ""
         if llm_cfg.get("enabled") and llm_cfg.get("api_key"):
             try:
-                content, llm_suggestions, model = await self._llm_review(
+                content, llm_suggestions, model, prompt_version = await self._llm_review(
                     trades, signals, issues, stats, llm_cfg)
             except LLMError as exc:
                 logger.warning("LLM 复盘失败, 降级为纯规则诊断: %s", exc, exc_info=True,
@@ -104,18 +110,20 @@ class ReviewService:
             suggestions_json=json.dumps(suggestions, ensure_ascii=False),
             model=model,
             rule_result_json=json.dumps({"issues": issues, "stats": stats}, ensure_ascii=False),
+            prompt_version=prompt_version,
         )
         with session or db.session_scope() as s:
             s.add(review)
             s.commit()
             s.refresh(review)
-        # 复盘记忆索引(embedding 未启用/调用失败均只记日志, 不影响主流程)
+        # 复盘记忆索引 + 脏记忆增量重建(embedding 未启用/调用失败均只记日志, 不影响主流程)
         try:
-            from app.core.ai_review.memory import index_review
+            from app.core.ai_review.memory import index_review, refresh_dirty_memories
 
             await index_review(review)
+            await refresh_dirty_memories()
         except Exception as exc:  # noqa: BLE001
-            logger.debug("复盘记忆索引跳过: %s", exc)
+            logger.debug("复盘记忆索引/重建跳过: %s", exc)
         return review
 
     @staticmethod
@@ -192,14 +200,15 @@ class ReviewService:
     # ------------------------------------------------------------ LLM
     @staticmethod
     async def _llm_review(trades: list[Any], signals: list[Any], issues: list[dict],
-                          stats: dict, llm_cfg: dict) -> tuple[str, list[dict], str]:
+                          stats: dict, llm_cfg: dict) -> tuple[str, list[dict], str, str]:
         """LLM 深度复盘: 优先 LangChain 两步链(行为归纳 -> 建议生成).
 
         langchain 依赖缺失时降级旧单步路径(_llm_review_legacy);
         LLM 调用/解析失败仍抛 LLMError, 由 run() 降级为纯规则诊断。
+        返回 (content, suggestions, model, prompt_version)。
         """
         try:
-            from app.core.ai_review.chain import LangChainUnavailable, run_review_chain
+            from app.core.ai_review.chain import REVIEW_PROMPT_V, LangChainUnavailable, run_review_chain
             from app.core.ai_review.memory import memory_context
 
             try:
@@ -230,11 +239,11 @@ class ReviewService:
                 sg["guard"] = "not_whitelisted"
                 sg["guard_msg"] = "AI 建议修改的参数不在可调白名单内, 已降级为纯文字建议"
             suggestions.append(sg)
-        return out.analysis, suggestions, model
+        return out.analysis, suggestions, model, REVIEW_PROMPT_V
 
     @staticmethod
     async def _llm_review_legacy(trades: list[Any], signals: list[Any], issues: list[dict],
-                                 stats: dict, llm_cfg: dict) -> tuple[str, list[dict], str]:
+                                 stats: dict, llm_cfg: dict) -> tuple[str, list[dict], str, str]:
         """旧单步 prompt 路径(无 langchain 依赖时的降级, 行为与历史一致)."""
         client = build_client_from_config(llm_cfg)
         trade_lines = "\n".join(
@@ -281,14 +290,14 @@ suggestions 输出 2-5 条。
 {trade_lines}
 """
         try:
-            text = await client.chat([
-                {"role": "system", "content": "你是一位严谨的量化交易复盘教练, 输出简洁可执行。"},
-                {"role": "user", "content": prompt},
-            ])
+            text = await client.chat(
+                [{"role": "system", "content": "你是一位严谨的量化交易复盘教练, 输出简洁可执行。"},
+                 {"role": "user", "content": prompt}],
+                feature="ai_review.legacy", prompt_version=LEGACY_PROMPT_V, degraded=True)
         except LLMError:
             raise
         content, suggestions = ReviewService._parse_llm_output(text)
-        return content, suggestions, client.model
+        return content, suggestions, client.model, LEGACY_PROMPT_V
 
     @staticmethod
     def _parse_llm_output(text: str) -> tuple[str, list[dict]]:
@@ -393,6 +402,19 @@ suggestions 输出 2-5 条。
             review.suggestions_json = json.dumps(items, ensure_ascii=False)
             s.commit()
             s.refresh(review)
+            # 建议状态已变更 -> 对应记忆条目标记脏(下次复盘时增量重建文本与向量,
+            # 否则 RAG 里的"已采纳生效/已撤销"永远停留在创建时的快照)
+            if review.id is not None:
+                try:
+                    from app.core.ai_review.memory import mark_memory_dirty
+
+                    mark_memory_dirty(review.id, s)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("记忆置脏跳过(review_id=%s): %s", review.id, exc)
+            # 置脏内部 commit 会再次过期全部属性; 刷新并脱离会话,
+            # 否则调用方在会话关闭后读取属性会抛 DetachedInstanceError
+            s.refresh(review)
+            s.expunge(review)
             return review, info
 
 

@@ -1,6 +1,6 @@
 """冒烟测试: 校验新增的调参闭环端点(不依赖真实交易数据)."""
-from fastapi.testclient import TestClient
 from app.main import app
+from fastapi.testclient import TestClient
 
 
 def test_tuning_policy_and_changes():

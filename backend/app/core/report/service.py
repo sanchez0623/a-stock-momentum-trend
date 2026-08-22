@@ -76,7 +76,7 @@ class DailyReportService:
     def _market_text(gate: dict) -> str:
         if not gate or not gate.get("details"):
             return "参考指数数据不足, 市况判空"
-        env = {"bull": "看多", "bear": "看空", "neutral": "中性"}.get(gate.get("environment"), "中性")
+        env = {"bull": "看多", "bear": "看空", "neutral": "中性"}.get(str(gate.get("environment")), "中性")
         return f"{gate.get('reason', '')} -> 环境{env}"
 
     @staticmethod
@@ -260,16 +260,17 @@ class DailyReportService:
         disc_t = self._discipline_text(data["issues"])
         materials_text = self.build_report_text(market, trades_t, holdings_t, signals_t, risk_t, disc_t)
 
-        model, status, content = "", "ok", None
+        model, status, content, prompt_version = "", "ok", None, ""
         if llm_cfg.get("enabled") and llm_cfg.get("api_key"):
             try:
                 from app.core.ai_review.memory import memory_context
-                from app.core.report.chain import run_report_chain
+                from app.core.report.chain import REPORT_PROMPT_V, run_report_chain
 
                 query = f"问题: {'; '.join(str(i.get('title', '')) for i in data['issues'])}; 今日操作与持仓回顾"
                 memory_lines = await memory_context(query, k=2)
                 out, model = await run_report_chain(
                     {"text": materials_text}, llm_cfg, memory_lines)
+                prompt_version = REPORT_PROMPT_V
                 content = self._llm_content(out)
             except Exception:  # noqa: BLE001 - 降级规则模板
                 logger.warning("日报 LLM 生成失败, 降级规则模板", exc_info=True,
@@ -293,6 +294,7 @@ class DailyReportService:
         row.content_json = json.dumps(content, ensure_ascii=False)
         row.model = model
         row.status = status
+        row.prompt_version = prompt_version
         row.created_at = dt.datetime.now(dt.timezone(dt.timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S")
         session.commit()
         session.refresh(row)

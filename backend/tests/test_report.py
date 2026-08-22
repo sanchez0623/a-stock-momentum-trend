@@ -123,6 +123,7 @@ def test_service_generate_degraded(tmp_engine, monkeypatch):
     report = asyncio.run(report_service.generate("2026-08-10"))
     assert report.date == "2026-08-10"
     assert report.status == "degraded"
+    assert report.prompt_version == ""  # 降级模板无 prompt 版本
     content = json.loads(report.content_json)
     assert "规则模板" in content["text"]
 
@@ -165,6 +166,9 @@ def test_service_generate_llm_path(tmp_engine, monkeypatch):
     assert content["market_summary"] == "沪深300 多头排列, 闸门看多"
     assert content["discipline_score"] == 78
     assert report.model == "fake-model"
+    from app.core.report.chain import REPORT_PROMPT_V
+
+    assert report.prompt_version == REPORT_PROMPT_V  # LLM 路径带 prompt 版本
 
 
 def test_service_generate_same_date_overwrites(tmp_engine, monkeypatch):

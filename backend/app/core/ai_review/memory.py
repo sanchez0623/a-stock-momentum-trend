@@ -192,6 +192,25 @@ def _embedding_cfg() -> dict[str, Any]:
     return (config_manager.get().get("llm", {}) or {}).get("embedding", {}) or {}
 
 
+def _build_memory_text_for(review_id: int, s: Session) -> str | None:
+    """按最新数据(建议状态/变更记录/后续复盘统计)构造某复盘的记忆文本.
+
+    供 index_review(新建)与 refresh_dirty_memories(增量重建)复用,
+    保证重建后的文本反映采纳/撤销后的最新状态。
+    """
+    review = s.get(AiReview, review_id)
+    if review is None:
+        return None
+    changes = s.exec(select(ConfigChange).where(ConfigChange.review_id == review_id)).all()
+    change_status = {c.suggestion_index: c.status for c in changes if c.suggestion_index is not None}
+    reviews = list(s.exec(select(AiReview).order_by(AiReview.time)).all())
+    try:
+        idx = next(i for i, r in enumerate(reviews) if r.id == review_id)
+    except StopIteration:
+        idx = len(reviews) - 1
+    return build_memory_text(review, change_status, _next_review_stats(reviews, idx))
+
+
 async def index_review(review: AiReview, session: Session | None = None) -> bool:
     """为一次复盘生成记忆条目并入库(幂等: 同 review 已存在则跳过).
 
@@ -201,19 +220,13 @@ async def index_review(review: AiReview, session: Session | None = None) -> bool
     if not (emb.get("enabled") and emb.get("api_key")):
         return False
 
-    def _do(s: Session) -> bool:
+    def _do(s: Session) -> str | None:
+        if review.id is None:
+            return None
         existing = s.exec(select(ReviewMemory).where(ReviewMemory.review_id == review.id)).first()
         if existing is not None:
-            return True
-        changes = s.exec(select(ConfigChange).where(ConfigChange.review_id == review.id)).all()
-        change_status = {c.suggestion_index: c.status for c in changes if c.suggestion_index is not None}
-        reviews = list(s.exec(select(AiReview).order_by(AiReview.time)).all())
-        try:
-            idx = next(i for i, r in enumerate(reviews) if r.id == review.id)
-        except StopIteration:
-            idx = len(reviews) - 1
-        text = build_memory_text(review, change_status, _next_review_stats(reviews, idx))
-        return text
+            return None
+        return _build_memory_text_for(review.id, s)
 
     try:
         if session is not None:
@@ -275,9 +288,9 @@ async def rebuild_index(session: Session | None = None) -> int:
     pending = [r for r in reviews if r.id not in mem_ids]
     if not pending:
         return 0
-    idx_of = {r.id: i for i, r in enumerate(reviews)}
-    texts = [build_memory_text(r, changes_map.get(r.id, {}),
-                               _next_review_stats(reviews, idx_of.get(r.id, len(reviews) - 1)))
+    idx_of = {rid: i for i, r in enumerate(reviews) if (rid := r.id) is not None}
+    texts = [build_memory_text(r, changes_map.get(r.id or 0, {}),
+                               _next_review_stats(reviews, idx_of.get(r.id or 0, len(reviews) - 1)))
              for r in pending]
     try:
         client = build_embedding_client(emb)
@@ -304,9 +317,106 @@ async def rebuild_index(session: Session | None = None) -> int:
         return 0
 
 
+# ---------------------------------------------------------------- 脏标记与增量重建
+def mark_memory_dirty(review_id: int, session: Session | None = None) -> int:
+    """建议采纳/撤销后, 把该复盘的记忆条目标记为待重建(文本里的采纳状态已过期).
+
+    同步操作(仅 UPDATE, 不调 embedding); 实际重建由 refresh_dirty_memories 增量完成。
+    返回被标记的条目数。
+    """
+    def _do(s: Session) -> int:
+        rows = s.exec(select(ReviewMemory).where(ReviewMemory.review_id == review_id)).all()
+        for r in rows:
+            r.dirty = 1
+        if rows:
+            s.commit()
+        return len(rows)
+
+    try:
+        if session is not None:
+            return _do(session)
+        with db.session_scope() as s:
+            return _do(s)
+    except Exception as exc:  # noqa: BLE001 - 置脏失败不影响建议状态更新
+        logger.warning("复盘记忆置脏失败(review_id=%s): %s", review_id, exc)
+        return 0
+
+
+async def refresh_dirty_memories(session: Session | None = None) -> int:
+    """增量重建 dirty=1 的记忆条目: 按最新建议状态重拼文本 + 重新 embedding.
+
+    由复盘 run() 每次执行后调用(幂等, embedding 未启用/失败均静默跳过)。
+    返回重建条数。
+    """
+    emb = _embedding_cfg()
+    if not (emb.get("enabled") and emb.get("api_key")):
+        return 0
+
+    def _collect(s: Session) -> list[ReviewMemory]:
+        return list(s.exec(select(ReviewMemory).where(ReviewMemory.dirty == 1)).all())
+
+    try:
+        rows = _collect(session) if session is not None else None
+        if rows is None:
+            with db.session_scope() as s:
+                rows = _collect(s)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("复盘记忆增量重建: 读取脏条目失败 %s", exc)
+        return 0
+    if not rows:
+        return 0
+
+    texts: list[str] = []
+    valid: list[ReviewMemory] = []
+    for r in rows:
+        try:
+            if session is not None:
+                text = _build_memory_text_for(r.review_id, session)
+            else:
+                with db.session_scope() as s:
+                    text = _build_memory_text_for(r.review_id, s)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("复盘记忆增量重建: 文本构造失败(review_id=%s): %s", r.review_id, exc)
+            text = None
+        if text:
+            texts.append(text)
+            valid.append(r)
+    if not texts:
+        return 0
+    try:
+        client = build_embedding_client(emb)
+        vecs = await client.embed(texts)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("复盘记忆增量重建: embedding 失败 %s", exc)
+        return 0
+
+    def _save(s: Session) -> int:
+        n = 0
+        for row, text, vec in zip(valid, texts, vecs, strict=True):
+            target = s.get(ReviewMemory, row.id)
+            if target is None:
+                continue
+            target.text = text
+            target.embedding_json = json.dumps(vec)
+            target.model = emb.get("model", "")
+            target.dirty = 0
+            n += 1
+        s.commit()
+        return n
+
+    try:
+        if session is not None:
+            return _save(session)
+        with db.session_scope() as s:
+            return _save(s)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("复盘记忆增量重建: 落库失败 %s", exc)
+        return 0
+
+
 # ---------------------------------------------------------------- 检索
 def _cosine_scores(query_vec: list[float], rows: list[ReviewMemory]) -> list[tuple[ReviewMemory, float]]:
-    q = np.asarray(query_vec, dtype=float)
+    q: Any = np.asarray(query_vec, dtype=float)
     scored: list[tuple[ReviewMemory, float]] = []
     for row in rows:
         try:

@@ -131,6 +131,92 @@ def test_memory_context_empty_when_disabled(monkeypatch, tmp_engine):
     assert asyncio.run(memory_mod.memory_context("追高")) == ""
 
 
+# ---------------------------------------------------------------- 脏标记与增量重建
+def test_mark_memory_dirty(tmp_engine):
+    """建议采纳/撤销后置脏: 对应记忆条目 dirty=1."""
+    from app import db
+    from sqlmodel import Session
+
+    with Session(db.engine) as s:
+        s.add(AiReview(time="2026-08-05 10:00:00", range="week", content="c"))
+        s.commit()
+        rid = s.exec(select(AiReview)).first().id
+        s.add(ReviewMemory(review_id=rid, time="2026-08-05 10:00:00",
+                           text="旧文本", embedding_json="[]"))
+        s.commit()
+
+    assert memory_mod.mark_memory_dirty(rid) == 1
+    with Session(db.engine) as s:
+        mem = s.exec(select(ReviewMemory).where(ReviewMemory.review_id == rid)).first()
+        assert mem is not None and mem.dirty == 1
+    # 无条目不报错
+    assert memory_mod.mark_memory_dirty(99999) == 0
+
+
+def test_update_suggestion_marks_memory_dirty(tmp_engine):
+    """ReviewService.update_suggestion(采纳/撤销) -> 记忆条目自动置脏."""
+    from app import db
+    from app.core.ai_review import service as service_mod
+    from sqlmodel import Session
+
+    with Session(db.engine) as s:
+        s.add(AiReview(time="2026-08-05 10:00:00", range="week", content="c",
+                       suggestions_json=json.dumps(
+                           [{"text": "严格执行止损", "status": "pending"}],
+                           ensure_ascii=False)))
+        s.commit()
+        rid = s.exec(select(AiReview)).first().id
+        s.add(ReviewMemory(review_id=rid, time="2026-08-05 10:00:00",
+                           text="旧文本", embedding_json="[]"))
+        s.commit()
+
+    service = service_mod.ReviewService()
+    updated, info = service.update_suggestion(rid, 0, "accepted")
+    assert info["applied"] is False  # 纯文字建议只打标记
+    with Session(db.engine) as s:
+        mem = s.exec(select(ReviewMemory).where(ReviewMemory.review_id == rid)).first()
+        assert mem is not None and mem.dirty == 1  # 状态变更 -> 待重建
+
+
+def test_refresh_dirty_memories_rebuilds(monkeypatch, tmp_engine):
+    """增量重建: dirty=1 条目按最新建议状态重拼文本并重新 embedding."""
+    monkeypatch.setattr(memory_mod, "_embedding_cfg", lambda: {
+        "enabled": True, "api_key": "sk-test", "base_url": "https://x/v1",
+        "model": "BAAI/bge-m3", "timeout_sec": 10})
+    monkeypatch.setattr(memory_mod, "build_embedding_client", lambda cfg: FakeEmb())
+
+    from app import db
+    from sqlmodel import Session
+
+    with Session(db.engine) as s:
+        r = _mk_review({"issues": [{"level": "high", "title": "追高买入", "detail": "x"}],
+                         "stats": _mk_stats(40.0, -120.0)},
+                        [{"text": "下调RSI超买线", "status": "accepted"}],
+                        time="2026-08-01 10:00:00")
+        s.add(r)
+        s.commit()
+        rid = r.id
+        s.add(ReviewMemory(review_id=rid, time="2026-08-01 10:00:00",
+                           text="旧文本(过期)", embedding_json=json.dumps([0.5, 0.5, 0.5]),
+                           dirty=1))
+        s.commit()
+
+    n = asyncio.run(memory_mod.refresh_dirty_memories())
+    assert n == 1
+    with Session(db.engine) as s:
+        mem = s.exec(select(ReviewMemory).where(ReviewMemory.review_id == rid)).first()
+        assert mem is not None
+        assert mem.dirty == 0                      # 重建后清除脏标记
+        assert "旧文本" not in mem.text             # 文本按最新状态重拼
+        assert "已采纳生效" in mem.text             # 采纳状态反映进记忆
+        assert len(json.loads(mem.embedding_json)) == 3  # 重新 embedding
+
+
+def test_refresh_dirty_memories_disabled_when_embedding_off(monkeypatch, tmp_engine):
+    monkeypatch.setattr(memory_mod, "_embedding_cfg", lambda: {"enabled": False, "api_key": ""})
+    assert asyncio.run(memory_mod.refresh_dirty_memories()) == 0
+
+
 # ---------------------------------------------------------------- 链注入
 def test_chain_injects_memory(monkeypatch):
     """两步链 Step2 prompt 注入历史记忆文本."""

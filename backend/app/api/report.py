@@ -31,8 +31,8 @@ def _report_dump(r) -> dict:
     }
 
 
-@router.post("/report/daily/run")
-async def run_daily_report(session: Session = Depends(get_session)) -> dict:
+@router.post("/report/daily/run", response_model=None)
+async def run_daily_report(session: Session = Depends(get_session)) -> dict | JSONResponse:
     """手动生成今日日报(验证用, 不等到 16:30 定时任务)."""
     try:
         report = await report_service.generate(date_cls.today().isoformat(), session)
@@ -58,8 +58,8 @@ async def get_notifications(limit: int = Query(20, ge=1, le=100), unread_only: b
     return {"code": 0, "msg": "ok", "data": [r.model_dump() for r in rows]}
 
 
-@router.post("/notifications/{nid}/read")
-async def mark_notification_read(nid: int, session: Session = Depends(get_session)) -> dict:
+@router.post("/notifications/{nid}/read", response_model=None)
+async def mark_notification_read(nid: int, session: Session = Depends(get_session)) -> dict | JSONResponse:
     row = mark_read(nid, session)
     if row is None:
         return JSONResponse(status_code=404, content={"code": 1, "msg": "通知不存在"})

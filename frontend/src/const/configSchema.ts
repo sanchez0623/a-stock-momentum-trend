@@ -199,6 +199,15 @@ export const CONFIG_GROUPS: GroupMeta[] = [
       { key: 'transfer_fee_rate', label: '过户费', type: 'float', unit: '万分之', scale: 10000, min: 0, max: 100, step: 0.01, hint: '买卖双边收取，现行万 0.1' },
     ],
   },
+  {
+    key: 'ai_assistant',
+    label: 'AI 助理',
+    desc: '独立编排流水线(LangGraph): 盘前观察清单 / 盘中信号提醒 / 盘后日报。只读, 不产生配置变更; 观察范围=持仓+自选。',
+    fields: [
+      { key: 'enabled', label: '启用 AI 助理', type: 'bool', hint: '开启后由定时任务自动执行三阶段流水线; 关闭完全退回手动流程。盘中打开即生效' },
+      { key: 'push_webhook', label: '企业微信 Webhook', type: 'text', hint: '留空仅站内通知' },
+    ],
+  },
 ]
 
 export const DATA_SOURCE_LABELS: Record<string, string> = {

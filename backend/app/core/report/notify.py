@@ -17,10 +17,15 @@ logger = logging.getLogger(__name__)
 
 
 async def push_notification(category: str, title: str, content: str,
-                            webhook: str = "", session: Session | None = None) -> Notification:
-    """写站内通知; webhook 非空时同步推送到企业微信机器人. 返回通知记录."""
+                            webhook: str = "", session: Session | None = None,
+                            fingerprint: str = "") -> Notification:
+    """写站内通知; webhook 非空时同步推送到企业微信机器人. 返回通知记录.
+
+    fingerprint: 去重指纹(如 2026-08-12:300139:SELL_REDUCE), 供 AI 助理等避免重复提醒.
+    """
     def _save(s: Session) -> Notification:
-        row = Notification(category=category, title=title, content=content)
+        row = Notification(category=category, title=title, content=content,
+                           fingerprint=fingerprint)
         s.add(row)
         s.commit()
         s.refresh(row)

@@ -14,6 +14,9 @@ from pydantic import BaseModel, Field, field_validator
 
 logger = logging.getLogger(__name__)
 
+# 日报 prompt 版本(修改下方提示词时必须递增; 随 DailyReport.prompt_version 落库)
+REPORT_PROMPT_V = "report-2026-08-14-v1"
+
 
 class DailyReportOutput(BaseModel):
     """日报结构化输出."""
@@ -69,5 +72,7 @@ async def run_report_chain(materials: dict[str, Any], llm_cfg: dict[str, Any],
         ),
         llm=llm,
         parser=parser,
+        feature="daily_report",
+        prompt_version=REPORT_PROMPT_V,
     )
     return out, llm.model_name
