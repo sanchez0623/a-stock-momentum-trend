@@ -352,6 +352,29 @@ def test_compare_api_cancel(tmp_engine, monkeypatch):
                 _tasks.pop(tid, None)
 
 
+def test_get_task_auto_abandons_stalled(tmp_engine):
+    """get_task 看门狗: running 且心跳停滞>10分钟 -> 轮询时自动标 error(前端2s内解除死锁)."""
+    from fastapi.testclient import TestClient
+
+    from app.api.backtest import _tasks, _tasks_lock
+    from app.main import app
+
+    with _tasks_lock:
+        _tasks["stalled"] = {"status": "running", "progress": 33, "result": None,
+                             "error": "", "last_active": time.time() - 700, "thread_id": None}
+    try:
+        c = TestClient(app)
+        d = c.get("/api/backtest/tasks/stalled").json()["data"]
+        assert d["status"] == "error"
+        assert "超时无活动" in d["error"]
+        # 二次轮询稳定 error
+        d2 = c.get("/api/backtest/tasks/stalled").json()["data"]
+        assert d2["status"] == "error"
+    finally:
+        with _tasks_lock:
+            _tasks.pop("stalled", None)
+
+
 def test_compare_api(tmp_engine, monkeypatch):
     """API 层: POST /api/backtest/strategy-compare -> task_id -> 轮询至 done."""
     from fastapi.testclient import TestClient

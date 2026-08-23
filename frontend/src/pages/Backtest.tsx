@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   api,
@@ -330,6 +330,9 @@ function CompareTab({ taskId, setTaskId }: { taskId: string | null; setTaskId: (
   const [customCooldown, setCustomCooldown] = useState(5)
   const [customDefense, setCustomDefense] = useState('soft')
   const [error, setError] = useState('')
+  // 本会话发起的任务 ID(区别 sessionStorage 恢复的历史遗留任务):
+  // 历史任务处于 error 终态时静默清除, 不弹错误 —— 修复"一点进去就运行中/报错"的观感.
+  const initiatedRef = useRef<string | null>(null)
   // 心跳时钟: 每秒重算"距上次活动秒数"(修复数据不变时不重渲染导致的提示冻结)
   const [nowTs, setNowTs] = useState(() => Date.now())
   // 卡死诊断: 两次采样对比栈顶(不变=真卡死)
@@ -381,6 +384,15 @@ function CompareTab({ taskId, setTaskId }: { taskId: string | null; setTaskId: (
     }
   }, [taskId, taskError, setTaskId])
 
+  // 历史遗留任务(sessionStorage 恢复, 非本会话发起)处于 error 终态 -> 静默清除,
+  // 不弹错误提示(如"超时已自动放弃"/"用户手动取消"), 让页面直接回到干净的初始态.
+  useEffect(() => {
+    if (taskId && task?.status === 'error' && taskId !== initiatedRef.current) {
+      setTaskId(null)
+      setError('')
+    }
+  }, [taskId, task?.status, setTaskId])
+
   // 放弃当前任务: 协作取消 + 清前端状态(守卫立即放行新任务)
   const abandon = async () => {
     if (!taskId) return
@@ -421,6 +433,7 @@ function CompareTab({ taskId, setTaskId }: { taskId: string | null; setTaskId: (
         start: dateFrom, end: dateTo,
         variants: allVariants,
       })
+      initiatedRef.current = task_id  // 标记本会话发起
       setTaskId(task_id)
     } catch (e) {
       setError(String((e as Error).message || e))
@@ -661,7 +674,7 @@ function CompareTab({ taskId, setTaskId }: { taskId: string | null; setTaskId: (
           ))}
         </div>
 
-        {running && progress > 0 && (
+        {running && (
           <div className="mt-3">
             <div className="h-1.5 w-full overflow-hidden rounded bg-divider">
               <div className="h-full bg-link transition-all" style={{ width: `${progress}%` }} />

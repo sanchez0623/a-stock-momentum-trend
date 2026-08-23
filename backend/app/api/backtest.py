@@ -271,15 +271,27 @@ _task_cancels: dict[str, threading.Event] = {}
 
 @router.get("/backtest/tasks/{task_id}")
 async def get_task(task_id: str) -> dict:
-    """查询异步回测任务进度/结果(对比回测等). 兼看门狗: 心跳停滞>30s自动采样栈."""
+    """查询异步回测任务进度/结果(对比回测等). 兼看门狗: 停滞采样栈 + 僵死自动放弃."""
     with _tasks_lock:
         t = _tasks.get(task_id)
     if t is None:
         return {"code": 1, "msg": "任务不存在(进程重启后任务丢失)", "data": None}
+    if t.get("status") != "running":
+        return {"code": 0, "msg": "ok", "data": dict(t)}
+
+    idle = time.time() - t.get("last_active", time.time())
+    # 僵死自动放弃(与单任务守卫同阈值 10 分钟): 轮询到僵死任务直接标 error,
+    # 前端下次轮询(2s 内)即可解除"运行中"死锁 —— 无需用户手动清理, 也无需新任务触发守卫.
+    if idle > 600:
+        with _tasks_lock:
+            if _tasks.get(task_id) is t and t.get("status") == "running":
+                t["status"] = "error"
+                t["error"] = "任务超时无活动(>10分钟), 已自动放弃"
+        return {"code": 0, "msg": "ok", "data": dict(t)}
+
     # 看门狗: 任务仍在跑但心跳停滞超 30s -> 自动 dump 工作线程栈存入任务(每 60s 刷新一次),
     # 前端轮询即可拿到卡点现场, 无需用户手动诊断.
-    if t.get("status") == "running" and t.get("thread_id"):
-        idle = time.time() - t.get("last_active", time.time())
+    if t.get("thread_id"):
         last_dump = t.get("stall_at", 0)
         if idle > 30 and time.time() - last_dump > 60:
             stack = _dump_thread_stack(t["thread_id"])
