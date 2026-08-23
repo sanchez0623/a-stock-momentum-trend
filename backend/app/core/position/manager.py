@@ -256,6 +256,44 @@ class PositionManager:
         return round(f, 4)
 
     # ------------------------------------------------------------ 持仓汇总
+    @staticmethod
+    def _position_actions(pos: Position, trades: list[Trade]) -> list[dict[str, Any]]:
+        """当前持仓周期的操作时间线: 首笔买入=建仓, 后续买入=加仓, 卖出=减仓.
+
+        按成交顺序(time, id 升序)模拟净持仓, 只保留最后一个未清仓周期 ——
+        同一秒内「清仓→重建仓」也能正确切分周期(不依赖时间字符串比较);
+        首笔建仓时间以 pos.opened_at 为准(用户修正过的首仓时间优先于成交落库时间).
+        Trade 缺失或推算净持仓与 pos.qty 对不上(如交易日志手动回填)时,
+        兜底返回单条建仓记录, 保证前端始终有可展示的时间线.
+        """
+        ordered = sorted(
+            (t for t in trades if t.action in ("buy", "sell")),
+            key=lambda t: (t.time or "", t.id or 0),
+        )
+        actions: list[dict[str, Any]] = []
+        net = 0
+        for t in ordered:
+            if t.action == "buy" and net <= 0:
+                actions = []  # 上一周期已清仓, 新周期开始: 丢弃旧周期时间线
+                net = 0
+            if t.action == "buy":
+                kind, label = ("build", "建仓") if net == 0 else ("add", "加仓")
+                net += t.qty
+            else:
+                kind, label = "reduce", "减仓"
+                net -= t.qty
+            actions.append({
+                "type": kind, "label": label, "time": t.time or "",
+                "price": t.price, "qty": t.qty,
+                "pnl": t.pnl if t.action == "sell" else None,
+            })
+        if not actions or net != pos.qty:
+            return [{"type": "build", "label": "建仓", "time": pos.opened_at or "",
+                     "price": pos.cost, "qty": pos.qty, "pnl": None}]
+        # 建仓时间以 opened_at 为准(允许用户修正录入时间)
+        actions[0]["time"] = pos.opened_at or actions[0]["time"]
+        return actions
+
     def portfolio(self, prices: dict[str, float], session: Session | None = None) -> dict[str, Any]:
         """组合汇总: 市值/浮盈/浮盈率(用于风控与计划).
 
@@ -264,8 +302,20 @@ class PositionManager:
 
         realized_pnl 为历史卖出净额合计(trade.pnl, 已扣双边手续费),
         供前端算总权益 = 启动资金 + 已实现盈亏 + 浮动盈亏.
+
+        items[].actions 为当前持仓周期的操作时间线(建仓/加仓/减仓, 含时间/价格/数量),
+        供前端区分多次买卖的持仓时间.
         """
         positions = self.list_positions(session)
+        # 当前持仓的成交记录(一次批量查询, 按 symbol 分组; 时间线与已实现盈亏共用)
+        trades_by_symbol: dict[str, list[Trade]] = {}
+        sells: list[Trade] = []
+        with _session(session) as s:
+            if positions:
+                symbols = [p.symbol for p in positions]
+                for t in s.exec(select(Trade).where(Trade.symbol.in_(symbols))).all():
+                    trades_by_symbol.setdefault(t.symbol, []).append(t)
+            sells = list(s.exec(select(Trade).where(Trade.action == "sell")).all())
         market_value = 0.0
         cost_value = 0.0
         cost_raw_value = 0.0
@@ -289,15 +339,15 @@ class PositionManager:
                 "symbol": p.symbol, "name": p.name, "qty": p.qty, "cost": p.cost,
                 "cost_raw": round(cost_raw, 4), "fee_cost": round(fee_cost, 2),
                 "opened_at": p.opened_at or "",
+                "actions": self._position_actions(p, trades_by_symbol.get(p.symbol, [])),
                 "price": round(price, 3), "market_value": round(mv, 2),
                 "unrealized_pnl": round(pnl, 2),
                 "unrealized_pct": round(pnl / cv * 100, 2) if cv else 0.0,
             })
         # 已实现盈亏: 历史卖出净额合计(trade.pnl 已扣双边手续费), 供前端总权益计算
         realized = 0.0
-        with _session(session) as s:
-            for t in s.exec(select(Trade).where(Trade.action == "sell")).all():
-                realized += t.pnl or 0.0
+        for t in sells:
+            realized += t.pnl or 0.0
         return {
             "positions": items,
             "market_value": round(market_value, 2),

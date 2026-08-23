@@ -310,6 +310,17 @@ export interface WatchlistItem {
   added_at: string
 }
 
+/** 持仓周期内单笔操作(时间线): build=建仓 add=加仓 reduce=减仓 */
+export interface PositionAction {
+  type: 'build' | 'add' | 'reduce'
+  label: string
+  time: string
+  price: number
+  qty: number
+  /** 仅减仓有值(已实现盈亏净额, 已扣双边手续费) */
+  pnl: number | null
+}
+
 export interface PositionItem {
   symbol: string
   name: string
@@ -322,6 +333,8 @@ export interface PositionItem {
   fee_cost: number
   /** 持仓时间(首仓录入时间) */
   opened_at: string
+  /** 当前持仓周期的操作时间线(建仓/加仓/减仓) */
+  actions: PositionAction[]
   price: number
   market_value: number
   /** 浮盈已扣买入手续费(因 cost 含费) */

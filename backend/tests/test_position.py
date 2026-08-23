@@ -217,6 +217,54 @@ def test_portfolio_realized_pnl_accumulates_sells(tmp_engine):
     assert summary["realized_pnl"] == pytest.approx(pnl1 + pnl2, abs=0.01)
 
 
+def test_portfolio_actions_timeline(tmp_engine):
+    """操作时间线: 首笔买入=建仓, 后续买入=加仓, 卖出=减仓; 每笔含时间/价格/数量."""
+    pm.open_or_add("300750", "宁德时代", 100, 100.0, "首仓", None)
+    _backdate("300750")  # 解除 T+1 锁定, 允许当日减仓
+    pm.open_or_add("300750", "宁德时代", 100, 120.0, "加仓", None)
+    pm.reduce("300750", 100, 130.0, "减仓", None)
+    summary = pm.portfolio({"300750": 130.0}, None)
+    item = next(p for p in summary["positions"] if p["symbol"] == "300750")
+    acts = item["actions"]
+    assert [a["type"] for a in acts] == ["build", "add", "reduce"]
+    assert [a["label"] for a in acts] == ["建仓", "加仓", "减仓"]
+    assert [(a["qty"], a["price"]) for a in acts] == [(100, 100.0), (100, 120.0), (100, 130.0)]
+    # 盈亏仅减仓有值(净额), 建仓时间以修正后的 opened_at 为准
+    assert acts[0]["pnl"] is None and acts[0]["time"] == "2020-01-01 09:30:00"
+    assert acts[2]["pnl"] is not None
+    # 时间按成交顺序排列
+    assert [a["time"] for a in acts] == sorted(a["time"] for a in acts)
+
+
+def test_portfolio_actions_rebuild_after_close(tmp_engine):
+    """清仓后重建仓(同秒完成): 新周期时间线只含新成交, 重建首笔计为建仓而非加仓."""
+    pm.open_or_add("600519", "贵州茅台", 100, 100.0, "首仓", None)
+    _backdate("600519")
+    pm.close("600519", 110.0, "清仓", None)
+    pm.open_or_add("600519", "贵州茅台", 100, 105.0, "重建仓", None)
+    summary = pm.portfolio({"600519": 105.0}, None)
+    item = next(p for p in summary["positions"] if p["symbol"] == "600519")
+    acts = item["actions"]
+    # 旧周期(首仓+清仓)成交不得混入新周期时间线
+    assert [a["type"] for a in acts] == ["build"]
+    assert acts[0]["qty"] == 100
+
+
+def test_portfolio_actions_fallback_without_trades(tmp_engine):
+    """无成交记录(如外部导入的持仓): 兜底单条建仓, 时间取 opened_at."""
+    with db.session_scope() as s:
+        s.add(Position(symbol="000001", name="平安银行", qty=200, cost=10.0, cost_raw=10.0,
+                       opened_at="2026-01-05 09:31:00"))
+        s.commit()
+    summary = pm.portfolio({"000001": 10.5}, None)
+    item = next(p for p in summary["positions"] if p["symbol"] == "000001")
+    acts = item["actions"]
+    assert len(acts) == 1
+    assert acts[0]["type"] == "build"
+    assert acts[0]["time"] == "2026-01-05 09:31:00"
+    assert acts[0]["qty"] == 200
+
+
 def test_open_or_add_force_allows_below_cost(tmp_engine):
     """低于成本加仓默认拒绝; force=True 放行且摊薄成本, 成交原因标注「强制录入」."""
     pm.open_or_add("300750", "宁德时代", 100, 100.0, "首仓", None)

@@ -371,6 +371,9 @@ function WatchRow({ symbol, name, quote, onRemove }: {
   )
 }
 
+/** 操作时间线标签颜色: 建仓=蓝 加仓=绿 减仓=橙 */
+const ACTION_COLORS: Record<string, string> = { build: '#2563eb', add: '#16a34a', reduce: '#d97706' }
+
 function PosRow({ p, onChanged, onSell }: {
   p: PositionItem
   onChanged: () => void
@@ -380,6 +383,9 @@ function PosRow({ p, onChanged, onSell }: {
   const [val, setVal] = useState(toLocalInput(p.opened_at))
   const [saving, setSaving] = useState(false)
   const locked = isToday(p.opened_at)
+  // 操作时间线(后端聚合): 仅首仓时保持原"建仓时间"简洁样式; 多笔时逐笔展示
+  const acts = p.actions ?? []
+  const multi = acts.length > 1
 
   const startEdit = () => {
     setVal(toLocalInput(p.opened_at))
@@ -418,10 +424,10 @@ function PosRow({ p, onChanged, onSell }: {
           {p.unrealized_pnl >= 0 ? '+' : ''}{p.unrealized_pnl.toLocaleString('zh-CN', { maximumFractionDigits: 0 })} 元
         </span>
       </span>
-      <div className="mt-1 flex w-full items-center gap-2 text-[11px] text-ink-faint">
-        <span>持仓时间:</span>
+      <div className="mt-1 flex w-full flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-ink-faint">
         {editing ? (
           <>
+            <span>建仓时间:</span>
             <input
               type="datetime-local"
               value={val}
@@ -437,9 +443,30 @@ function PosRow({ p, onChanged, onSell }: {
           </>
         ) : (
           <>
-            <span>{p.opened_at || '—'}</span>
+            {multi ? (
+              <>
+                <span>操作时间:</span>
+                {acts.map((a, i) => (
+                  <span key={i} className="flex items-center gap-1 whitespace-nowrap" title={`${a.time} ${a.qty}股 @ ${a.price.toFixed(2)}`}>
+                    <Tag color={ACTION_COLORS[a.type] ?? '#64748b'}>{a.label}</Tag>
+                    <span>{a.time ? a.time.slice(5, 16) : '—'}</span>
+                    <span>{a.qty}股@{a.price.toFixed(2)}</span>
+                    {a.type === 'reduce' && a.pnl != null && (
+                      <span className={colorByPct(a.pnl)}>
+                        {a.pnl >= 0 ? '+' : ''}{a.pnl.toLocaleString('zh-CN', { maximumFractionDigits: 0 })}元
+                      </span>
+                    )}
+                  </span>
+                ))}
+              </>
+            ) : (
+              <>
+                <span>建仓时间:</span>
+                <span>{p.opened_at || '—'}</span>
+              </>
+            )}
             <button className="cursor-pointer border-none bg-transparent text-[11px] text-ink hover:underline" onClick={startEdit}>
-              修改
+              {multi ? '修改建仓时间' : '修改'}
             </button>
             <button
               className="cursor-pointer border-none bg-transparent text-[11px] text-fall hover:underline"
