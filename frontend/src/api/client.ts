@@ -154,6 +154,24 @@ export const api = {
     variants?: { label?: string; cooldown_days?: number; defense?: string }[]
   }) => request<{ task_id: string; variants: number }>('/backtest/strategy-compare', { method: 'POST', body: JSON.stringify(body) }),
   backtestCompareTask: (taskId: string) => request<CompareTaskState>(`/backtest/tasks/${taskId}`),
+  /** 对比回测历史: 运行列表(倒序, 含各变体标签与收益) */
+  backtestHistoryList: (limit = 50, offset = 0) =>
+    request<{ items: BacktestRunSummary[] }>(`/backtest/history?limit=${limit}&offset=${offset}`),
+  /** 对比回测历史: 单次运行详情(参数 + 变体摘要, 可直接渲染对比页) */
+  backtestHistoryDetail: (runId: number) =>
+    request<BacktestRunDetail>(`/backtest/history/${runId}`),
+  /** 对比回测历史: 逐笔交易明细(按变体/股票过滤; 默认一次拉全量, 前端本地筛选) */
+  backtestHistoryTrades: (runId: number, variant = '', symbol = '', limit = 20_000) => {
+    const q = new URLSearchParams()
+    if (variant) q.set('variant', variant)
+    if (symbol) q.set('symbol', symbol)
+    q.set('limit', String(limit))
+    return request<{ items: BacktestCompareTrade[]; total: number }>(
+      `/backtest/history/${runId}/trades?${q.toString()}`)
+  },
+  /** 对比回测历史: 删除一次运行及其全部明细 */
+  backtestHistoryDelete: (runId: number) =>
+    request<{ id: number }>(`/backtest/history/${runId}`, { method: 'DELETE' }),
   /** 卡死诊断: dump 回测工作线程实时调用栈(连点两次对比栈顶, 不变=真卡死) */
   backtestTaskStack: (taskId: string) =>
     request<{ progress: number; idle_seconds: number; stack: string }>(`/backtest/tasks/${taskId}/stack`),
@@ -253,6 +271,11 @@ export const api = {
   /** 手动触发单阶段流水线(验证用): premarket / intraday / after_close */
   assistantRun: (phase = 'intraday') => request<AssistantRunResult>(`/assistant/run?phase=${phase}`, { method: 'POST' }),
   assistantStatus: () => request<AssistantStatus>('/assistant/status'),
+
+  // ---------------------------------------------------------------- 盘中实时监控预警
+  intradayStatus: () => request<IntradayStatus>('/intraday/status'),
+  intradayRun: () => request<IntradayRunResult>('/intraday/run', { method: 'POST' }),
+  intradayAlerts: (limit = 50) => request<NotificationItem[]>(`/intraday/alerts?limit=${limit}`),
 }
 
 export interface Quote {
@@ -798,6 +821,41 @@ export interface CompareVariantResult {
 export interface CompareReport {
   pool: { size: number; seed: number; symbols: number; note?: string }
   variants: CompareVariantResult[]
+  run_id?: number  // 落库后的运行 ID(可查历史与逐笔明细)
+}
+
+// ---------------------------------------------------------------- 对比回测历史(落库可回看)
+export interface BacktestCompareTrade {
+  variant: string
+  date: string
+  symbol: string
+  name: string
+  action: string // buy_first/buy_add/sell_reduce/sell_stop/t_sell/t_buy
+  price: number
+  qty: number
+  fee: number
+  pnl: number
+  reason: string
+}
+
+export interface BacktestRunSummary {
+  id: number
+  time: string
+  mode: string
+  pool_size: number
+  seed: number
+  universe: string
+  board: string
+  industry: string
+  start: string
+  end: string
+  initial_capital: number
+  symbols: number
+  variants: { label: string; total_return_pct?: number | null; trades?: number; error?: string }[]
+}
+
+export interface BacktestRunDetail extends BacktestRunSummary {
+  report: CompareReport
 }
 
 export interface CompareTaskState {
@@ -1069,4 +1127,28 @@ export interface AssistantStatus {
   push_webhook: boolean
   jobs: Record<string, boolean>
   recent_notifications: NotificationItem[]
+}
+
+// ---------------------------------------------------------------- 盘中监控类型
+export interface IntradayAlertRule {
+  enabled: boolean
+  threshold?: number
+  threshold_pct?: number
+}
+
+export interface IntradayStatus {
+  enabled: boolean
+  interval_sec: number
+  scope: string
+  cooldown_sec: number
+  alert_rules: Record<string, IntradayAlertRule>
+  today_alerts: number
+}
+
+export interface IntradayRunResult {
+  checked: number
+  alerts: number
+  errors: number
+  skipped?: string
+  error?: string
 }

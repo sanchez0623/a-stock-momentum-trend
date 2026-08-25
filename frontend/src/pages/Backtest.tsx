@@ -3,9 +3,12 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   api,
   type BacktestPreset,
+  type BacktestCompareTrade,
   type BacktestFactorReport,
   type BacktestHoldStats,
   type BacktestDataStatus,
+  type BacktestRunSummary,
+  type CompareReport,
   type CompareVariantResult,
   type PortfolioBacktestReport,
   type SignalAuditReport,
@@ -316,7 +319,363 @@ const QUICK_RANGES: { label: string; range: () => [string, string] }[] = [
   { label: '去年', range: () => { const y = new Date().getFullYear() - 1; return [`${y}-01-01`, `${y}-12-31`] } },
 ]
 
+// ---------------------------------------------------------------- 对比回测结果渲染(实时结果与历史详情共用)
+function CompareResultView({ report }: { report: CompareReport }) {
+  const variants = report.variants
+  const okVariants = variants.filter((v) => !v.error && v.total_return_pct != null)
+  const bestReturn = okVariants.length ? Math.max(...okVariants.map((v) => v.total_return_pct!)) : null
+  const series: ChartSeries[] = variants
+    .map((v, i) => {
+      const curve = v.equity_curve
+      if (!curve?.length || !curve[0].equity) return null
+      const base = curve[0].equity
+      return {
+        key: `v${i}`, label: v.label, color: COMPARE_COLORS[i % COMPARE_COLORS.length],
+        points: curve.map((p) => ({ time: p.date, equity: (p.equity / base - 1) * 100, pnl: 0 })),
+      }
+    })
+    .filter((s): s is ChartSeries => s !== null)
+
+  const act = (v: CompareVariantResult, key: string) => v.by_action?.[key]
+  const metricRows: { label: string; render: (v: CompareVariantResult) => ReactNode }[] = [
+    {
+      label: '总收益',
+      render: (v) => v.total_return_pct == null ? '—' : (
+        <b style={{ color: v.total_return_pct >= 0 ? '#dc2626' : '#16a34a' }}>
+          {fmt(v.total_return_pct, '%')}{bestReturn != null && v.total_return_pct === bestReturn ? ' ★最优' : ''}
+        </b>
+      ),
+    },
+    { label: '年化', render: (v) => v.annual_return_pct == null ? '—' : fmt(v.annual_return_pct, '%') },
+    { label: '最大回撤', render: (v) => v.max_drawdown_pct == null ? '—' : fmt(-v.max_drawdown_pct, '%') },
+    { label: 'Sharpe', render: (v) => v.sharpe?.toFixed(2) ?? '—' },
+    { label: '胜率(平仓)', render: (v) => v.win_rate == null ? '—' : `${v.win_rate.toFixed(1)}%` },
+    { label: '盈亏因子', render: (v) => v.profit_factor?.toFixed(2) ?? '—' },
+    { label: '单笔期望(元)', render: (v) => v.expectancy == null ? '—' : fmt(v.expectancy) },
+    { label: '总笔数', render: (v) => v.trades ?? '—' },
+    {
+      label: '止损(笔·元)',
+      render: (v) => {
+        const s = act(v, 'sell_stop')
+        return s && s.n ? <span style={{ color: s.pnl >= 0 ? '#dc2626' : '#16a34a' }}>{s.n} · {fmt(s.pnl)}</span> : '—'
+      },
+    },
+    {
+      label: '止盈减仓(元)',
+      render: (v) => {
+        const s = act(v, 'sell_reduce')
+        return s && s.n ? <span style={{ color: s.pnl >= 0 ? '#dc2626' : '#16a34a' }}>{fmt(s.pnl)}</span> : '—'
+      },
+    },
+    {
+      label: '做T高抛(元)',
+      render: (v) => {
+        const s = act(v, 't_sell')
+        return s && s.n ? <span style={{ color: s.pnl >= 0 ? '#dc2626' : '#16a34a' }}>{fmt(s.pnl)}</span> : '—'
+      },
+    },
+    { label: '冷却拦截', render: (v) => v.cooldown_blocks ? `${v.cooldown_blocks} 次` : '0 次' },
+    { label: '期末防守', render: (v) => v.final_defense ? '开启' : '关闭' },
+  ]
+  const errorVariants = variants.filter((v) => v.error)
+
+  return (
+    <>
+      <Card className="mb-4 overflow-x-auto p-2">
+        <div className="px-3 py-2 text-[13px] font-semibold text-ink">
+          变体对比（{report.pool.symbols} 只 · 种子 {report.pool.seed} · 同池消融）
+        </div>
+        {(() => {
+          const ok = variants.find((v) => !v.error && v.date_from)
+          return ok ? (
+            <div className="px-3 pb-2 text-[11px] text-ink-faint">
+              实际区间：{ok.date_from} ~ {ok.date_to}（{ok.days} 个交易日）
+              {report.pool.note ? ` · 池构成：${report.pool.note}` : ''}
+            </div>
+          ) : report.pool.note ? (
+            <div className="px-3 pb-2 text-[11px] text-ink-faint">池构成：{report.pool.note}</div>
+          ) : null
+        })()}
+        <Table className="text-[12px]">
+          <thead>
+            <tr>
+              <Th>指标</Th>
+              {variants.map((v, i) => (
+                <Th key={i} center>
+                  <span style={{ color: COMPARE_COLORS[i % COMPARE_COLORS.length] }}>●</span> {v.label}
+                </Th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {metricRows.map((row) => (
+              <tr key={row.label} className="border-t border-divider">
+                <Td className="whitespace-nowrap text-ink-muted">{row.label}</Td>
+                {variants.map((v, i) => (
+                  <Td key={i} center className="whitespace-nowrap">
+                    {v.error ? <span className="text-red-600">失败</span> : row.render(v)}
+                  </Td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </Table>
+        {errorVariants.length > 0 && (
+          <div className="px-3 pb-2 text-[11px] text-red-600">
+            {errorVariants.map((v) => `${v.label}: ${v.error}`).join('；')}
+          </div>
+        )}
+      </Card>
+
+      {series.length > 0 && (
+        <Card className="mb-4 p-4">
+          <div className="mb-2 text-[13px] font-semibold text-ink">净值曲线叠加（收益率 %，各自归一）</div>
+          <MultiLineChart series={series} height={240} />
+          <div className="mt-2 text-[11px] leading-relaxed text-ink-faint">
+            同一股票池、同一种子、同一信号引擎，唯一差异是各变体的风控开关 ——
+            曲线间的差就是对应开关"值多少钱"。注意: 做T按当日高低价近似(乐观口径), 真实收益可能低于回测。
+          </div>
+        </Card>
+      )}
+    </>
+  )
+}
+
+// ---------------------------------------------------------------- 对比回测逐笔交易明细(落库数据, 按变体/股票筛选)
+function CompareTradesPanel({ runId }: { runId: number }) {
+  const [expanded, setExpanded] = useState(false)
+  const [variant, setVariant] = useState('')
+  const [symbol, setSymbol] = useState('')
+  const { data, isLoading, error } = useQuery({
+    queryKey: ['backtest-history-trades', runId],
+    queryFn: () => api.backtestHistoryTrades(runId),
+    enabled: expanded,
+    staleTime: 5 * 60 * 1000,
+  })
+  const all: BacktestCompareTrade[] = data?.items ?? []
+  const filtered = all
+    .filter((t) => !variant || t.variant === variant)
+    .filter((t) => !symbol.trim() || t.symbol.includes(symbol.trim()))
+  const labels = [...new Set(all.map((t) => t.variant))]
+  const pnlSum = filtered.reduce((a, t) => a + (t.pnl ?? 0), 0)
+
+  return (
+    <Card className="mb-4 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="text-[13px] font-semibold text-ink">逐笔交易明细（落库可回看）</div>
+        <button
+          className="text-[12px] text-link hover:underline"
+          onClick={() => setExpanded(!expanded)}
+        >
+          {expanded ? '收起明细 ▴' : '展开明细 ▾'}
+        </button>
+      </div>
+      {!expanded ? (
+        <div className="mt-1 text-[11px] text-ink-faint">
+          展开后可按变体/股票筛选每一笔买卖（首仓/加仓/减仓/止损/做T），对比同一只票在各变体下的操作差异
+        </div>
+      ) : isLoading ? (
+        <div className="mt-2"><Loading text="加载逐笔明细…" /></div>
+      ) : error ? (
+        <div className="mt-2"><ErrorBox message={String((error as Error).message || error)} /></div>
+      ) : all.length === 0 ? (
+        <div className="mt-2 text-[12px] text-ink-faint">本次运行无交易记录</div>
+      ) : (
+        <>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <select
+              value={variant}
+              onChange={(e) => setVariant(e.target.value)}
+              className="rounded border border-line bg-white px-2 py-1 text-[12px]"
+            >
+              <option value="">全部变体（跨变体对照）</option>
+              {labels.map((l) => <option key={l} value={l}>{l}</option>)}
+            </select>
+            <input
+              placeholder="按代码筛选"
+              value={symbol}
+              onChange={(e) => setSymbol(e.target.value)}
+              className="w-28 rounded border border-line px-2 py-1 text-[12px]"
+            />
+            <span className="text-[11px] text-ink-faint">
+              共 {filtered.length} 笔 · 合计盈亏{' '}
+              <b style={{ color: pnlSum >= 0 ? '#dc2626' : '#16a34a' }}>{fmt(pnlSum)} 元</b>
+            </span>
+          </div>
+          <div className="mt-2 max-h-96 overflow-auto">
+            <Table className="text-[12px]">
+              <thead>
+                <tr>
+                  {!variant && <Th center>变体</Th>}
+                  <Th center>日期</Th>
+                  <Th center>代码</Th>
+                  <Th center>名称</Th>
+                  <Th center>动作</Th>
+                  <Th center>价格</Th>
+                  <Th center>数量</Th>
+                  <Th center>手续费</Th>
+                  <Th center>盈亏(元)</Th>
+                  <Th>原因</Th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((t, i) => (
+                  <tr key={i} className="border-t border-divider">
+                    {!variant && (
+                      <Td center className="whitespace-nowrap text-ink-muted">{t.variant}</Td>
+                    )}
+                    <Td center className="whitespace-nowrap">{t.date}</Td>
+                    <Td center className="whitespace-nowrap">{t.symbol}</Td>
+                    <Td center className="whitespace-nowrap">{t.name || '—'}</Td>
+                    <Td center className="whitespace-nowrap">{ACTION_LABEL[t.action] ?? t.action}</Td>
+                    <Td center className="whitespace-nowrap">{t.price?.toFixed(2) ?? '—'}</Td>
+                    <Td center className="whitespace-nowrap">{t.qty}</Td>
+                    <Td center className="whitespace-nowrap">{t.fee?.toFixed(2) ?? '—'}</Td>
+                    <Td center className="whitespace-nowrap">
+                      {t.action.startsWith('sell') || t.action.startsWith('t_')
+                        ? <span style={{ color: (t.pnl ?? 0) >= 0 ? '#dc2626' : '#16a34a' }}>{fmt(t.pnl ?? 0)}</span>
+                        : '—'}
+                    </Td>
+                    <Td className="text-[11px] text-ink-faint">{t.reason || '—'}</Td>
+                  </tr>
+                ))}
+              </tbody>
+            </Table>
+          </div>
+          {all.length >= 20000 && (
+            <div className="mt-1 text-[11px] text-amber-600">明细已达 2 万条上限, 仅显示前 2 万条</div>
+          )}
+        </>
+      )}
+    </Card>
+  )
+}
+
+// ---------------------------------------------------------------- 对比回测历史(落库可回看)
+function CompareHistoryView() {
+  const [selectedId, setSelectedId] = useState<number | null>(null)
+  const [deleteId, setDeleteId] = useState<number | null>(null)
+  const [error, setError] = useState('')
+  const qc = useQueryClient()
+
+  const { data: list, isLoading } = useQuery({
+    queryKey: ['backtest-history'],
+    queryFn: () => api.backtestHistoryList(),
+  })
+  const { data: detail } = useQuery({
+    queryKey: ['backtest-history-detail', selectedId],
+    queryFn: () => api.backtestHistoryDetail(selectedId!),
+    enabled: selectedId != null,
+  })
+
+  const confirmDelete = async () => {
+    if (deleteId == null) return
+    try {
+      await api.backtestHistoryDelete(deleteId)
+      if (selectedId === deleteId) setSelectedId(null)
+      setDeleteId(null)
+      qc.invalidateQueries({ queryKey: ['backtest-history'] })
+    } catch (e) {
+      setError(String((e as Error).message || e))
+    }
+  }
+
+  const items: BacktestRunSummary[] = list?.items ?? []
+
+  return (
+    <div>
+      {error && <div className="mb-3"><ErrorBox message={error} /></div>}
+      <Card className="mb-4 p-2">
+        <div className="px-3 py-2 text-[13px] font-semibold text-ink">
+          历史对比回测（最近 20 次 · 结果与逐笔明细已落库, 重启不丢）
+        </div>
+        {isLoading ? (
+          <div className="p-4"><Loading text="加载历史运行…" /></div>
+        ) : items.length === 0 ? (
+          <div className="px-3 pb-3 pt-1 text-[12px] text-ink-faint">
+            暂无历史记录 —— 每次对比回测完成后会自动保存, 之后可在这里回看
+          </div>
+        ) : (
+          <Table className="text-[12px]">
+            <thead>
+              <tr>
+                <Th center>运行时间</Th>
+                <Th center>股票池</Th>
+                <Th center>回测区间</Th>
+                <Th center>变体结果</Th>
+                <Th center>操作</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((r) => (
+                <tr key={r.id} className={cn('border-t border-divider', selectedId === r.id && 'bg-slate-50')}>
+                  <Td center className="whitespace-nowrap">{r.time}</Td>
+                  <Td center className="whitespace-nowrap">
+                    {r.symbols} 只{r.pool_size > 0 ? ` · 抽样${r.pool_size}` : ' · 全部'}
+                    {r.seed ? ` · 种子${r.seed}` : ''}
+                  </Td>
+                  <Td center className="whitespace-nowrap">
+                    {r.start || r.end ? `${r.start || '…'} ~ ${r.end || '…'}` : '全部数据'}
+                  </Td>
+                  <Td center>
+                    <div className="flex flex-wrap justify-center gap-x-3 gap-y-0.5">
+                      {r.variants.map((v, i) => (
+                        <span key={i} className="whitespace-nowrap">
+                          <span style={{ color: COMPARE_COLORS[i % COMPARE_COLORS.length] }}>●</span> {v.label}
+                          {v.error ? <span className="text-red-600">（失败）</span>
+                            : v.total_return_pct != null && (
+                              <b style={{ color: v.total_return_pct >= 0 ? '#dc2626' : '#16a34a' }}>
+                                {' '}{fmt(v.total_return_pct, '%')}
+                              </b>
+                            )}
+                        </span>
+                      ))}
+                    </div>
+                  </Td>
+                  <Td center className="whitespace-nowrap">
+                    <button className="text-link hover:underline" onClick={() => setSelectedId(r.id)}>
+                      {selectedId === r.id ? '收起' : '查看'}
+                    </button>
+                    <button className="ml-2 text-ink-faint hover:text-red-600" onClick={() => setDeleteId(r.id)}>
+                      删除
+                    </button>
+                  </Td>
+                </tr>
+              ))}
+            </tbody>
+          </Table>
+        )}
+      </Card>
+
+      {selectedId != null && (
+        detail ? (
+          <>
+            <div className="mb-3 text-[12px] text-ink-faint">
+              运行 #{detail.id} · {detail.time} · 初始资金 {Math.round(detail.initial_capital).toLocaleString()} 元
+            </div>
+            <CompareResultView report={detail.report} />
+            <CompareTradesPanel runId={detail.id} />
+          </>
+        ) : (
+          <Card className="p-6"><Loading text="加载运行详情…" /></Card>
+        )
+      )}
+
+      {deleteId != null && (
+        <ConfirmDialog
+          title="删除历史运行"
+          message={`确定删除该次对比回测记录（含全部逐笔明细）？删除后不可恢复。`}
+          onConfirm={confirmDelete}
+          onCancel={() => setDeleteId(null)}
+        />
+      )}
+    </div>
+  )
+}
+
+
 function CompareTab({ taskId, setTaskId }: { taskId: string | null; setTaskId: (id: string | null) => void }) {
+  const [view, setView] = useState<'run' | 'history'>('run')
   const [universe, setUniverse] = useState('all')
   const [board, setBoard] = useState('')
   const [industry, setIndustry] = useState('')
@@ -449,67 +808,33 @@ function CompareTab({ taskId, setTaskId }: { taskId: string | null; setTaskId: (
     setCustomLabel('')
   }
 
-  // ---- 结果渲染
-  const variants = report?.variants ?? []
-  const okVariants = variants.filter((v) => !v.error && v.total_return_pct != null)
-  const bestReturn = okVariants.length ? Math.max(...okVariants.map((v) => v.total_return_pct!)) : null
-  const series: ChartSeries[] = variants
-    .map((v, i) => {
-      const curve = v.equity_curve
-      if (!curve?.length || !curve[0].equity) return null
-      const base = curve[0].equity
-      return {
-        key: `v${i}`, label: v.label, color: COMPARE_COLORS[i % COMPARE_COLORS.length],
-        points: curve.map((p) => ({ time: p.date, equity: (p.equity / base - 1) * 100, pnl: 0 })),
-      }
-    })
-    .filter((s): s is ChartSeries => s !== null)
-
-  const act = (v: CompareVariantResult, key: string) => v.by_action?.[key]
-  const metricRows: { label: string; render: (v: CompareVariantResult) => ReactNode }[] = [
-    {
-      label: '总收益',
-      render: (v) => v.total_return_pct == null ? '—' : (
-        <b style={{ color: v.total_return_pct >= 0 ? '#dc2626' : '#16a34a' }}>
-          {fmt(v.total_return_pct, '%')}{bestReturn != null && v.total_return_pct === bestReturn ? ' ★最优' : ''}
-        </b>
-      ),
-    },
-    { label: '年化', render: (v) => v.annual_return_pct == null ? '—' : fmt(v.annual_return_pct, '%') },
-    { label: '最大回撤', render: (v) => v.max_drawdown_pct == null ? '—' : fmt(-v.max_drawdown_pct, '%') },
-    { label: 'Sharpe', render: (v) => v.sharpe?.toFixed(2) ?? '—' },
-    { label: '胜率(平仓)', render: (v) => v.win_rate == null ? '—' : `${v.win_rate.toFixed(1)}%` },
-    { label: '盈亏因子', render: (v) => v.profit_factor?.toFixed(2) ?? '—' },
-    { label: '单笔期望(元)', render: (v) => v.expectancy == null ? '—' : fmt(v.expectancy) },
-    { label: '总笔数', render: (v) => v.trades ?? '—' },
-    {
-      label: '止损(笔·元)',
-      render: (v) => {
-        const s = act(v, 'sell_stop')
-        return s && s.n ? <span style={{ color: s.pnl >= 0 ? '#dc2626' : '#16a34a' }}>{s.n} · {fmt(s.pnl)}</span> : '—'
-      },
-    },
-    {
-      label: '止盈减仓(元)',
-      render: (v) => {
-        const s = act(v, 'sell_reduce')
-        return s && s.n ? <span style={{ color: s.pnl >= 0 ? '#dc2626' : '#16a34a' }}>{fmt(s.pnl)}</span> : '—'
-      },
-    },
-    {
-      label: '做T高抛(元)',
-      render: (v) => {
-        const s = act(v, 't_sell')
-        return s && s.n ? <span style={{ color: s.pnl >= 0 ? '#dc2626' : '#16a34a' }}>{fmt(s.pnl)}</span> : '—'
-      },
-    },
-    { label: '冷却拦截', render: (v) => v.cooldown_blocks ? `${v.cooldown_blocks} 次` : '0 次' },
-    { label: '期末防守', render: (v) => v.final_defense ? '开启' : '关闭' },
-  ]
-  const errorVariants = variants.filter((v) => v.error)
-
   return (
     <div>
+      {/* 子视图切换: 发起新对比 / 回看历史(落库) */}
+      <div className="mb-3 flex flex-wrap gap-1.5">
+        {([['run', '发起对比'], ['history', `历史记录`]] as const).map(([k, label]) => (
+          <button
+            key={k}
+            onClick={() => setView(k)}
+            className={cn(
+              'rounded-full px-3 py-1 text-[12px] transition-colors',
+              view === k
+                ? 'bg-link text-white'
+                : 'border border-line bg-white text-ink-muted hover:border-link hover:text-link',
+            )}
+          >
+            {label}
+          </button>
+        ))}
+        <span className="self-center text-[11px] text-ink-faint">
+          {view === 'history'
+            ? '每次对比回测自动落库(保留最近 20 次), 重启不丢, 可查逐笔明细'
+            : '结果与逐笔明细自动保存, 可在"历史记录"中回看'}
+        </span>
+      </div>
+
+      {view === 'history' ? <CompareHistoryView /> : (
+      <>
       <Card className="mb-4 p-4">
         {/* 选池范围(与选股中心同源) */}
         <div className="flex flex-wrap items-center gap-2">
@@ -728,64 +1053,10 @@ function CompareTab({ taskId, setTaskId }: { taskId: string | null; setTaskId: (
         </Card>
       )}
 
-      {report && variants.length > 0 && (
+      {report && report.variants.length > 0 && (
         <>
-          <Card className="mb-4 overflow-x-auto p-2">
-            <div className="px-3 py-2 text-[13px] font-semibold text-ink">
-              变体对比（{report.pool.symbols} 只 · 种子 {report.pool.seed} · 同池消融）
-            </div>
-            {(() => {
-              const ok = variants.find((v) => !v.error && v.date_from)
-              return ok ? (
-                <div className="px-3 pb-2 text-[11px] text-ink-faint">
-                  实际区间：{ok.date_from} ~ {ok.date_to}（{ok.days} 个交易日）
-                  {report.pool.note ? ` · 池构成：${report.pool.note}` : ''}
-                </div>
-              ) : report.pool.note ? (
-                <div className="px-3 pb-2 text-[11px] text-ink-faint">池构成：{report.pool.note}</div>
-              ) : null
-            })()}
-            <Table className="text-[12px]">
-              <thead>
-                <tr>
-                  <Th>指标</Th>
-                  {variants.map((v, i) => (
-                    <Th key={i} center>
-                      <span style={{ color: COMPARE_COLORS[i % COMPARE_COLORS.length] }}>●</span> {v.label}
-                    </Th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {metricRows.map((row) => (
-                  <tr key={row.label} className="border-t border-divider">
-                    <Td className="whitespace-nowrap text-ink-muted">{row.label}</Td>
-                    {variants.map((v, i) => (
-                      <Td key={i} center className="whitespace-nowrap">
-                        {v.error ? <span className="text-red-600">失败</span> : row.render(v)}
-                      </Td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </Table>
-            {errorVariants.length > 0 && (
-              <div className="px-3 pb-2 text-[11px] text-red-600">
-                {errorVariants.map((v) => `${v.label}: ${v.error}`).join('；')}
-              </div>
-            )}
-          </Card>
-
-          {series.length > 0 && (
-            <Card className="mb-4 p-4">
-              <div className="mb-2 text-[13px] font-semibold text-ink">净值曲线叠加（收益率 %，各自归一）</div>
-              <MultiLineChart series={series} height={240} />
-              <div className="mt-2 text-[11px] leading-relaxed text-ink-faint">
-                同一股票池、同一种子、同一信号引擎，唯一差异是各变体的风控开关 ——
-                曲线间的差就是对应开关"值多少钱"。注意: 做T按当日高低价近似(乐观口径), 真实收益可能低于回测。
-              </div>
-            </Card>
-          )}
+          <CompareResultView report={report} />
+          {report.run_id != null && <CompareTradesPanel runId={report.run_id} />}
         </>
       )}
 
@@ -793,6 +1064,8 @@ function CompareTab({ taskId, setTaskId }: { taskId: string | null; setTaskId: (
         <Card className="p-8 text-center text-[13px] text-ink-faint">
           勾选预设变体（或添加自定义组合）后运行：同池同种子对比各风控开关（止损冷却 / 回撤防守）的边际贡献
         </Card>
+      )}
+      </>
       )}
     </div>
   )
