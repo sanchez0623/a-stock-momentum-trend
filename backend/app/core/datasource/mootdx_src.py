@@ -63,6 +63,14 @@ class MootdxSource(DataSourceInterface):
                 )
             return self._client
 
+    async def _get_client_async(self):
+        """获取/创建 TDX 客户端(异步包装).
+
+        _get_client 内部会同步建连公共 TDX 服务器(可能慢/挂起), 直接在 async 方法里调用
+        会阻塞整个事件循环 —— 必须丢进线程池执行.
+        """
+        return await asyncio.to_thread(self._get_client)
+
     def _reset_client(self) -> None:
         """连接失败时换下一台服务器."""
         with self._lock:
@@ -75,7 +83,7 @@ class MootdxSource(DataSourceInterface):
         sym = secid or symbol  # mootdx 用 6 位代码; 指数需调用方保证格式正确
         freq = FREQ_MAP.get(period, 9)
         try:
-            client = self._get_client()
+            client = await self._get_client_async()
             df = await asyncio.to_thread(client.bars, symbol=sym, frequency=freq, offset=count)
             if df is None or df.empty:
                 self._reset_client()
@@ -92,7 +100,7 @@ class MootdxSource(DataSourceInterface):
 
     async def get_realtime_quote(self, symbols: list[str]) -> list[Quote]:
         try:
-            client = self._get_client()
+            client = await self._get_client_async()
             df = await asyncio.to_thread(client.quotes, symbols=symbols)
         except Exception:
             self._reset_client()
