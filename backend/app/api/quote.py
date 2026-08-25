@@ -1,9 +1,15 @@
-"""行情 API(方案 §6.2): 实时行情 / K线 / 指标 / WebSocket 推送."""
+"""行情 API(方案 §6.2): 实时行情 / K线 / 指标 / WebSocket 推送.
+
+WebSocket 支持两类订阅:
+- /ws/quote?symbols=...  行情推送(原有)
+- /ws/alert                盘中预警推送(新增)
+"""
 
 from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Any
 
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
@@ -16,6 +22,63 @@ from app.core.indicators import compute_all
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["quote"])
+
+
+class ConnectionManager:
+    """WebSocket 连接管理器: 支持行情订阅 + 预警广播."""
+
+    def __init__(self) -> None:
+        # 行情订阅: {websocket: set(symbols)}
+        self._quote_subs: dict[WebSocket, set[str]] = {}
+        # 预警订阅: set(websocket)
+        self._alert_subs: set[WebSocket] = {}
+        self._lock = asyncio.Lock()
+
+    async def connect_quote(self, websocket: WebSocket, symbols: list[str]) -> None:
+        await websocket.accept()
+        async with self._lock:
+            self._quote_subs[websocket] = set(symbols)
+
+    async def connect_alert(self, websocket: WebSocket) -> None:
+        await websocket.accept()
+        async with self._lock:
+            self._alert_subs.add(websocket)
+
+    async def disconnect(self, websocket: WebSocket) -> None:
+        async with self._lock:
+            self._quote_subs.pop(websocket, None)
+            self._alert_subs.discard(websocket)
+
+    async def update_symbols(self, websocket: WebSocket, symbols: list[str]) -> None:
+        async with self._lock:
+            if websocket in self._quote_subs:
+                self._quote_subs[websocket] = set(symbols)
+
+    async def broadcast_quote(self, data: dict[str, Any]) -> None:
+        """广播行情给订阅了相关标的的连接."""
+        symbols = {item["symbol"] for item in data.get("data", [])}
+        async with self._lock:
+            targets = [ws for ws, subs in self._quote_subs.items() if subs & symbols]
+        for ws in targets:
+            try:
+                await ws.send_json(data)
+            except Exception:
+                await self.disconnect(ws)
+
+    async def broadcast_alert(self, alert: dict[str, Any]) -> None:
+        """广播预警给所有预警订阅者."""
+        payload = {"code": 0, "type": "alert", "data": alert}
+        async with self._lock:
+            targets = list(self._alert_subs)
+        for ws in targets:
+            try:
+                await ws.send_json(payload)
+            except Exception:
+                await self.disconnect(ws)
+
+
+# 全局连接管理器
+ws_manager = ConnectionManager()
 
 
 class QuoteBatchBody(BaseModel):
@@ -110,8 +173,8 @@ async def get_indicators(
 @router.websocket("/ws/quote")
 async def ws_quote(websocket: WebSocket, symbols: str = "300750,600519") -> None:
     """实时行情推送(5s 轮询源, 自选股页面订阅)."""
-    await websocket.accept()
     sym_list = [s.strip() for s in symbols.split(",") if s.strip()]
+    await ws_manager.connect_quote(websocket, sym_list)
     try:
         while True:
             quotes = await data_source_manager.get_realtime_quote(sym_list)
@@ -125,3 +188,21 @@ async def ws_quote(websocket: WebSocket, symbols: str = "300750,600519") -> None
         logger.info("WS 断开: %s", symbols)
     except Exception as exc:  # noqa: BLE001
         logger.warning("WS 异常: %s", exc)
+    finally:
+        await ws_manager.disconnect(websocket)
+
+
+@router.websocket("/ws/alert")
+async def ws_alert(websocket: WebSocket) -> None:
+    """盘中预警推送(监控页面/全局订阅)."""
+    await ws_manager.connect_alert(websocket)
+    try:
+        # 保持连接, 等待广播
+        while True:
+            await asyncio.sleep(30)  # 心跳
+    except WebSocketDisconnect:
+        logger.info("预警 WS 断开")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("预警 WS 异常: %s", exc)
+    finally:
+        await ws_manager.disconnect(websocket)

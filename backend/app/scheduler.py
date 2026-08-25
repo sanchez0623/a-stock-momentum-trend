@@ -2,17 +2,25 @@
 
 一期: 盘后 K线预热占位
 二期: 定时选股扫描 / 盘中自选盯盘
+三期: 盘中实时监控预警(方案 A)
 """
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
+from app.core.config import config_manager
+
 logger = logging.getLogger(__name__)
 
 scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
+
+TZ = dt.timezone(dt.timedelta(hours=8))
+
+INTRADAY_MONITOR_JOB_ID = "intraday_monitor"
 
 
 async def _after_close_warmup() -> None:
@@ -102,6 +110,77 @@ def _add_tracking_job(job_id: str, hour: int, minute: int) -> None:
         )
 
 
+async def _intraday_monitor_job() -> None:
+    """盘中实时监控预警任务: 仅交易时间(周一至五 9:30-15:00)执行.
+
+    实际轮询间隔由配置「盘中监控.interval_sec」控制, 这里用 cron 秒级触发,
+    内部再校验交易窗口与启用状态(双重保险)。
+    """
+    from app.core.config import config_manager
+    from app.core.intraday import run_intraday_monitor
+
+    cfg = config_manager.get().get("盘中监控", {})
+    if not cfg.get("enabled", False):
+        return
+
+    now = dt.datetime.now(TZ)
+    if now.weekday() >= 5:
+        return
+    hm = (now.hour, now.minute)
+    if hm < (9, 30) or hm >= (15, 0):
+        return
+
+    try:
+        result = await run_intraday_monitor()
+        checked = result.get("checked", 0)
+        alerts = result.get("alerts", 0)
+        if checked or alerts:
+            logger.info("盘中监控轮询: 检查 %d 只, 预警 %d 条", checked, alerts)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("盘中监控轮询异常: %s", exc, exc_info=True)
+
+
+def _setup_intraday_monitor_job() -> None:
+    """按配置注册/注销盘中监控任务(幂等)."""
+    cfg = config_manager.get().get("盘中监控", {}) or {}
+    interval_sec = int(cfg.get("interval_sec", 30))
+    # 使用 interval 触发器: 支持任意秒数间隔, 内部再校验交易窗口(9:30-15:00 周一至五)
+    # interval 触发器不支持 cron 表达式的时段限制, 由任务函数内部 _is_trading_time() 双重校验
+    if scheduler.get_job(INTRADAY_MONITOR_JOB_ID) is None:
+        scheduler.add_job(
+            _intraday_monitor_job,
+            "interval",
+            seconds=interval_sec,
+            id=INTRADAY_MONITOR_JOB_ID,
+            coalesce=True,
+            max_instances=1,
+        )
+        logger.info("盘中监控任务已注册: 每 %d 秒", interval_sec)
+
+
+def _teardown_intraday_monitor_job() -> None:
+    if scheduler.get_job(INTRADAY_MONITOR_JOB_ID) is not None:
+        scheduler.remove_job(INTRADAY_MONITOR_JOB_ID)
+        logger.info("盘中监控任务已注销")
+
+
+def register_intraday_monitor_listener() -> None:
+    """总开关热生效: 开启 -> 注册任务; 关闭 -> 注销任务."""
+
+    def _on_change(snapshot: dict[str, Any]) -> None:
+        enabled = bool((snapshot.get("盘中监控") or {}).get("enabled"))
+        active = scheduler.get_job(INTRADAY_MONITOR_JOB_ID) is not None
+        try:
+            if enabled and not active:
+                _setup_intraday_monitor_job()
+            elif not enabled and active:
+                _teardown_intraday_monitor_job()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("盘中监控任务热更新失败: %s", exc)
+
+    config_manager.register_listener(_on_change)
+
+
 def setup_jobs() -> None:
     if scheduler.get_job("after_close_warmup") is None:
         scheduler.add_job(
@@ -128,6 +207,9 @@ def setup_jobs() -> None:
     # 得分追踪每日 2 次采样(午间 12:30 / 盘后 16:00; 盘前 8:50 与盘后数据重复, 已去掉)
     _add_tracking_job("tracking_sample_1230", 12, 30)
     _add_tracking_job("tracking_sample_1600", 16, 0)
+    # 盘中实时监控预警(方案 A): 开关驱动注册/注销, 配置变化热生效
+    _setup_intraday_monitor_job()
+    register_intraday_monitor_listener()
     # AI 助理(独立模块): 开关驱动注册/注销, 配置变化热生效
     from app.core.assistant.scheduler import register_assistant_listener, setup_assistant_jobs
 
