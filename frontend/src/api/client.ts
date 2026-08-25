@@ -1,10 +1,13 @@
 // 后端 API 统一封装: 响应 {code, msg, data}
 const BASE = '/api'
 
-export async function request<T = unknown>(path: string, init?: RequestInit): Promise<T> {
+export async function request<T = unknown>(path: string, init?: RequestInit, timeoutMs?: number): Promise<T> {
   const resp = await fetch(`${BASE}${path}`, {
     headers: { 'Content-Type': 'application/json' },
     ...init,
+    // 超时中断: 后端进程崩溃时(uvicorn --reload 监督进程仍占端口), 请求会无限挂起,
+    // 必须有客户端超时才能把"后端已死"暴露给 UI. 默认不启用(慢接口如预热不受影响).
+    signal: timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined,
   })
   if (!resp.ok) {
     // 透传后端错误详情(如 FastAPI 400 的 detail), 避免只显示 HTTP 400 无法定位原因
@@ -153,7 +156,7 @@ export const api = {
     initial_capital?: number
     variants?: { label?: string; cooldown_days?: number; defense?: string }[]
   }) => request<{ task_id: string; variants: number }>('/backtest/strategy-compare', { method: 'POST', body: JSON.stringify(body) }),
-  backtestCompareTask: (taskId: string) => request<CompareTaskState>(`/backtest/tasks/${taskId}`),
+  backtestCompareTask: (taskId: string) => request<CompareTaskState>(`/backtest/tasks/${taskId}`, undefined, 10_000),
   /** 对比回测历史: 运行列表(倒序, 含各变体标签与收益) */
   backtestHistoryList: (limit = 50, offset = 0) =>
     request<{ items: BacktestRunSummary[] }>(`/backtest/history?limit=${limit}&offset=${offset}`),
@@ -174,10 +177,10 @@ export const api = {
     request<{ id: number }>(`/backtest/history/${runId}`, { method: 'DELETE' }),
   /** 卡死诊断: dump 回测工作线程实时调用栈(连点两次对比栈顶, 不变=真卡死) */
   backtestTaskStack: (taskId: string) =>
-    request<{ progress: number; idle_seconds: number; stack: string }>(`/backtest/tasks/${taskId}/stack`),
+    request<{ progress: number; idle_seconds: number; stack: string }>(`/backtest/tasks/${taskId}/stack`, undefined, 10_000),
   /** 放弃回测任务: 协作取消 + 立即标记 error(守卫放行新任务) */
   cancelBacktestTask: (taskId: string) =>
-    request<{ msg: string }>(`/backtest/tasks/${taskId}/cancel`, { method: 'POST' }),
+    request<{ msg: string }>(`/backtest/tasks/${taskId}/cancel`, { method: 'POST' }, 10_000),
   // 持仓回测(方案 v2 §5: 三线对照 + 差异归因)
   backtestPortfolio: (body: {
     mode?: string

@@ -732,7 +732,13 @@ function CompareTab({ taskId, setTaskId }: { taskId: string | null; setTaskId: (
   const running = taskId !== null && task?.status !== 'done' && task?.status !== 'error'
   const progress = task?.progress ?? 0
   const report = task?.status === 'done' ? task.result : null
-  const err = error || (task?.status === 'error' ? task.error || '对比回测失败' : '')
+  // 后端无响应(如 worker 崩溃但 --reload 监督进程仍占端口, 请求无限挂起)时,
+  // 轮询超时 -> taskError 且非"任务不存在" -> 给出明确指引, 不再无声卡死.
+  const err = error
+    || (task?.status === 'error' ? task.error || '对比回测失败' : '')
+    || (taskId && taskError && !String((taskError as Error).message || '').includes('任务不存在')
+      ? `任务状态查询失败(${(taskError as Error).message}) —— 后端可能已崩溃或无响应, 请重启后端进程`
+      : '')
 
   // 任务已不存在(后端重启后内存任务丢失) -> 自动解除前端运行态,
   // 修复: 刷新恢复 taskId 但任务查询失败时永远卡在"运行中 0%"且按钮被禁用的死锁.
@@ -752,16 +758,17 @@ function CompareTab({ taskId, setTaskId }: { taskId: string | null; setTaskId: (
     }
   }, [taskId, task?.status, setTaskId])
 
-  // 放弃当前任务: 协作取消 + 清前端状态(守卫立即放行新任务)
+  // 放弃当前任务: 本地状态优先清除(即使后端已死/无响应也能立即解除前端运行态),
+  // 取消请求尽力而为(后端正常时守卫立即放行新任务).
   const abandon = async () => {
     if (!taskId) return
+    setTaskId(null)
+    setError('')
     try {
       await api.cancelBacktestTask(taskId)
     } catch {
-      /* 任务可能已结束/不存在, 忽略 */
+      /* 后端已结束/不存在/无响应: 忽略, 本地状态已清除 */
     }
-    setTaskId(null)
-    setError('')
   }
 
   // 心跳时钟: 运行中每秒重渲染一次, 保证"距上次活动秒数"实时变化
