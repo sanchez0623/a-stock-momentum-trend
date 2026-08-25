@@ -112,6 +112,17 @@ async def collect(state: dict[str, Any]) -> dict[str, Any]:
         signals = [r for r in await asyncio.gather(*(evaluate_one(x) for x in dict.fromkeys(symbols)))
                    if r is not None]
 
+    # 盘前阶段: 顺带生成做T波幅建议(P1, 失败静默降级到盘中规则计算)
+    if state.get("phase") == "premarket":
+        try:
+            from app.core.assistant.t_swing import generate_premarket_swing
+
+            r = await generate_premarket_swing()
+            if r.get("ok"):
+                logger.info("做T波幅建议: %d/%d 生成成功", r["ok"], r["total"])
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("做T波幅建议生成失败(降级规则): %s", exc)
+
     return {"date": date, "symbols": symbols, "market": market, "signals": signals}
 
 
