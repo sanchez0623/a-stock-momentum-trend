@@ -408,3 +408,94 @@ def test_compare_api(tmp_engine, monkeypatch):
     assert len(rep["variants"]) == 2
     assert rep["variants"][0]["label"] == "裸奔"
     assert rep["variants"][0]["equity_curve"]
+
+
+# ---------------------------------------------------------------- 结果落库 + 历史 API
+def test_compare_run_persisted_and_history_api(tmp_engine, monkeypatch):
+    """对比回测完成后落库: 任务结果挂 run_id, 历史 API 可查摘要与逐笔明细, 可删除."""
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    _fake_store(monkeypatch, n_syms=6)
+    c = TestClient(app)
+    r = c.post("/api/backtest/strategy-compare", json={
+        "pool_size": 10, "seed": 1,
+        "variants": [
+            {"label": "裸奔", "cooldown_days": 0, "defense": "off"},
+            {"label": "默认形态", "cooldown_days": 10, "defense": "soft"},
+        ],
+    })
+    assert r.json()["code"] == 0, r.json()
+    task_id = r.json()["data"]["task_id"]
+    for _ in range(120):
+        t = c.get(f"/api/backtest/tasks/{task_id}").json()["data"]
+        if t["status"] in ("done", "error"):
+            break
+        time.sleep(0.5)
+    assert t["status"] == "done", t.get("error")
+    rep = t["result"]
+    assert "run_id" in rep, "任务结果应挂 run_id(落库成功)"
+    # 任务结果不带明细(轮询轻量), 明细走历史端点
+    assert all("trade_details" not in v for v in rep["variants"])
+    run_id = rep["run_id"]
+
+    # 1. 历史列表: 含本次运行, 变体标签齐全
+    items = c.get("/api/backtest/history").json()["data"]["items"]
+    assert any(it["id"] == run_id and len(it["variants"]) == 2 for it in items)
+
+    # 2. 运行详情: 摘要可直接渲染对比页(指标+净值曲线在)
+    detail = c.get(f"/api/backtest/history/{run_id}").json()["data"]
+    assert detail["report"]["variants"][0]["label"] == "裸奔"
+    assert detail["report"]["variants"][0]["equity_curve"]
+
+    # 3. 逐笔明细: 有交易记录, 按变体/股票过滤生效, 每笔字段完整
+    trades = c.get(f"/api/backtest/history/{run_id}/trades").json()["data"]["items"]
+    assert trades, "伪造行情应产生交易明细"
+    assert {"variant", "date", "symbol", "action", "price", "qty", "pnl"} <= set(trades[0])
+    labels = {t["variant"] for t in trades}
+    assert labels == {"裸奔", "默认形态"}
+    some_sym = trades[0]["symbol"]
+    by_sym = c.get(f"/api/backtest/history/{run_id}/trades",
+                   params={"symbol": some_sym}).json()["data"]["items"]
+    assert by_sym and all(t["symbol"] == some_sym for t in by_sym)
+    by_var = c.get(f"/api/backtest/history/{run_id}/trades",
+                   params={"variant": "裸奔"}).json()["data"]["items"]
+    assert by_var and all(t["variant"] == "裸奔" for t in by_var)
+
+    # 4. 删除: 明细与运行一并清除
+    assert c.delete(f"/api/backtest/history/{run_id}").json()["code"] == 0
+    assert c.get(f"/api/backtest/history/{run_id}").json()["code"] == 1
+    assert c.get(f"/api/backtest/history/{run_id}/trades").json()["code"] == 1
+    assert c.delete(f"/api/backtest/history/{run_id}").json()["code"] == 1
+
+
+def test_compare_store_prune(tmp_engine):
+    """保留策略: 只保留最近 KEEP_RUNS 次运行, 旧的连同明细自动清理."""
+    from app.core.backtest import store
+    from app.models.models import BacktestRun
+
+    result = {
+        "pool": {"symbols": 2},
+        "variants": [{"label": "v", "cooldown_days": 0, "defense": "off",
+                      "total_return_pct": 1.0, "equity_curve": [], "trade_details": [
+                          {"date": "2025-01-02", "symbol": "T0001", "name": "T1",
+                           "action": "buy_first", "price": 10.0, "qty": 100,
+                           "fee": 5.0, "pnl": 0.0, "reason": "test"},
+                      ]}],
+    }
+    ids = []
+    for _ in range(store.KEEP_RUNS + 3):
+        rid = store.save_compare_run({"pool_size": 2, "seed": 1}, result, ["T0001", "T0002"])
+        assert rid is not None
+        ids.append(rid)
+    from app import db
+
+    with db.session_scope() as s:
+        runs = list(s.query(BacktestRun).all())
+    assert len(runs) == store.KEEP_RUNS
+    assert set(r.id for r in runs) == set(ids[-store.KEEP_RUNS:])  # 保留最新的
+    # 旧运行的明细已清理, 保留运行的明细仍在
+    kept = ids[-1]
+    trades = store.get_run_trades(kept)
+    assert len(trades) == 1 and trades[0]["symbol"] == "T0001"
