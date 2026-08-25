@@ -426,6 +426,20 @@ async def run_strategy_compare(body: StrategyCompareBody) -> dict:
             )
             result["pool"] = {"size": pool_size, "seed": int(body.seed),
                               "note": pool_note, **result["pool"]}
+            # 落库(历史可回看): 摘要+逐笔明细持久化, 任务结果只挂 run_id(明细走历史端点, 轮询轻量)
+            from app.core.backtest import store
+            run_id = store.save_compare_run(
+                {"pool_size": pool_size, "seed": int(body.seed),
+                 "universe": body.universe.strip(), "board": body.board.strip(),
+                 "industry": body.industry.strip(), "start": body.start.strip()[:10],
+                 "end": body.end.strip()[:10],
+                 "initial_capital": max(10_000.0, float(body.initial_capital))},
+                result, symbols,
+            )
+            for v in result["variants"]:
+                v.pop("trade_details", None)
+            if run_id is not None:
+                result["run_id"] = run_id
             with _tasks_lock:
                 # 已被用户取消: 保留 error 状态(守卫已放行新任务), 不覆盖为 done
                 if not cancel_ev.is_set():
@@ -467,3 +481,50 @@ async def cancel_backtest_task(task_id: str) -> dict:
         t["error"] = "用户手动取消"
         t["last_active"] = time.time()
     return {"code": 0, "msg": "已取消, 可重新发起回测", "data": None}
+
+
+# ---------------------------------------------------------------- 对比回测历史(落库可回看)
+@router.get("/backtest/history")
+async def list_backtest_history(limit: int = 50, offset: int = 0) -> dict:
+    """历史对比回测运行列表(倒序, 含各变体标签与收益, 不含明细)."""
+    from app.core.backtest import store
+
+    limit = max(1, min(int(limit), 200))
+    offset = max(0, int(offset))
+    return {"code": 0, "msg": "ok", "data": {"items": store.list_runs(limit, offset)}}
+
+
+@router.get("/backtest/history/{run_id}")
+async def get_backtest_history(run_id: int) -> dict:
+    """单次运行详情: 触发参数 + 变体摘要(指标/净值曲线/动作分解)."""
+    from app.core.backtest import store
+
+    run = store.get_run(run_id)
+    if run is None:
+        return {"code": 1, "msg": "运行记录不存在", "data": None}
+    return {"code": 0, "msg": "ok", "data": run}
+
+
+@router.get("/backtest/history/{run_id}/trades")
+async def get_backtest_history_trades(run_id: int, variant: str = "", symbol: str = "",
+                                      limit: int = 3000) -> dict:
+    """单次运行的逐笔交易明细(可按变体/股票过滤; limit 上限 2 万, 大池子全量拉取用)."""
+    from app.core.backtest import store
+
+    run = store.get_run(run_id)
+    if run is None:
+        return {"code": 1, "msg": "运行记录不存在", "data": None}
+    limit = max(1, min(int(limit), 20_000))
+    trades = store.get_run_trades(run_id, variant=variant.strip(), symbol=symbol.strip(),
+                                  limit=limit)
+    return {"code": 0, "msg": "ok", "data": {"items": trades, "total": len(trades)}}
+
+
+@router.delete("/backtest/history/{run_id}")
+async def delete_backtest_history(run_id: int) -> dict:
+    """删除一次历史运行及其全部明细."""
+    from app.core.backtest import store
+
+    ok = store.delete_run(run_id)
+    return {"code": 0 if ok else 1, "msg": "已删除" if ok else "运行记录不存在",
+            "data": {"id": run_id}}
