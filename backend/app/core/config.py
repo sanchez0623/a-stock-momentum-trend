@@ -514,20 +514,22 @@ class ConfigManager:
         self._db = get_session
 
     def load_from_db(self) -> None:
-        """启动时: 默认值 <- DB 配置 <- env 覆盖."""
-        self._cfg = copy.deepcopy(DEFAULT_CONFIG)
-        if self._db is not None:
-            try:
-                with self._db() as s:
-                    from app.models.models import ConfigRow
-                    row = s.get(ConfigRow, 1)
-                    if row and row.data_json:
-                        db_cfg = json.loads(row.data_json)
-                        self._cfg = _deep_merge(self._cfg, db_cfg)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("加载数据库配置失败, 使用默认配置: %s", exc)
-        _migrate_config(self._cfg)
-        _apply_env_overrides(self._cfg)
+        """启动时: 默认值 <- DB 配置 <- env 覆盖.(全程持锁: _migrate/_apply_env
+        会就地修改 self._cfg, 与其他线程的 get() deepcopy 并发会破坏读取)."""
+        with self._lock:
+            self._cfg = copy.deepcopy(DEFAULT_CONFIG)
+            if self._db is not None:
+                try:
+                    with self._db() as s:
+                        from app.models.models import ConfigRow
+                        row = s.get(ConfigRow, 1)
+                        if row and row.data_json:
+                            db_cfg = json.loads(row.data_json)
+                            self._cfg = _deep_merge(self._cfg, db_cfg)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("加载数据库配置失败, 使用默认配置: %s", exc)
+            _migrate_config(self._cfg)
+            _apply_env_overrides(self._cfg)
 
     def update(self, partial: dict[str, Any], persist: bool = True) -> dict[str, Any]:
         """热更新: 深合并 -> 写库 -> 通知监听器. 返回新配置."""

@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import dataclasses
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -70,9 +71,19 @@ class SignalEngine:
 
     def __init__(self) -> None:
         self._cfg: dict = {}
+        self._cfg_ts: float = 0.0  # 上次配置快照时间(monotonic)
 
     def _reload_cfg(self) -> dict:
-        self._cfg = config_manager.get()
+        """取配置快照(带 5s 节流).
+
+        回测逐日评估会高频调用(每股票每天一次, 一次对比回测可达数万次),
+        每次都 deepcopy 整份配置既慢又在多线程场景下放大竞态窗口;
+        5s 节流后热更新仍在秒级生效, 回测吞吐显著提升.
+        """
+        now = time.monotonic()
+        if not self._cfg or now - self._cfg_ts > 5.0:
+            self._cfg = config_manager.get()
+            self._cfg_ts = now
         return self._cfg
 
     # ------------------------------------------------------------ 主入口
