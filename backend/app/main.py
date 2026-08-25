@@ -7,10 +7,16 @@
 
 from __future__ import annotations
 
+import faulthandler
 import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
+
+# 原生崩溃兜底: 某些 C 扩展(行情/数据源栈)可能触发段错误(0xC0000005)直接杀死进程,
+# Python 层日志来不及写. faulthandler 挂接后崩溃前会把 Python 调用栈打到 stderr,
+# 便于定位肇事扩展(uvicorn --reload 的监督进程不会重启已崩溃的 worker, 表现为端口通但全接口挂起).
+faulthandler.enable()
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
