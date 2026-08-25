@@ -149,7 +149,8 @@ class SignalEngine:
             return _tag(sig)
         # 3. 做T卖出(顺势超买高抛): 风控性卖出优先于进攻性加仓/首仓(用户重排)
         if not skip_t:
-            sig = self._check_t_trade(cfg, ind, last, pos, price, quote_high, quote_low, name, want="sell")
+            sig = self._check_t_trade(cfg, ind, last, pos, price, quote_high, quote_low, name,
+                                      want="sell", mode_key=mode_decision.mode_key)
             if sig:
                 return _tag(sig)
         # 4. 加仓(回踩顺向)
@@ -162,7 +163,8 @@ class SignalEngine:
             return _tag(sig)
         # 6. 做T买入(低吸, 最低: 绝不抢跑加仓/首仓, 避免亏损中盲目低吸)
         if not skip_t:
-            sig = self._check_t_trade(cfg, ind, last, pos, price, quote_high, quote_low, name, want="buy")
+            sig = self._check_t_trade(cfg, ind, last, pos, price, quote_high, quote_low, name,
+                                      want="buy", mode_key=mode_decision.mode_key)
             if sig:
                 return _tag(sig)
         return None
@@ -433,12 +435,58 @@ class SignalEngine:
         )
 
     # ------------------------------------------------------------ 做T信号
+    # 市况系数: 趋势强(易触发) < 震荡(防噪) < 防守(少做T)
+    SWING_REGIME_MULT: dict[str, float] = {
+        "trend_strong": 0.6,
+        "trend_pullback": 0.8,
+        "range": 1.2,
+        "defense": 1.5,
+        "unknown": 1.0,
+    }
+
+    def _swing_threshold(self, cfg: dict, last: pd.Series, mode_key: str,
+                         symbol: str = "") -> float:
+        """做T波幅阈值(%).
+
+        P0 动态阈值: max(ATR% × swing_mult × 市况系数, min_swing_floor)
+        - swing_mode="fixed" 时退回旧配置 min_swing_pct(兼容)
+        - P1: 若 llm_swing_enabled 且当日有 LLM 建议值, 则优先用建议值 × llm_swing_mult
+        """
+        t_cfg = cfg["做T"]
+        mode = t_cfg.get("swing_mode", "fixed")
+        if mode != "dynamic":
+            return float(t_cfg.get("min_swing_pct", 1.5))
+
+        # P1: 盘前 LLM 建议值优先(按 symbol 查当日建议; 详见 assistant/t_swing.py)
+        if t_cfg.get("llm_swing_enabled", False) and symbol:
+            llm_val = self._get_llm_swing(symbol)
+            if llm_val and llm_val > 0:
+                return round(llm_val * float(t_cfg.get("llm_swing_mult", 1.0)), 2)
+
+        atr = self.atr_pct(last) * 100  # ATR% (如 2.5)
+        mult = float(t_cfg.get("swing_mult", 1.0))
+        regime_mult = self.SWING_REGIME_MULT.get(mode_key, 1.0)
+        floor = float(t_cfg.get("min_swing_floor", 1.0))
+        return round(max(atr * mult * regime_mult, floor), 2)
+
+    @staticmethod
+    def _get_llm_swing(symbol: str) -> float | None:
+        """读取当日 LLM 做T波幅建议(延迟导入避免循环依赖; 失败返回 None 走规则)."""
+        if not symbol:
+            return None
+        try:
+            from app.core.assistant.t_swing import get_today_swing
+            return get_today_swing(symbol)
+        except Exception:
+            return None
+
     def _check_t_trade(self, cfg, ind, last, pos, price, quote_high, quote_low, name,
-                       want: str = "both") -> Signal | None:
+                       want: str = "both", mode_key: str = "") -> Signal | None:
         """日内波段: T_SELL 冲布林上轨(高抛) / T_BUY 回踩布林下轨(低吸).
 
         want: "sell" 只判高抛 / "buy" 只判低吸 / "both" 两者(兼容旧调用).
         优先级重排(用户): T_SELL 在加仓/首仓之前(风控性卖出), T_BUY 保持最低(逆势低吸保守).
+        波幅阈值: _swing_threshold() 动态计算(ATR×市况), 替代固定 min_swing_pct.
         """
         if not pos.has_position:
             return None
@@ -452,14 +500,15 @@ class SignalEngine:
         high = quote_high or _f(last["high"])
         low = quote_low or _f(last["low"])
         swing = (high - low) / _f(last["close"]) * 100 if _f(last["close"]) else 0
-        if swing < t_cfg["min_swing_pct"]:
+        threshold = self._swing_threshold(cfg, last, mode_key or "unknown", symbol=pos.symbol)
+        if swing < threshold:
             return None
         # T_SELL: 冲布林上轨
         if want in ("sell", "both") and price >= boll_upper * 0.995:
             return Signal(
                 type="T_SELL", symbol=pos.symbol, name=name, direction="sell",
                 strength=70.0,
-                reason=f"日内冲布林上轨({boll_upper:.2f}),做T卖出(日内波动{swing:.1f}%)",
+                reason=f"日内冲布林上轨({boll_upper:.2f}),做T卖出(日内波动{swing:.1f}%≥阈值{threshold:.1f}%)",
                 price=price, indicators_snapshot=self._snapshot(last),
             )
         # T_BUY: 回踩布林下轨
@@ -467,7 +516,7 @@ class SignalEngine:
             return Signal(
                 type="T_BUY", symbol=pos.symbol, name=name, direction="buy",
                 strength=70.0,
-                reason=f"日内回踩布林下轨({boll_lower:.2f}),做T买入(日内波动{swing:.1f}%)",
+                reason=f"日内回踩布林下轨({boll_lower:.2f}),做T买入(日内波动{swing:.1f}%≥阈值{threshold:.1f}%)",
                 price=price, indicators_snapshot=self._snapshot(last),
             )
         return None

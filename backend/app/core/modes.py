@@ -138,12 +138,24 @@ def classify(regime: dict, cfg: dict) -> tuple[str, str]:
       3. 趋势回踩: 趋势仍在(多头排列+ADX>=弱线) 但已离开高点回踩
       4. 震荡: 趋势弱(ADX<弱线)
       5. 兜底: 多头强趋势但距高偏深 -> 仍判回踩
+
+    回踩上限(pullback_band)支持动态阈值(2026-08-25):
+      动态 = max(2.5 × ATR%, pullback_dist_pct 下限), 高波动股正常回调不再误判深回踩.
     """
+    from app.core.volatility import dynamic_threshold
+
     cl = cfg[MODE_GROUP]["classifier"]
     adx_strong = cl["adx_strong"]
     adx_weak = cl["adx_weak"]
     breakout_dist = cl["breakout_dist_pct"]
     pullback_band = cl.get("pullback_dist_pct", 8.0)
+    # 回踩上限动态化: 高波动股 ATR 大 -> 正常回调更深也仍判回踩(而非脱离回踩区间)
+    if cl.get("pullback_dynamic", False):
+        atr_p = float(regime.get("atr_pct", 0.0) or 0.0)
+        if atr_p > 0:
+            pullback_band = max(
+                dynamic_threshold(float(cl.get("pullback_atr_mult", 2.5)), atr_p) * 100,
+                pullback_band)
     vol_active = cl["volume_ratio_active"]
     dc_p = cl.get("donchian_period", 20)
     adx = regime.get("adx", 0.0)

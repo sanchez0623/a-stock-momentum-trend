@@ -95,9 +95,18 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "做T": {
         "enable": True,
-        "min_swing_pct": 1.5,
+        "min_swing_pct": 1.5,           # 固定阈值(兼容旧配置; 动态模式下作为下限兜底)
+        # 动态波幅阈值(2026-08-25): 阈值 = max(ATR% × swing_mult × 市况系数, min_swing_floor)
+        # - ATR%: 日线波动率, 高波动股阈值自动放宽
+        # - 市况系数: trend_strong 0.6(趋势强易触发)/range 1.2(震荡防噪)/defense 1.5(防守少做T)
+        "swing_mode": "dynamic",         # dynamic(推荐) / fixed(用 min_swing_pct)
+        "swing_mult": 1.0,               # ATR 倍数系数, 调大→阈值高→做T更保守
+        "min_swing_floor": 1.0,          # 动态阈值下限(%), 防止低波动股阈值过小
         "support_lookback": 5,
         "t_position_ratio": 0.3,
+        # P1: 盘前 LLM 建议的每日做T波幅区间(按股票覆盖动态阈值; 留空/关闭则纯规则计算)
+        "llm_swing_enabled": False,
+        "llm_swing_mult": 1.0,           # LLM 建议值的缩放系数(不信任 LLM 时调低)
     },
     # ---------------------------------------------------------------- 交易模式(Q2: 多模式 + 规则化市况分类器)
     # 选型由「市况分类器」(modes.classify) 按 ADX/ATR/突破回踩/量能 确定性选出, 不靠 LLM 决策。
@@ -110,7 +119,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "adx_strong": 30,       # ADX >= 此值视为趋势强
             "adx_weak": 18,         # ADX < 此值视为震荡/无趋势
             "breakout_dist_pct": 3.0,   # 现价距 N日高 在此范围内视为突破区
-            "pullback_dist_pct": 8.0,   # 距高超过此值但在多头排列下仍判回踩
+            "pullback_dist_pct": 8.0,   # 距高超过此值但在多头排列下仍判回踩(动态模式下为下限)
+            # 回踩深度动态阈值(2026-08-25): 高波动股正常回调就 >8%, 被误判深回踩->误切防守.
+            # 动态: 回踩上限 = max(2.5 × ATR%, pullback_dist_pct 下限). ATR 缺失回退固定值.
+            "pullback_dynamic": False,       # 默认关闭: 模式分类是全策略根基, 先观察再开
+            "pullback_atr_mult": 2.5,
             "volume_ratio_active": 1.3, # 量比 >= 此值视为放量
             "donchian_period": 20,
         },
@@ -258,7 +271,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "launch_ma_cross": 2.0,      # 近3根内 短均线刚上穿中均线 加分
         "launch_adx_first": 1.0,     # ADX 首次达标且走高 加分
         "launch_bonus_max": 5.0,     # 启动加分封顶(防事件叠加虚高)
-        "overheat_bias": 10.0,       # 乖离率 >= 此值(%) 触发过热扣分
+        "overheat_bias": 10.0,       # 乖离率 >= 此值(%) 触发过热扣分(动态模式下为下限兜底)
+        # 过热乖离动态阈值(2026-08-25): 高波动股乖离天然大, 固定 10% 会常态化误判过热.
+        # 动态: 乖离阈值 = max(3 × ATR%, overheat_bias 下限). ATR 缺失回退固定值.
+        "overheat_bias_dynamic": True,
+        "overheat_bias_atr_mult": 3.0,  # ATR 倍数
         "overheat_bias_penalty": 3.0,
         "overheat_rsi_penalty": 2.0, # RSI 过热(>= rsi_overheat) 扣分(动量分已衰减, 象征性再扣)
         "overheat_volume": 3.0,      # 量比 >= 此值 触发过热扣分
@@ -343,6 +360,33 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "exchange_fee_rate": 0.0000341,  # 经手费: 万 0.341, 双边
         "regulatory_fee_rate": 0.00002,  # 证管费: 万 0.2, 双边
         "transfer_fee_rate": 0.00001,    # 过户费: 万 0.1, 双边
+    },
+    "盘中监控": {
+        "enabled": False,                # 总开关(热生效)
+        "interval_sec": 30,              # 轮询间隔(秒), 建议 30-60
+        "scope": "positions_watchlist",  # 监控范围: positions / watchlist / positions_watchlist
+        # 动态阈值(2026-08-25): 逼近/异动阈值随个股 ATR 波动率自适应, 替代一刀切固定百分比
+        # - stop_approach: 止损线逼近 = 0.5 × ATR%(高波动股预警窗口更宽, 低波动股更灵敏)
+        # - price_move:    异动涨跌幅 = max(2 × ATR%, 3%)(高波动股防日常噪音, 低波动股防漏报)
+        "dynamic_threshold_enabled": True,
+        "stop_approach_atr_mult": 0.5,   # 止损逼近: ATR 倍数
+        "price_move_atr_mult": 2.0,      # 异动涨跌: ATR 倍数
+        "price_move_floor_pct": 3.0,     # 异动涨跌下限(%)
+        "alert_rules": {                 # 各预警规则独立开关与阈值(固定模式下生效)
+            "stop_loss_approach": {"enabled": True, "threshold_pct": 2.0},
+            "stop_loss_hit": {"enabled": True},
+            "take_profit_hit": {"enabled": True},
+            "trailing_stop_approach": {"enabled": True, "threshold_pct": 2.0},
+            "key_support_break": {"enabled": True},
+            "key_resistance_break": {"enabled": True},
+            "price_up_pct": {"enabled": True, "threshold": 5.0},
+            "price_down_pct": {"enabled": True, "threshold": -5.0},
+            "volume_surge": {"enabled": True, "threshold": 3.0},
+            "volume_shrink": {"enabled": True, "threshold": 0.3},
+            "new_high": {"enabled": False},
+            "new_low": {"enabled": False},
+        },
+        "cooldown_sec": 300,             # 同标的同类型预警冷却(秒)
     },
 }
 

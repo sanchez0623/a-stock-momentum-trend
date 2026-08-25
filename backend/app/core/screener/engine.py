@@ -21,6 +21,7 @@ import pandas as pd
 from app.core.config import config_manager
 from app.core.datasource import data_source_manager
 from app.core.indicators import compute_all
+from app.core.volatility import atr_pct_from_ind, dynamic_threshold
 
 logger = logging.getLogger(__name__)
 
@@ -166,21 +167,30 @@ def detect_stage(ind: pd.DataFrame, cfg: dict, end: int | None = None) -> dict[s
     # ---- 阶段判定(优先级: 衰竭 > 过热 > 启动 > 加速)
     rsi_overheat = float(sc.get("rsi_overheat", 75.0))
     rsi_exhaust = float(sc.get("rsi_exhaust", 80.0))
+    # 过热乖离阈值: 动态 = max(3×ATR%, overheat_bias 下限); 固定 = overheat_bias.
+    # 高波动股乖离天然大, 固定 10% 会常态化误判过热(2026-08-25).
+    bias_th = float(sc.get("overheat_bias", 10.0))
+    if sc.get("overheat_bias_dynamic", False):
+        atr_p = atr_pct_from_ind(last)
+        if atr_p > 0:
+            bias_th = max(
+                dynamic_threshold(float(sc.get("overheat_bias_atr_mult", 3.0)), atr_p) * 100,
+                bias_th)
     if up_trend and rsi >= rsi_exhaust and hist < hist_prev:
         out["stage"] = "exhaust"
         out["penalty"] = float(sc.get("exhaust_penalty", 5.0))
         out["note"] = f"RSI {rsi:.0f} 超买且 MACD 红柱缩短, 动能衰竭"
-    elif up_trend and (bias >= float(sc.get("overheat_bias", 10.0))
+    elif up_trend and (bias >= bias_th
                        or rsi >= rsi_overheat
                        or vr >= float(sc.get("overheat_volume", 3.0))):
         out["stage"] = "overheat"
-        if bias >= float(sc.get("overheat_bias", 10.0)):
+        if bias >= bias_th:
             out["penalty"] += float(sc.get("overheat_bias_penalty", 3.0))
         if rsi >= rsi_overheat:
             out["penalty"] += float(sc.get("overheat_rsi_penalty", 2.0))
         if vr >= float(sc.get("overheat_volume", 3.0)):
             out["penalty"] += float(sc.get("overheat_volume_penalty", 3.0))
-        out["note"] = f"乖离{bias:.1f}% / RSI {rsi:.0f} / 量比{vr:.1f} 过热"
+        out["note"] = f"乖离{bias:.1f}%/阈{bias_th:.1f}% · RSI {rsi:.0f} · 量比{vr:.1f} 过热"
     elif events and up_trend:
         weights = {
             "macd_golden": float(sc.get("launch_macd_golden", 2.0)),

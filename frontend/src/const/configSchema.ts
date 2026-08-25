@@ -124,10 +124,22 @@ export const CONFIG_GROUPS: GroupMeta[] = [
   {
     key: '做T',
     label: '做T',
-    desc: '持仓期内的日内高抛低吸，仅对已有底仓的股票生效。',
+    desc: '持仓期内的日内高抛低吸，仅对已有底仓的股票生效。波幅阈值支持动态计算(ATR×市况)与盘前 LLM 建议。',
     fields: [
       { key: 'enable', label: '启用做T信号', type: 'bool', hint: '关闭后不再产生做T买/做T卖信号' },
-      { key: 'min_swing_pct', label: '最小波幅', type: 'float', unit: '%', min: 0.1, max: 20, step: 0.1, hint: '日内振幅不足此值不做T，避免手续费吃掉利润' },
+      {
+        key: 'swing_mode', label: '波幅阈值模式', type: 'select',
+        options: [
+          { value: 'dynamic', label: '动态（ATR×市况，推荐）' },
+          { value: 'fixed', label: '固定（用下方最小波幅）' },
+        ],
+        hint: '动态模式: 阈值 = max(ATR% × 倍数 × 市况系数, 下限)。趋势强=0.6/回踩=0.8/震荡=1.2/防守=1.5',
+      },
+      { key: 'swing_mult', label: '动态倍数', type: 'float', min: 0.3, max: 3, step: 0.1, hint: 'ATR 倍数系数，调大→阈值高→做T更保守' },
+      { key: 'min_swing_floor', label: '动态阈值下限', type: 'float', unit: '%', min: 0.3, max: 5, step: 0.1, hint: '防止低波动股阈值过小' },
+      { key: 'min_swing_pct', label: '最小波幅(固定模式)', type: 'float', unit: '%', min: 0.1, max: 20, step: 0.1, hint: '固定模式下的日内最小振幅；动态模式下仅作兼容保留' },
+      { key: 'llm_swing_enabled', label: '盘前 LLM 波幅建议', type: 'bool', hint: '盘前由 LLM 按各股波动特征生成做T阈值建议，盘中优先使用（需配置 LLM）' },
+      { key: 'llm_swing_mult', label: 'LLM 建议缩放', type: 'float', min: 0.3, max: 2, step: 0.1, hint: '对 LLM 建议值的信任系数，1.0=完全采用，调低更保守' },
       { key: 'support_lookback', label: '支撑位回看', type: 'int', unit: '日', min: 2, max: 60, hint: '计算日内支撑/压力的历史区间' },
       { key: 't_position_ratio', label: '做T仓位比例', type: 'float', min: 0.05, max: 1, step: 0.05, hint: '用底仓的多大比例做T。0.3 = 三成' },
     ],
@@ -155,7 +167,9 @@ export const CONFIG_GROUPS: GroupMeta[] = [
       { key: 'launch_ma_cross', label: '启动加分·短均线刚上穿', type: 'float', min: 0, max: 10, step: 0.5, hint: '近4根内短均线上穿中均线' },
       { key: 'launch_adx_first', label: '启动加分·ADX首次达标', type: 'float', min: 0, max: 10, step: 0.5, hint: 'ADX 刚上穿阈值且持续走高' },
       { key: 'launch_bonus_max', label: '启动加分封顶', type: 'float', min: 0, max: 15, step: 0.5, hint: '多个启动事件叠加时的加分上限，防止分数虚高' },
-      { key: 'overheat_bias', label: '过热乖离阈值', type: 'float', unit: '%', min: 3, max: 30, step: 0.5, hint: '偏离短期均线超过此值判为过热期' },
+      { key: 'overheat_bias', label: '过热乖离阈值', type: 'float', unit: '%', min: 3, max: 30, step: 0.5, hint: '偏离短期均线超过此值判为过热期；动态模式下作为下限兜底' },
+      { key: 'overheat_bias_dynamic', label: '乖离阈值动态化', type: 'bool', hint: '阈值 = max(倍数×ATR%, 下方固定值)。高波动股乖离天然大，固定 10% 会常态化误判过热' },
+      { key: 'overheat_bias_atr_mult', label: '乖离 ATR 倍数', type: 'float', min: 1, max: 6, step: 0.5, hint: '动态乖离阈值 = 倍数 × ATR%。如 ATR 4% 股票用 3 倍 = 12% 才算过热' },
       { key: 'overheat_bias_penalty', label: '过热乖离扣分', type: 'float', min: 0, max: 10, step: 0.5 },
       { key: 'overheat_rsi_penalty', label: '过热RSI扣分', type: 'float', min: 0, max: 10, step: 0.5, hint: 'RSI 超过过热线时扣分（动量分本身已衰减，此为补充）' },
       { key: 'overheat_volume', label: '过热量比阈值', type: 'float', min: 1, max: 10, step: 0.1, hint: '量比超过此值判为过热期' },
@@ -206,6 +220,29 @@ export const CONFIG_GROUPS: GroupMeta[] = [
     fields: [
       { key: 'enabled', label: '启用 AI 助理', type: 'bool', hint: '开启后由定时任务自动执行三阶段流水线; 关闭完全退回手动流程。盘中打开即生效' },
       { key: 'push_webhook', label: '企业微信 Webhook', type: 'text', hint: '留空仅站内通知' },
+    ],
+  },
+  {
+    key: '盘中监控',
+    label: '盘中监控',
+    desc: '每 N 秒轮询持仓/自选股实时快照，自动检测止损逼近、止盈触及、异动涨跌等 12 类预警，推送站内通知 + WebSocket 实时广播。阈值支持按个股 ATR 波动率动态自适应。',
+    fields: [
+      { key: 'enabled', label: '启用盘中监控', type: 'bool', hint: '开启后自动注册秒级定时任务, 仅交易时间(9:30-15:00)执行, 配置变更即生效' },
+      { key: 'interval_sec', label: '轮询间隔', type: 'int', unit: '秒', min: 10, max: 120, hint: '两次轮询之间的间隔, 建议 30-60 秒' },
+      {
+        key: 'scope', label: '监控范围', type: 'select',
+        options: [
+          { value: 'positions_watchlist', label: '持仓 + 自选（推荐）' },
+          { value: 'positions', label: '仅持仓' },
+          { value: 'watchlist', label: '仅自选' },
+        ],
+        hint: '监控哪些标的的实时行情',
+      },
+      { key: 'cooldown_sec', label: '预警冷却', type: 'int', unit: '秒', min: 30, max: 3600, hint: '同一标的同一类型预警的冷却时间, 防止刷屏' },
+      { key: 'dynamic_threshold_enabled', label: '动态阈值', type: 'bool', hint: '逼近/异动阈值随个股 ATR 波动率自适应: 高波动股预警窗口更宽/异动门槛更高, 低波动股更灵敏' },
+      { key: 'stop_approach_atr_mult', label: '止损逼近 ATR 倍数', type: 'float', min: 0.2, max: 2, step: 0.1, hint: '止损逼近阈值 = 倍数 × ATR%。如 ATR 2.5% 股票用 0.5 倍 = 1.25% 提前预警' },
+      { key: 'price_move_atr_mult', label: '异动涨跌 ATR 倍数', type: 'float', min: 0.5, max: 5, step: 0.1, hint: '异动阈值 = max(倍数 × ATR%, 下限)。高波动股防日常噪音' },
+      { key: 'price_move_floor_pct', label: '异动下限', type: 'float', unit: '%', min: 1, max: 10, step: 0.5, hint: '异动涨跌阈值下限(%), 低波动股漏报保护' },
     ],
   },
 ]
