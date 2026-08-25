@@ -226,6 +226,50 @@ class BacktestPreset(SQLModel, table=True):
     created_at: str = Field(default_factory=_now)
 
 
+class BacktestRun(SQLModel, table=True):
+    """对比回测运行记录(结果与逐笔明细落库, 供前端回看与复盘优化方向).
+
+    内存任务表重启即清, 本表持久: 历史运行可随时调出变体摘要+净值曲线,
+    逐笔操作明细在 BacktestTrade(按 run_id 关联).
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    time: str = Field(default_factory=_now, index=True)
+    mode: str = Field(default="compare", index=True)  # compare / single(预留)
+    pool_size: int = Field(default=0)
+    seed: int = Field(default=0)
+    universe: str = Field(default="")
+    board: str = Field(default="")
+    industry: str = Field(default="")
+    start: str = Field(default="")
+    end: str = Field(default="")
+    initial_capital: float = Field(default=1_000_000.0)
+    symbols_json: str = Field(default="[]")   # 抽样后股票池代码(复现用)
+    variants_json: str = Field(default="[]")  # 各变体摘要(指标+净值曲线+动作分解, 无逐笔明细)
+    error: str = Field(default="")
+
+
+class BacktestTrade(SQLModel, table=True):
+    """对比回测逐笔交易明细(变体维度归档).
+
+    同池同种子下各变体对同一只票的操作差异(哪笔被冷却拦截/哪笔多赚)可直接查询,
+    是回测优化方向的直接证据.
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    run_id: int = Field(index=True)          # -> backtestrun.id
+    variant: str = Field(default="", index=True)  # 变体标签
+    date: str = Field(default="", index=True)
+    symbol: str = Field(default="", index=True)
+    name: str = Field(default="")
+    action: str = Field(default="", index=True)   # buy_first/buy_add/sell_reduce/sell_stop/t_buy/t_sell
+    price: float = Field(default=0.0)
+    qty: int = Field(default=0)
+    fee: float = Field(default=0.0)
+    pnl: float = Field(default=0.0)          # 卖出类: 该笔实现盈亏(含费); 买入类: 0
+    reason: str = Field(default="")
+
+
 class ScreenerTask(SQLModel, table=True):
     """选股扫描任务持久化(断点续传: 服务重启后任务不丢, 可继续扫描)."""
 
@@ -490,3 +534,20 @@ class DailyStat(SQLModel, table=True):
     equity: float = Field(default=0.0)
     drawdown: float = Field(default=0.0)
     day_pnl: float = Field(default=0.0)
+
+
+class TSwingAdvice(SQLModel, table=True):
+    """盘前 LLM 做T波幅建议(每股每日一条, P1).
+
+    盘前由 assistant/t_swing.generate_premarket_swing() 生成, 盘中由
+    SignalEngine._swing_threshold() 读取(优先于 ATR 规则计算值)。
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    date: str = Field(default="", index=True)          # YYYY-MM-DD
+    symbol: str = Field(default="", index=True)
+    name: str = Field(default="")
+    swing_pct: float = Field(default=0.0)               # 建议做T触发波幅(%)
+    rationale: str = Field(default="")                  # 一句话理由(展示用)
+    model: str = Field(default="")                      # 生成模型
+    created_at: str = Field(default_factory=_now)

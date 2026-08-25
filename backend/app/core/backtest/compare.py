@@ -122,7 +122,7 @@ def sample_pool(n: int, seed: int) -> list[str]:
 
 def summarize(report: dict[str, Any], label: str, cooldown_days: int,
               defense: str) -> dict[str, Any]:
-    """从单变体完整报告提取对比摘要(丢弃逐笔交易, 保留动作分解与净值曲线)."""
+    """从单变体完整报告提取对比摘要(含逐笔交易明细, 供落库与复盘; 指标与曲线同前)."""
     m, s = report["meta"], report["stats"]
     by = defaultdict(lambda: {"n": 0, "pnl": 0.0})
     for t in report["trades"]:
@@ -147,6 +147,8 @@ def summarize(report: dict[str, Any], label: str, cooldown_days: int,
         "final_defense": bool(s["defense_mode"]),
         "by_action": {a: {"n": by[a]["n"], "pnl": round(by[a]["pnl"], 2)} for a in ACTION_ORDER},
         "equity_curve": report["equity_curve"],
+        # 逐笔明细(供落库复盘). 注意: "trades" 键已被 stats 的总笔数占用, 明细用独立键.
+        "trade_details": report["trades"],
     }
 
 
