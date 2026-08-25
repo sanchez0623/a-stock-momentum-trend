@@ -51,7 +51,11 @@ class MootdxSource(DataSourceInterface):
             raise RuntimeError("mootdx 未安装: pip install mootdx")
         self._client = None
         self._server_idx = 0
-        self._lock = threading.Lock()
+        # RLock: 既护客户端创建/重置, 也串行化所有 socket 调用.
+        # pytdx 客户端是单 socket 连接, 官方明确非线程安全 —— 并发调用(WS行情轮询/
+        # 盘中监控/批量行情接口同时打过来)会造成堆损坏, 崩溃延迟炸在任意线程
+        # (实际事故: 炸在回测线程的 config deepcopy 里). 与 baostock 源的进程级锁同思路.
+        self._lock = threading.RLock()
 
     def _get_client(self):
         with self._lock:
@@ -63,13 +67,15 @@ class MootdxSource(DataSourceInterface):
                 )
             return self._client
 
-    async def _get_client_async(self):
-        """获取/创建 TDX 客户端(异步包装).
+    def _call(self, method: str, **kwargs):
+        """串行化调用 pytdx 客户端(取客户端 + 发请求全程持锁).
 
-        _get_client 内部会同步建连公共 TDX 服务器(可能慢/挂起), 直接在 async 方法里调用
-        会阻塞整个事件循环 —— 必须丢进线程池执行.
+        本方法是同步函数, 由调用方 asyncio.to_thread 丢进线程池执行;
+        锁在线程池线程间生效, 保证同一时刻只有一个线程操作 socket.
         """
-        return await asyncio.to_thread(self._get_client)
+        with self._lock:
+            client = self._get_client()
+            return getattr(client, method)(**kwargs)
 
     def _reset_client(self) -> None:
         """连接失败时换下一台服务器."""
@@ -83,8 +89,8 @@ class MootdxSource(DataSourceInterface):
         sym = secid or symbol  # mootdx 用 6 位代码; 指数需调用方保证格式正确
         freq = FREQ_MAP.get(period, 9)
         try:
-            client = await self._get_client_async()
-            df = await asyncio.to_thread(client.bars, symbol=sym, frequency=freq, offset=count)
+            df = await asyncio.to_thread(
+                self._call, "bars", symbol=sym, frequency=freq, offset=count)
             if df is None or df.empty:
                 self._reset_client()
                 return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume", "amount"])
@@ -100,8 +106,7 @@ class MootdxSource(DataSourceInterface):
 
     async def get_realtime_quote(self, symbols: list[str]) -> list[Quote]:
         try:
-            client = await self._get_client_async()
-            df = await asyncio.to_thread(client.quotes, symbols=symbols)
+            df = await asyncio.to_thread(self._call, "quotes", symbols=symbols)
         except Exception:
             self._reset_client()
             raise
